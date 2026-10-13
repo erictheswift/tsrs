@@ -387,8 +387,26 @@ fn cmd_list(mut args: Args) {
 // `__worker`; test discovery and option expansion do not need to run in the interpreter.
 fn cmd_manifest(mut args: Args) {
     let sel = Selection::from_args(&mut args);
+    let shard = args.value("--shard").map(|value| {
+        let Some((index, total)) = value.split_once('/') else {
+            eprintln!("--shard: expected INDEX/TOTAL");
+            std::process::exit(2)
+        };
+        let (Ok(index), Ok(total)) = (index.parse::<usize>(), total.parse::<usize>()) else {
+            eprintln!("--shard: expected INDEX/TOTAL");
+            std::process::exit(2)
+        };
+        if total == 0 || index >= total {
+            eprintln!("--shard: expected TOTAL > 0 and INDEX < TOTAL");
+            std::process::exit(2)
+        }
+        (index, total)
+    });
     check_no_extra(&args);
-    for item in sel.select(&options::tsoptions_option_table()) {
+    for (position, item) in sel.select(&options::tsoptions_option_table()).into_iter().enumerate() {
+        if shard.is_some_and(|(index, total)| position % total != index) {
+            continue;
+        }
         println!("{}", worker::format_item_line(&item));
     }
 }
