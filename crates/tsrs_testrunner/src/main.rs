@@ -383,6 +383,16 @@ fn cmd_list(mut args: Args) {
     }
 }
 
+// Writes the process pool's lossless item format. CI builds this manifest natively, then feeds it to a Miri
+// `__worker`; test discovery and option expansion do not need to run in the interpreter.
+fn cmd_manifest(mut args: Args) {
+    let sel = Selection::from_args(&mut args);
+    check_no_extra(&args);
+    for item in sel.select(&options::tsoptions_option_table()) {
+        println!("{}", worker::format_item_line(&item));
+    }
+}
+
 fn cmd_materialize(mut args: Args) {
     let sel = Selection::from_args(&mut args);
     let Some(out) = args.value("--out").map(PathBuf::from) else {
@@ -563,6 +573,7 @@ fn main() {
         "show" => cmd_show(args),
         "crashes" => cmd_crashes(args),
         "list" => cmd_list(args),
+        "__manifest" => cmd_manifest(args),
         "materialize" => cmd_materialize(args),
         "types-dump" => cmd_types_dump(args),
         "__worker" => {

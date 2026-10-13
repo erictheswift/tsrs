@@ -281,7 +281,7 @@ pub fn worker_main() {
                     continue;
                 }
                 let item = parse_item_line(&line);
-                let _ = writeln!(stdout, "{}", json!({"start": i}));
+                let _ = writeln!(stdout, "{}", json!({"start": i, "id": item.id()}));
                 let _ = stdout.flush();
                 let r = run_item(&table, &item);
                 write_artifacts(&item, &r);

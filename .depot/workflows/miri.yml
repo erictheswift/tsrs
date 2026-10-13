@@ -10,6 +10,11 @@ on:
   pull_request:
     branches: [main]
 
+# Superseded runs on the rollout pull request are expensive and no longer useful. Every push to main still completes.
+concurrency:
+  group: miri-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.sha }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -63,8 +68,17 @@ jobs:
           save-cache: true
           cache-key: miri
 
+      # Discovery expands every test's option matrix. Do that at native speed, then pass the pool's lossless item
+      # format to one in-process Miri worker so interpretation begins with the first test instead of an hour later.
+      - name: Build test manifest
+        run: |
+          cargo run --quiet --locked -p tsrs_testrunner -- __manifest --suite all > "$RUNNER_TEMP/tsrs-miri-items.tsv"
+          wc -l "$RUNNER_TEMP/tsrs-miri-items.tsv"
+
       - name: Miri
         # The arena leaks its chunks by design. Test fixtures also require host filesystem access.
         env:
           MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
-        run: cargo miri run --locked -p tsrs_testrunner --features tsrs_core/plain-ptrs -- run --suite all
+        run: >-
+          cargo miri run --locked -p tsrs_testrunner --features tsrs_core/plain-ptrs -- __worker
+          < "$RUNNER_TEMP/tsrs-miri-items.tsv"
