@@ -413,17 +413,46 @@ jobs:
       - name: Generated code is up to date
         run: tools/gen-check.sh
 
-  # Miri on every tsrs_core library test. plain-ptrs replaces the compressed handles because Miri does not support
-  # their 32 GiB PROT_NONE reservation. The ignored negative control below must still be rejected as undefined
-  # behaviour; tools/lint/source.py (lint job) rejects the direct pattern in production code too.
+  # Run every compiler and conformance variant in Miri. plain-ptrs replaces the compressed handles because Miri does
+  # not support their 32 GiB PROT_NONE reservation. The runner detects Miri and stays in-process because the
+  # interpreter cannot follow its normal subprocess workers.
   arena-safety:
     runs-on: depot-ubuntu-24.04-8
-    timeout-minutes: 40
+    timeout-minutes: 360
     env:
       # Pinned so that a Miri change cannot turn main red on its own.
       RUSTUP_TOOLCHAIN: nightly-2026-10-04
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - name: Read TypeScript reference commit
+        id: ts
+        run: echo "commit=$(node npm/build.mjs --print-typescript-commit)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore TypeScript testdata
+        id: ts-ref
+        uses: actions/cache/restore@v4
+        with:
+          path: ts-ref/tsc/testdata
+          key: ts-ref-testdata-${{ steps.ts.outputs.commit }}
+
+      - name: Check out TypeScript testdata
+        if: steps.ts-ref.outputs.cache-hit != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: microsoft/TypeScript
+          ref: ${{ steps.ts.outputs.commit }}
+          path: ts-ref
+          fetch-depth: 1
+          sparse-checkout: tsc/testdata
+          persist-credentials: false
+
+      - name: Save TypeScript testdata
+        if: steps.ts-ref.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ts-ref/tsc/testdata
+          key: ${{ steps.ts-ref.outputs.cache-primary-key }}
 
       - uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
         with:
@@ -432,14 +461,7 @@ jobs:
           cache-key: miri
 
       - name: Miri
-        # The arena leaks its chunks by design (nothing is freed at exit), so Miri's leak check is off here.
+        # The arena leaks its chunks by design. Test fixtures also require host filesystem access.
         env:
-          MIRIFLAGS: -Zmiri-ignore-leaks
-        run: |
-          cargo miri test --locked -p tsrs_core --features plain-ptrs --lib
-          # The negative control frees a reference parameter; Miri must still call that undefined behaviour.
-          if cargo miri test --locked -p tsrs_core --features plain-ptrs --lib \
-              arena::tests::miri_rejects_freeing_a_reference_parameter -- --ignored > miri-negative.log 2>&1; then
-            echo "::error::Miri accepted a free of a protected reference parameter"; exit 1
-          fi
-          grep -q "Undefined Behavior" miri-negative.log
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
+        run: cargo miri run --locked -p tsrs_testrunner --features tsrs_core/plain-ptrs -- run --suite all

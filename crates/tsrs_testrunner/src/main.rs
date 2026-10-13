@@ -1,8 +1,9 @@
-// The alloc-profile build installs tsrs_core's counting allocator (over mimalloc) instead.
-#[cfg(not(feature = "alloc-profile"))]
+// The alloc-profile build installs tsrs_core's counting allocator (over mimalloc) instead. Miri uses Rust's system
+// allocator because it cannot interpret mimalloc's foreign-function calls.
+#[cfg(all(not(miri), not(feature = "alloc-profile")))]
 #[global_allocator]
 static GLOBAL: mimalloc_safe::MiMalloc = mimalloc_safe::MiMalloc;
-#[cfg(feature = "alloc-profile")]
+#[cfg(all(not(miri), feature = "alloc-profile"))]
 #[global_allocator]
 static GLOBAL: tsrs_core::alloc_profile::CountingAllocator = tsrs_core::alloc_profile::CountingAllocator;
 
@@ -209,9 +210,70 @@ impl Selection {
     }
 }
 
+// Miri cannot follow the normal process pool into its child processes. Keep all variants in the interpreter and run
+// them sequentially on the same large stack that a normal worker gets. An interpreter error still stops the process
+// immediately, with the last printed test ID identifying the variant that exposed it.
+#[cfg(miri)]
+fn run_in_miri(items: &[TestItem], progress: bool) -> Vec<Option<pool::TestResult>> {
+    worker::install_panic_hook(true);
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("tsrs-test-miri".into())
+            .stack_size(worker::WORKER_STACK_SIZE)
+            .spawn_scoped(scope, || {
+                let table = options::tsoptions_option_table();
+                items
+                    .iter()
+                    .enumerate()
+                    .map(|(i, item)| {
+                        if progress {
+                            eprintln!("miri [{}/{}] {}", i + 1, items.len(), item.id());
+                        }
+                        let r = worker::run_item(&table, item);
+                        let (panic, loc) = r.panic.as_ref().map_or_else(
+                            || (String::new(), String::new()),
+                            |p| (p.message.clone(), p.location.clone()),
+                        );
+                        let extra = |ext| worker::extra_result(&r, ext).map(|e| (e.class, e.diff.clone()));
+                        let types = extra("types");
+                        let symbols = extra("symbols");
+                        let js = extra("js");
+                        let jsmap = extra("js.map");
+                        let sourcemap = extra("sourcemap.txt");
+                        Some(pool::TestResult {
+                            class: r.class,
+                            ms: u64::try_from(r.ms).unwrap_or(u64::MAX),
+                            diff: r.diff,
+                            panic,
+                            loc,
+                            skip: r.skip,
+                            types,
+                            symbols,
+                            js,
+                            jsmap,
+                            sourcemap,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap()
+            .join()
+            .unwrap()
+    })
+}
+
 fn cmd_run(mut args: Args) {
     let sel = Selection::from_args(&mut args);
-    let jobs = args.num("--jobs").unwrap_or_else(|| std::thread::available_parallelism().map_or(4, |n| n.get()));
+    let jobs = args.num("--jobs").unwrap_or_else(|| {
+        #[cfg(miri)]
+        {
+            1
+        }
+        #[cfg(not(miri))]
+        {
+            std::thread::available_parallelism().map_or(4, |n| n.get())
+        }
+    });
     let timeout = Duration::from_secs_f64(args.value("--timeout").map_or(20.0, |v| v.parse().unwrap_or(20.0)));
     let recycle = args.num("--recycle").unwrap_or(200);
     let mem_limit_mb = args.num("--mem-limit").unwrap_or(6144) as u64;
@@ -227,11 +289,29 @@ fn cmd_run(mut args: Args) {
         println!("no tests selected");
         return;
     }
-    if !quiet {
-        eprintln!("running {} test variants with {jobs} workers", items.len());
-    }
-    let opts = pool::PoolOptions { jobs: jobs.min(items.len()), timeout, recycle, worker_args: worker_args(), progress: !quiet, mem_limit_mb };
-    let results = pool::run_pool(&items, &opts);
+    #[cfg(miri)]
+    let results = {
+        let _ = (jobs, timeout, recycle, mem_limit_mb);
+        if !quiet {
+            eprintln!("running {} test variants in-process under Miri", items.len());
+        }
+        run_in_miri(&items, !quiet)
+    };
+    #[cfg(not(miri))]
+    let results = {
+        if !quiet {
+            eprintln!("running {} test variants with {jobs} workers", items.len());
+        }
+        let opts = pool::PoolOptions {
+            jobs: jobs.min(items.len()),
+            timeout,
+            recycle,
+            worker_args: worker_args(),
+            progress: !quiet,
+            mem_limit_mb,
+        };
+        pool::run_pool(&items, &opts)
+    };
 
     let dir = worker::results_dir();
     let json_path = json_path.unwrap_or_else(|| dir.join("summary.json"));
