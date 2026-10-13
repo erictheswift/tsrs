@@ -1,11 +1,13 @@
-# Depot CI workflow: runs the full compiler and conformance suite under Miri after changes land on main. It is kept
-# out of pull-request CI because interpreting the complete suite is intentionally slow. Security: read-only token,
-# no secrets.
+# Depot CI workflow: runs the full compiler and conformance suite under Miri after changes land on main. Pull request
+# 367 is allowed while the workflow is introduced so its first result is visible before merge; every other pull
+# request skips the job. Security: read-only token, no secrets.
 
 name: Miri
 
 on:
   push:
+    branches: [main]
+  pull_request:
     branches: [main]
 
 permissions:
@@ -20,6 +22,7 @@ jobs:
   # plain-ptrs replaces the compressed handles because Miri does not support their 32 GiB PROT_NONE reservation.
   # The runner detects Miri and stays in-process because the interpreter cannot follow its normal subprocess workers.
   arena-safety:
+    if: github.event_name == 'push' || github.event.pull_request.number == 367
     runs-on: depot-ubuntu-24.04-8
     timeout-minutes: 360
     steps:
