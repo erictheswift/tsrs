@@ -1,0 +1,67 @@
+# Depot CI workflow: runs the full compiler and conformance suite under Miri after changes land on main. It is kept
+# out of pull-request CI because interpreting the complete suite is intentionally slow. Security: read-only token,
+# no secrets.
+
+name: Miri
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so that a Miri change cannot turn main red on its own.
+  RUSTUP_TOOLCHAIN: nightly-2026-10-04
+
+jobs:
+  # plain-ptrs replaces the compressed handles because Miri does not support their 32 GiB PROT_NONE reservation.
+  # The runner detects Miri and stays in-process because the interpreter cannot follow its normal subprocess workers.
+  arena-safety:
+    runs-on: depot-ubuntu-24.04-8
+    timeout-minutes: 360
+    steps:
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
+      - name: Read TypeScript reference commit
+        id: ts
+        run: echo "commit=$(node npm/build.mjs --print-typescript-commit)" >> "$GITHUB_OUTPUT"
+
+      - name: Restore TypeScript testdata
+        id: ts-ref
+        uses: actions/cache/restore@v4
+        with:
+          path: ts-ref/tsc/testdata
+          key: ts-ref-testdata-${{ steps.ts.outputs.commit }}
+
+      - name: Check out TypeScript testdata
+        if: steps.ts-ref.outputs.cache-hit != 'true'
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: microsoft/TypeScript
+          ref: ${{ steps.ts.outputs.commit }}
+          path: ts-ref
+          fetch-depth: 1
+          sparse-checkout: tsc/testdata
+          persist-credentials: false
+
+      - name: Save TypeScript testdata
+        if: steps.ts-ref.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ts-ref/tsc/testdata
+          key: ${{ steps.ts-ref.outputs.cache-primary-key }}
+
+      - uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
+        with:
+          components: miri rust-src
+          save-cache: true
+          cache-key: miri
+
+      - name: Miri
+        # The arena leaks its chunks by design. Test fixtures also require host filesystem access.
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
+        run: cargo miri run --locked -p tsrs_testrunner --features tsrs_core/plain-ptrs -- run --suite all
