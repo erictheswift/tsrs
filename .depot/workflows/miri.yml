@@ -82,9 +82,10 @@ jobs:
           wc -l "$RUNNER_TEMP/tsrs-miri-items.tsv"
 
       - name: Miri
-        # The arena leaks its chunks by design. Test fixtures also require host filesystem access.
+        # The arena leaks its chunks by design. Test fixtures also require host filesystem access. Miri adds random
+        # error to float results by default, which would make number output differ from the conformance baselines.
         env:
-          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-ignore-leaks -Zmiri-deterministic-floats
         run: >-
           cargo miri run --locked -p tsrs_testrunner --features tsrs_core/plain-ptrs -- __worker
           < "$RUNNER_TEMP/tsrs-miri-items.tsv"
