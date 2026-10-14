@@ -18,4 +18,6 @@ pub mod utils;
 
 mod type_matches_specifier;
 
-mod rules {}
+mod rules {
+    pub mod await_thenable;
+}
