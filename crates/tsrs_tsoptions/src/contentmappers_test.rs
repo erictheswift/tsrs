@@ -14,7 +14,7 @@ fn mapper(package: &str, extensions: &[&str]) -> Mapper {
     Mapper {
         definition: Definition {
             package: package.to_string(),
-            extensions: extensions.iter().map(|e| e.to_string()).collect(),
+            extensions: extensions.iter().map(std::string::ToString::to_string).collect(),
             ..Default::default()
         },
         ..Default::default()
@@ -25,7 +25,7 @@ fn mapper(package: &str, extensions: &[&str]) -> Mapper {
 #[test]
 fn test_get_content_mapper_for_file_name_uses_longest_extension() {
     let command_line = ParsedCommandLine {
-        parsed_config: ParsedOptions { content_mappers: vec![mapper("z", &[".z"]), mapper("yz", &[".y.z"])], ..Default::default() },
+        parsed_config: ParsedOptions { content_mappers: vec![mapper("z", &[".z"]), mapper("yz", &[".y.z"])].into(), ..Default::default() },
         ..ParsedCommandLine::empty()
     };
     let z_mapper = &command_line.content_mappers()[0];
@@ -39,19 +39,19 @@ fn test_get_content_mapper_for_file_name_uses_longest_extension() {
 #[test]
 fn test_get_content_mapper_for_file_name_uses_host_case_sensitivity() {
     let insensitive = ParsedCommandLine {
-        parsed_config: ParsedOptions { content_mappers: vec![mapper("", &[".vue"])], ..Default::default() },
+        parsed_config: ParsedOptions { content_mappers: vec![mapper("", &[".vue"])].into(), ..Default::default() },
         compare_paths_options: ComparePathsOptions { use_case_sensitive_file_names: false, ..Default::default() },
         ..ParsedCommandLine::empty()
     };
     let sensitive = ParsedCommandLine {
-        parsed_config: ParsedOptions { content_mappers: vec![mapper("", &[".vue"])], ..Default::default() },
+        parsed_config: ParsedOptions { content_mappers: vec![mapper("", &[".vue"])].into(), ..Default::default() },
         compare_paths_options: ComparePathsOptions { use_case_sensitive_file_names: true, ..Default::default() },
         ..ParsedCommandLine::empty()
     };
 
     assert!(std::ptr::eq(
         insensitive.get_content_mapper_for_file_name("/src/Component.VUE").unwrap(),
-        &insensitive.content_mappers()[0]
+        &raw const insensitive.content_mappers()[0]
     ));
     assert!(sensitive.get_content_mapper_for_file_name("/src/Component.VUE").is_none());
 }
@@ -71,7 +71,7 @@ fn test_get_output_file_names_excludes_mapper_owned_outputs() {
         Vec::new(),
         ComparePathsOptions { current_directory: "/".to_string(), use_case_sensitive_file_names: true },
     );
-    command_line.parsed_config.content_mappers = vec![mapper("", &[".vue"])];
+    command_line.parsed_config.content_mappers = vec![mapper("", &[".vue"])].into();
 
     assert_eq!(command_line.get_output_file_names(), vec!["/dist/Component.d.vue.ts".to_string()]);
 }
@@ -202,7 +202,7 @@ fn test_static_content_mapper_transform_identity() {
         manifest: Manifest {
             name: name.to_string(),
             version: version.to_string(),
-            compiler_options: compiler_options.iter().map(|o| o.to_string()).collect(),
+            compiler_options: compiler_options.iter().map(std::string::ToString::to_string).collect(),
             ..Default::default()
         },
         ..Default::default()
@@ -233,7 +233,7 @@ fn test_transform_identity_hashes_declared_options_json() {
         manifest: Manifest {
             name: "vue".to_string(),
             version: "1.0.0".to_string(),
-            compiler_options: ["target", "noSuchOption", "strict", "noEmit", "jsx", "lib", "paths"].iter().map(|o| o.to_string()).collect(),
+            compiler_options: ["target", "noSuchOption", "strict", "noEmit", "jsx", "lib", "paths"].iter().map(std::string::ToString::to_string).collect(),
             ..Default::default()
         },
         ..Default::default()

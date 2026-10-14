@@ -30,10 +30,14 @@ pub const COMPILED_IN: bool = cfg!(feature = "shared-graph");
 /// Set once, by `freeze`, before any fork exists (the forks are created on threads spawned after it).
 static ANY_FROZEN: AtomicBool = AtomicBool::new(false);
 
+#[cfg(compressed_ptrs)]
 const PAGE_SHIFT: usize = 12;
+#[cfg(compressed_ptrs)]
 const SPAN: usize = 32 << 30;
+#[cfg(compressed_ptrs)]
 const WORDS: usize = SPAN >> PAGE_SHIFT >> 6;
 /// One bit per 4 KiB page of the reservation (1 MiB, zero until a freeze, in .bss).
+#[cfg(compressed_ptrs)]
 static FROZEN: [AtomicU64; WORDS] = [const { AtomicU64::new(0) }; WORDS];
 
 /// The frozen chunks lie in `[FROZEN_LO, FROZEN_LO + FROZEN_SPAN)` (0 and 0 while nothing is frozen).
@@ -149,7 +153,7 @@ pub fn freeze(ranges: &[(usize, usize)]) {
     let lo = ranges.iter().map(|r| r.0).min().unwrap_or(0);
     let hi = ranges.iter().map(|r| r.0 + r.1).max().unwrap_or(0);
     let words = ((hi - lo) >> 6).div_ceil(64) + 1;
-    let dirty: &'static mut [AtomicU64] = Box::leak((0..words).map(|_| AtomicU64::new(0)).collect());
+    let dirty: &'static mut [AtomicU64] = Box::leak(std::iter::repeat_with(|| AtomicU64::new(0)).take(words).collect());
     // Relaxed (both): published by the Release store of the span below.
     DIRTY.store(dirty.as_mut_ptr(), Ordering::Relaxed);
     FROZEN_LO.store(lo, Ordering::Relaxed);
@@ -438,7 +442,7 @@ impl<T> OvThinSliceCell<T> {
     }
     #[inline]
     pub fn set(&self, s: &'static [T]) {
-        self.0.set(crate::ThinSlice::new(s))
+        self.0.set(crate::ThinSlice::new(s));
     }
 }
 
@@ -462,7 +466,7 @@ impl<T> OvOptionThinSliceCell<T> {
     }
     #[inline]
     pub fn set(&self, s: Option<&'static [T]>) {
-        self.0.set(s.map(crate::ThinSlice::new))
+        self.0.set(s.map(crate::ThinSlice::new));
     }
 }
 

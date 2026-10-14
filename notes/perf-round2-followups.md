@@ -140,6 +140,12 @@ with the switch off, which is why it is not in the default build.
 
 ## Measured and rejected (do not redo)
 
+- Unicode normalization library cleanup ([rust-stdlib-normalization.md](rust-stdlib-normalization.md)), applied at
+  the user's request: unicode-normalization 0.1.25 matches the existing Unicode 17 NFD output. Five-pair Mac
+  screening on Compiler/Compiler-Unions: -0.017% to -0.011% single instructions, -0.198% to -0.056% default RSS;
+  no qualifying performance win. Keep category tables (the evaluated crate uses Unicode 16), simple casing and
+  byte decoding; direct Rust character properties change their contracts. Keep the existing stream-safe omission.
+
 - Unconditionally refreshing loaded interface diagnostic caches to cover canonical report-placement changes:
   Stagehand warm default 136 -> 402 ms, 9.14 -> 26.50 G instructions, 424 -> 879 MiB. Persisting a versioned
   signature of the actual virtual check slots restores reuse while preserving export-alias invalidation
@@ -173,6 +179,11 @@ with the switch off, which is why it is not in the default build.
   masks and bounded IDs retain their width, emitter indexes avoid narrowing, and genuine signed domains remain
   signed. Before/after validation and measurements are recorded in the same note.
 
+- Requested rust decimal number parsing ([rust-decimal-parsing.md](rust-decimal-parsing.md)): production code -121 lines. Five-pair
+  Mac screening on Compiler/Compiler-Unions: -0.004% to +0.002% single instructions,
+  +0.260% to +0.881% default RSS. Retained for maintenance at the user's request, with no
+  qualifying performance gain or speedup claim.
+
 - A tracing collector for checker data instead of retiring checkers (notes/mem-checker-gc.md): weak identity caches
   free 3% more than garbage at mid-run; even an upper bound with member tables and value-symbol links weak frees
   ~37% of the program's memory, about where `--maxMemory` already gets, for weeks of data-model changes.
@@ -189,6 +200,9 @@ with the switch off, which is why it is not in the default build.
   gate). Initially rejected on performance, then both changes were applied at the owner's explicit request on
   2026-10-11 to align with Oxc. These measurements do not establish a speedup; further performance work needs a
   numeric-conversion profile or new evidence of a qualifying whole-project improvement.
+  The requested math/big library cleanup ([rust-stdlib-bigint.md](rust-stdlib-bigint.md)) keeps Go's parsing and
+  256-bit intermediate rounding around num-bigint. Five-pair Mac screening on Compiler/Compiler-Unions is
+  -0.001% to +0.007% single instructions and -0.188% to -0.139% default RSS; retained for maintenance, no speedup claim.
 - Oxc-style lightweight VFS metadata (`notes/perf-vfs-lightweight-metadata.md`): existence probes avoid constructing
   full `FileInfo`, and Linux requests only `STATX_TYPE`. Public macOS screening was -0.27% single-threaded
   instructions and -0.49% default peak RSS, below the landing bars; the Linux-only path still needs a pinned
@@ -234,6 +248,11 @@ with the switch off, which is why it is not in the default build.
   2 MiB of RSS per checker.
 - A full unit-property index for relations to union targets: would skip at most 0.2% (big) / 0.1% (vscode) of failed
   constituent checks; the rest is inherent (notes/perf-checker-algorithms.md, "Row 1").
+
+- Requested shared go-style quoting and integer parsing ([shared-go-compat.md](shared-go-compat.md)): production code -102 lines. Five-pair
+  Mac screening on Compiler/Compiler-Unions: -0.002% to +0.001% single instructions,
+  -0.056% to +0.339% default RSS. Retained for maintenance at the user's request, with no
+  qualifying performance gain or speedup claim.
 
 - Zero-based handles on Linux (reserve 4-32 GiB so a dereference needs no base; #62, notes/mem-pointer-compression.md
   section 6 on that branch): removes 2.7 of the 7 points of extra x86 instructions, but wall and cycles move by 0.7-2%,
@@ -330,6 +349,11 @@ with the switch off, which is why it is not in the default build.
   lines. Untried: a wider header filter, a bulk freeze without per-table headers.
 - Flat flow-label edges and one shared Start per file for bodyless signatures (reverted in #191;
   notes/mem-flow-compaction.md): -5.4 MB arena on vscode (0.2% of peak), for 377 lines of binder representation.
+- Requested rust string helper cleanup ([rust-string-helpers.md](rust-string-helpers.md)): production code -53 lines. Five-pair
+  Mac screening on Compiler/Compiler-Unions: -0.002% to +0.008% single instructions,
+  +0.056% to +0.458% default RSS. Retained for maintenance at the user's request, with no
+  qualifying performance gain or speedup claim.
+
 - A global identifier interner (notes/mem-round2.md, step 9): -0.075 GiB single-threaded on the private monorepo, but
   parse time +9% (2.6 -> 2.8 s) and +1% instructions from hashing and locking 7.8M identifiers; `PackedStr` took -0.10
   GiB with no table.
@@ -372,6 +396,10 @@ with the switch off, which is why it is not in the default build.
   measurement, so variances differ between checkers (cal-diy at 4 checkers printed 40 more lines).
 - Go's pdqsort (`goslices::sort_func`) for every symbol sort, not only where `compareSymbols` is not total
   (notes/lsp-memfix.md): +1.4% instructions on webpack (16.56 vs 16.33 G).
+  The requested Rust slice cleanup ([rust-stdlib-slices.md](rust-stdlib-slices.md)) changes only ordinary
+  stable sorts and position searches with pure comparators. Five-pair Mac screening on Compiler/Compiler-Unions:
+  -0.006% to -0.002% single instructions, -0.179% to +0.261% default RSS. No qualifying gain; retain Go's sort/search
+  where comparison history, non-total comparators or equal-element order is observable.
 - Flow memo variants (notes/perf-flow-union-inference.md): no checkpoints (webpack -4.4% instead of -7.0%, xstate
   +0.50% instead of +0.13%), table sizes 2^10 to 2^16 (no measurable difference), the per-node step out of line
   (+0.17% on xstate).
@@ -397,6 +425,11 @@ with the switch off, which is why it is not in the default build.
   starting a new victim late (only trims the extra stealing a loaded machine causes): within the noise. One thief per
   queue at a time cost vscode 2% of check time at 9-12 checkers (1-7% at 4-16 when a thief never gave up its place);
   the landed limit is checkers/4 at a time from 8 to 15.
+- Requested rust base64 encoding ([rust-base64.md](rust-base64.md)): production code -11 lines. Five-pair
+  Mac screening on Compiler/Compiler-Unions: -0.005% to +0.005% single instructions,
+  +0.130% to +0.557% default RSS. Retained for maintenance at the user's request, with no
+  qualifying performance gain or speedup claim.
+
 - Memory-traffic work at 32 checkers (notes/perf-memory-traffic-32.md): IPC is equal or higher at 32 checkers than at
   1 (vscode 1.92 -> 1.96) and miss rates are low, so padding, pinning, prefetching and hot/cold splits have nothing to
   win; `ReferenceInstantiations` slot hashes (A2) were within noise (+11 MiB peak).
@@ -475,6 +508,12 @@ with the switch off, which is why it is not in the default build.
   Relater round (notes/perf-icount-relater.md; another large private monorepo, DynamoRIO counts): an exact early exit
   from the deeply-nested walk (+0.04% single-threaded), `Relation::set` through hashbrown's `entry` (-0.005%, noise),
   a Bloom filter of names in `some_property_reduces_to_never`'s counts (+0.03%).
+
+- Standard parsing/whitespace helper cleanup ([rust-stdlib-helpers.md](rust-stdlib-helpers.md)), applied at the
+  user's request: exact whitespace predicates and integer contracts, with Go syntax/range wording retained.
+  Five-pair Mac screening on Compiler/Compiler-Unions: -0.009% to +0.013% single instructions, -0.537% to +0.379%
+  default RSS; no qualifying gain. Keep Go boolean spellings, quoting, clamped/base-detecting parsers and JSON
+  compatibility rather than treating std substitutions as universally equivalent.
 
 ## Clippy baseline (complete)
 

@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use tsrs_ast::{Diagnostic, SourceFileParseOptions};
 use tsrs_core::collections::OrderedMap;
 use tsrs_core::json;
@@ -39,7 +40,7 @@ struct ParseJsonConfigTestCase {
 const PARSE_CONFIG_FILE_TEXT_TO_JSON_TESTS: &[(&str, &[&str])] = &[
     ("returns empty config for file with only whitespaces", &["", " "]),
     ("returns empty config for file with comments only", &["// Comment", "/* Comment*/"]),
-    ("returns empty config when config is empty object", &[r#"{}"#]),
+    ("returns empty config when config is empty object", &[r"{}"]),
     (
         "returns config object without comments",
         &[
@@ -174,7 +175,7 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
 	ParseJsonConfigTestCase {
 		title: "ignore dotted files and folders",
 		input: vec![TestConfig {
-			json_text:       r#"{}"#,
+			json_text:       r"{}",
 			config_file_name: "tsconfig.json",
 			base_path:       "/apath",
 			all_file_list:    &[("/apath/test.ts", ""), ("/apath/.git/a.ts", ""), ("/apath/.b.ts", ""), ("/apath/..c.ts", "")],
@@ -198,7 +199,7 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
 	ParseJsonConfigTestCase {
 		title: "implicitly exclude common package folders",
 		input: vec![TestConfig {
-			json_text:       r#"{}"#,
+			json_text:       r"{}",
 			config_file_name: "tsconfig.json",
 			base_path:       "/",
 			all_file_list:    &[("/node_modules/a.ts", ""), ("/bower_components/b.ts", ""), ("/jspm_packages/c.ts", ""), ("/d.ts", ""), ("/folder/e.ts", "")],
@@ -236,8 +237,8 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
 	ParseJsonConfigTestCase {
 		title: "generates errors for directory with no .ts files",
 		input: vec![TestConfig {
-			json_text: r#"{
-            }"#,
+			json_text: r"{
+            }",
 			config_file_name: "/apath/tsconfig.json",
 			base_path:       "/apath",
 			all_file_list:    &[("/apath/a.js", "")],
@@ -299,7 +300,7 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
 			all_file_list:    &[("/apath/src/index.ts", ""), ("/apath/src/app.ts", ""), ("/apath/node_modules/module.ts", ""), ("/apath/dist/output.js", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title: "generates errors when commandline option is in tsconfig",
@@ -510,7 +511,7 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
 			all_file_list:    &[("/tsconfigWithExtends.json", TSCONFIG_WITH_EXTENDS), ("/src/index.ts", ""), ("/src/app.ts", ""), ("/node_modules/module.ts", ""), ("/dist/output.js", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title:                  "parses tsconfig with extends and configDir",
@@ -524,7 +525,7 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
 			all_file_list:    &[("/tsconfig.base.json", TSCONFIG_WITH_EXTENDS_AND_CONFIG_DIR), ("/src/index.ts", ""), ("/src/app.ts", ""), ("/node_modules/module.ts", ""), ("/dist/output.js", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title: "reports error for an unknown option",
@@ -596,7 +597,7 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
 			all_file_list:    &[("/app.ts", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title:                  "handles empty types array",
@@ -612,7 +613,7 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
 			all_file_list:    &[("/app.ts", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title:                  "issue 1267 scenario - extended files not picked up",
@@ -664,15 +665,15 @@ fn parse_json_config_file_tests() -> Vec<ParseJsonConfigTestCase> {
   "ts-node": {
     "files": true
   }
-}"#), ("/tsconfig-base/types/ical2json.d.ts", "export {}"), ("/tsconfig-base/types/express.d.ts", "export {}"), ("/tsconfig-base/types/multer.d.ts", "export {}"), ("/tsconfig-base/types/reset.d.ts", "export {}"), ("/tsconfig-base/types/stripe-custom-typings.d.ts", "export {}"), ("/tsconfig-base/types/nestjs-modules.d.ts", "export {}"), ("/tsconfig-base/types/luxon.d.ts", r#"declare module 'luxon' {
+}"#), ("/tsconfig-base/types/ical2json.d.ts", "export {}"), ("/tsconfig-base/types/express.d.ts", "export {}"), ("/tsconfig-base/types/multer.d.ts", "export {}"), ("/tsconfig-base/types/reset.d.ts", "export {}"), ("/tsconfig-base/types/stripe-custom-typings.d.ts", "export {}"), ("/tsconfig-base/types/nestjs-modules.d.ts", "export {}"), ("/tsconfig-base/types/luxon.d.ts", r"declare module 'luxon' {
   interface TSSettings {
     throwOnInvalid: true
   }
 }
-export {}"#), ("/tsconfig-base/types/nestjs-pino.d.ts", "export {}"), ("/src/main.ts", "export {}"), ("/src/utils.ts", "export {}")],
+export {}"), ("/tsconfig-base/types/nestjs-pino.d.ts", "export {}"), ("/src/main.ts", "export {}"), ("/src/utils.ts", "export {}")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title:                  "null overrides in extended tsconfig - array fields",
@@ -697,7 +698,7 @@ export {}"#), ("/tsconfig-base/types/nestjs-pino.d.ts", "export {}"), ("/src/mai
 }"#), ("/app.ts", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title:                  "null overrides in extended tsconfig - string fields",
@@ -722,7 +723,7 @@ export {}"#), ("/tsconfig-base/types/nestjs-pino.d.ts", "export {}"), ("/src/mai
 }"#), ("/app.ts", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title:                  "null overrides in extended tsconfig - mixed field types",
@@ -752,7 +753,7 @@ export {}"#), ("/tsconfig-base/types/nestjs-pino.d.ts", "export {}"), ("/src/mai
 }"#), ("/app.ts", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title:                  "null overrides with multiple extends levels",
@@ -783,7 +784,7 @@ export {}"#), ("/tsconfig-base/types/nestjs-pino.d.ts", "export {}"), ("/src/mai
 }"#), ("/app.ts", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 	ParseJsonConfigTestCase {
 		title:                  "null overrides in middle level of extends chain",
@@ -814,7 +815,7 @@ export {}"#), ("/tsconfig-base/types/nestjs-pino.d.ts", "export {}"), ("/src/mai
 }"#), ("/app.ts", "")],
 			..Default::default()
 		}],
-		..Default::default()
+
 	},
 
     ]
@@ -866,7 +867,7 @@ fn print_fs(output: &mut String, files: &dyn FS, root: &str) {
         }
         if entry.unwrap().type_().is_regular() {
             let content = files.read_file(path).expect("failed to read file");
-            output.push_str(&format!("//// [{path}]\r\n{content}\r\n\r\n"));
+            write!(output, "//// [{path}]\r\n{content}\r\n\r\n").unwrap();
         }
         Ok(())
     })
@@ -1136,11 +1137,11 @@ fn line_and_character(diagnostic: P<Diagnostic>) -> (usize, usize) {
 #[test]
 fn test_parse_json_source_file_config_file_content_does_not_duplicate_unquoted_key_diagnostics() {
     let parsed = get_parsed_command_line(
-        r#"{
+        r"{
   compilerOptions: {
     strict: true
   }
-}"#,
+}",
         &[("/main.ts", "export const x = 1;")],
         "/",
         true, /*useCaseSensitiveFileNames*/
@@ -1158,11 +1159,11 @@ fn test_parse_json_source_file_config_file_content_does_not_duplicate_unquoted_k
 #[test]
 fn test_parse_json_source_file_config_file_content_reports_question_token_diagnostics() {
     let parsed = get_parsed_command_line(
-        r#"{
+        r"{
   compilerOptions?: {
     strict?: true
   }
-}"#,
+}",
         &[("/main.ts", "export const x = 1;")],
         "/",
         true, /*useCaseSensitiveFileNames*/
@@ -1250,6 +1251,48 @@ fn test_content_mappers() {
         // The .vue file is picked up by the include glob because its extension is registered.
         assert!(parsed.file_names().iter().any(|f| f == "/src/Component.vue"), "{name}: expected /src/Component.vue in {:?}", parsed.file_names());
         assert!(parsed.file_names().iter().any(|f| f == "/src/app.ts"), "{name}: expected /src/app.ts in {:?}", parsed.file_names());
+    }
+}
+
+// tsrs-only: the declaration output a build wrote next to a content-mapped file is not an input, whichever the
+// include glob finds first; a declaration file of the mapper's extension without a mapped file still is. A copy of the
+// config with its file names read again finds the same files and shares the mappers.
+#[test]
+fn test_content_mapper_declaration_outputs_are_not_inputs() {
+    for include in [r#"["src"]"#, r#"["src/*.vue", "src/*.ts"]"#, r#"["src/*.ts", "src/*.vue"]"#] {
+        let json_text: &'static str = format!(
+            r#"{{ "contentMappers": [{{ "package": "vue-mapper", "extensions": [".vue"] }}], "include": {include} }}"#
+        )
+        .leak();
+        let config = TestConfig {
+            json_text,
+            config_file_name: "tsconfig.json",
+            base_path: "/",
+            all_file_list: &[
+                ("/src/app.ts", "export {}"),
+                ("/src/app.d.ts", "export {}"),
+                ("/src/Component.vue", "<template></template>"),
+                ("/src/Component.d.vue.ts", "export {}"),
+                ("/src/Typed.d.vue.ts", "export {}"),
+                (
+                    "/node_modules/vue-mapper/package.json",
+                    r#"{ "name": "vue-mapper", "version": "1.2.3", "typescript": { "contentMapper": { "exec": ["node", "./mapper.js"] } } }"#,
+                ),
+            ],
+            existing_options: Some(CompilerOptions { run_external_code: Tristate::True, ..Default::default() }),
+        };
+        let mut all_file_lists: Vec<(&str, &str)> = config.all_file_list.to_vec();
+        all_file_lists.push(("/tsconfig.json", config.json_text));
+        let host = new_vfs_parse_config_host(&all_file_lists, config.base_path, true /*useCaseSensitiveFileNames*/);
+        let parsed = get_parsed_with_json_source_file_api(&config, host, config.base_path);
+        assert_eq!(parsed.errors.len(), 0, "{include}: {:?}", parsed.errors);
+        let mut file_names = parsed.file_names().to_vec();
+        file_names.sort();
+        assert_eq!(file_names, ["/src/Component.vue", "/src/Typed.d.vue.ts", "/src/app.ts"], "{include}");
+
+        let reloaded = parsed.reload_file_names_of_parsed_command_line(host.vfs);
+        assert_eq!(reloaded.file_names(), parsed.file_names(), "{include}");
+        assert!(std::ptr::eq(&reloaded.content_mappers()[0], &parsed.content_mappers()[0]), "{include}: the copy shares the mappers");
     }
 }
 
@@ -1548,7 +1591,7 @@ fn test_parse_type_acquisition() {
 }"#,
             "tsconfig.json",
         ),
-        ("Convert default tsconfig.json to typeAcquisition ", r#"{}"#, "tsconfig.json"),
+        ("Convert default tsconfig.json to typeAcquisition ", r"{}", "tsconfig.json"),
         (
             "Convert tsconfig.json with only enable property to typeAcquisition ",
             r#"{
@@ -1570,7 +1613,7 @@ fn test_parse_type_acquisition() {
 }"#,
             "jsconfig.json",
         ),
-        ("Convert default jsconfig.json to typeAcquisition ", r#"{}"#, "jsconfig.json"),
+        ("Convert default jsconfig.json to typeAcquisition ", r"{}", "jsconfig.json"),
         (
             "Convert incorrect format jsconfig.json to typeAcquisition ",
             r#"{
@@ -1808,7 +1851,7 @@ fn test_custom_conditions_null_override() {
 
     // Parse command line with --customConditions null
     let cmd_line = parse_command_line(
-        &["--project", "/project", "--customConditions", "null"].iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+        &["--project", "/project", "--customConditions", "null"].iter().map(std::string::ToString::to_string).collect::<Vec<_>>(),
         host,
     );
 
@@ -1839,7 +1882,7 @@ fn test_custom_conditions_null_override() {
 // Real-world smoke test: TSRS_TSOPTIONS_SMOKE_DIR=<project dir> cargo test -p tsrs_tsoptions -- --ignored smoke
 // Writes the root file names (one per line) to TSRS_TSOPTIONS_SMOKE_OUT when set.
 #[test]
-#[ignore]
+#[ignore = "Requires an explicitly configured smoke-test project directory."]
 fn smoke_parse_project_from_env() {
     let Ok(dir) = std::env::var("TSRS_TSOPTIONS_SMOKE_DIR") else {
         return;

@@ -40,6 +40,8 @@ pub enum LeafMode {
 
 static REGIONS_ON: AtomicBool = AtomicBool::new(false);
 static STATS: AtomicBool = AtomicBool::new(false);
+/// `bind_in_file_regions`.
+static OWN_FILE_REGIONS: AtomicBool = AtomicBool::new(false);
 /// `LeafSettings::every_file`.
 static EVERY_FILE: AtomicBool = AtomicBool::new(false);
 /// The directory predicted paths are matched relative to (`enable`).
@@ -139,7 +141,7 @@ pub(crate) fn force_shared_lists(program: &crate::program::Program) {
         return;
     }
     let mut lists: Vec<P<tsrs_ast::lazylist::LazyNodeList>> = Vec::new();
-    if !std::env::var_os("TSRS_LAZY_DTS_SHARED").is_some_and(|v| v == "0") {
+    if std::env::var_os("TSRS_LAZY_DTS_SHARED").is_none_or(|v| v != "0") {
         lists.extend(
             global_library_files(program)
                 .into_iter()
@@ -255,6 +257,14 @@ pub fn leaf_settings_from_env(checkers: usize) -> LeafSettings {
 
 /// Turns file regions on for the programs created from here on, process-wide (the CLI, before `new_program`; never
 /// the language server, the API or the test harnesses). Predicted paths are matched relative to `current_directory`.
+/// From now on, `bind` binds a file that was parsed in a registered region of its own in that region, so its binder
+/// data is freed with it (a watch session's file regions, tsrs_execute watchmem.rs). Opt-in: in a process with other
+/// registered regions (API builds), a region containing a file may be held by the building thread.
+pub fn bind_in_file_regions() {
+    // Relaxed: set before the session parses anything; the binding threads get their work through locks taken after.
+    OWN_FILE_REGIONS.store(true, Ordering::Relaxed);
+}
+
 pub fn enable(settings: LeafSettings, current_directory: &str) {
     let _ = CURRENT_DIRECTORY.set(current_directory.trim_end_matches('/').to_string());
     // Relaxed (all three): set on the main thread before the program, and any worker that reads them, exists.
@@ -336,6 +346,18 @@ pub(crate) fn parse(opts: SourceFileParseOptions, text: String, script_kind: Scr
 /// `tsrs_binder::bind_source_file`, in the file's region if it has one (then trimmed to what parse and bind used, if
 /// this thread carved it last).
 pub(crate) fn bind(file: P<SourceFile>) {
+    // Relaxed: see `bind_in_file_regions`.
+    if !file.is_bound()
+        && OWN_FILE_REGIONS.load(Ordering::Relaxed)
+        && let Some(region) = Region::containing(file.addr())
+    {
+        {
+            let _scope = region.enter();
+            tsrs_binder::bind_source_file(file);
+        }
+        region.trim();
+        return;
+    }
     if file.is_bound() || !region_candidate(file.file_name(), file.script_kind.get()) {
         tsrs_binder::bind_source_file(file);
         return;
@@ -544,9 +566,7 @@ pub(crate) fn has_region(file: P<SourceFile>) -> bool {
 }
 
 pub(crate) fn assert_not_freed(file: P<SourceFile>) {
-    if file.is_check_leaf() && !REGIONS.lock().unwrap().contains_key(&file) {
-        panic!("fileregions: {} was freed after the type-check pass; its tree can no longer be read", file.file_name());
-    }
+    assert!(!file.is_check_leaf() || REGIONS.lock().unwrap().contains_key(&file), "fileregions: {} was freed after the type-check pass; its tree can no longer be read", file.file_name());
 }
 
 /// After the type-check pass that freed leaves: gives back the pages of the last batch of freed regions.

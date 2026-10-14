@@ -39,7 +39,7 @@ pub struct CheckerHandle {
 enum checkerHandleKind {
     // The built-in pool's checkers live behind a mutex per checker (Go `locks[i]`).
     // The scope makes the checker's region (`SlotChecker::region`) the allocation target while the handle is held.
-    Locked { guard: MutexGuard<'static, SlotChecker>, _scope: Option<tsrs_core::arena::ScratchScope> },
+    Locked { guard: MutexGuard<'static, SlotChecker>, _scope: Option<CheckerScope> },
     // A checker owned by an external pool, which tracks exclusivity itself (Go project pool's `heldBy`).
     External { checker: NonNull<Checker>, release: Option<Box<dyn FnOnce()>> },
 }
@@ -181,40 +181,59 @@ struct CheckerSlot(Mutex<SlotChecker>);
 // tsrs-only (notes/mem-recycle-checkers.md): a checker of the built-in pool and, when the type-check pass may retire
 // checkers (`max_memory`), the region that holds everything it allocates. The region is the allocation target
 // whenever the checker runs (`enter`), so dropping the checker and then the region gives back all of its memory.
+//
+// With `ProgramOptions::checker_diagnostic_regions` (watch mode), the diagnostics the checker makes go to a second region of the slot
+// (`arena::Region::route_diagnostics`), freed with the program like the checker's: the snapshot that keeps some of
+// them copies those (tsrs_incremental `Program::copy_diagnostics`).
 pub(crate) struct SlotChecker {
     checker: Box<Checker>,
     region: Option<tsrs_core::arena::Region>,
+    diagnostics: Option<tsrs_core::arena::Region>,
+}
+
+/// `SlotChecker::enter`.
+pub(crate) struct CheckerScope {
+    // Before the region's scope: the route applies while the region is the target.
+    _route: Option<tsrs_core::arena::DiagnosticRoute>,
+    _scope: tsrs_core::arena::ScratchScope,
 }
 
 impl SlotChecker {
     fn new(program: &'static Program, in_region: bool) -> SlotChecker {
         if !in_region {
-            return SlotChecker { checker: new_checker(program), region: None };
+            return SlotChecker { checker: new_checker(program), region: None, diagnostics: None };
         }
         let region = tsrs_core::arena::Region::new_scratch(1 << 20);
+        let diagnostics = program.checker_diagnostic_regions.then(|| tsrs_core::arena::Region::new_scratch(64 << 10));
         let checker = {
             let _scope = region.enter_scratch();
+            // Merging the globals reports duplicate declarations.
+            let _route = diagnostics.as_ref().map(tsrs_core::arena::Region::route_diagnostics);
             new_checker(program)
         };
-        SlotChecker { checker, region: Some(region) }
+        SlotChecker { checker, region: Some(region), diagnostics }
     }
 
     // A replacement for a retired checker: a fork of the frozen shared-graph seed when there is one (it starts with the
     // seed's graph instead of rebuilding it), else a fresh checker; in a region of its own either way.
-    fn new_replacement(program: &'static Program) -> SlotChecker {
+    // The retired checker's diagnostics stay with the slot: the pool's results refer to them.
+    fn new_replacement(program: &'static Program, diagnostics: Option<tsrs_core::arena::Region>) -> SlotChecker {
         let region = tsrs_core::arena::Region::new_scratch(1 << 20);
         let checker = {
             let _scope = region.enter_scratch();
+            let _route = diagnostics.as_ref().map(tsrs_core::arena::Region::route_diagnostics);
             let fork = crate::sharedgraph::fresh_fork();
             fork.unwrap_or_else(|| new_checker(program))
         };
-        SlotChecker { checker, region: Some(region) }
+        SlotChecker { checker, region: Some(region), diagnostics }
     }
 
     // Makes the checker's region the allocation target (and the thread's scratch region, so that lazily filled
-    // data of shared objects and diagnostics escape it: `arena::escape_scratch`) until the scope is dropped.
-    fn enter(&self) -> Option<tsrs_core::arena::ScratchScope> {
-        self.region.as_ref().map(tsrs_core::arena::Region::enter_scratch)
+    // data of shared objects and diagnostics escape it: `arena::escape_scratch`) until the scope is dropped. The
+    // diagnostics go to the slot's diagnostics region if it has one.
+    fn enter(&self) -> Option<CheckerScope> {
+        let scope = self.region.as_ref()?.enter_scratch();
+        Some(CheckerScope { _route: self.diagnostics.as_ref().map(tsrs_core::arena::Region::route_diagnostics), _scope: scope })
     }
 
     // Bytes of arena the checker holds (its region's chunks), 0 without a region.
@@ -333,6 +352,8 @@ pub(crate) struct poolState {
     // The checker that runs each program file: the static assignment until stealing moves a file to the checker that
     // checks it, so later passes over the file (declaration diagnostics, emit) use the checker that has its state.
     owners: Vec<std::sync::atomic::AtomicU32>,
+    // The static assignment `owners` started from, for a program that reuses this one (`inherited_associations`).
+    pub(crate) associations: Vec<usize>,
     // Estimated work per program file (checked_file_weights), what stealing balances.
     weights: Vec<i64>,
     // TSRS_ASSIGNMENT_STATS only: per for_each_checker_group_do call, files each checker took from other checkers.
@@ -404,7 +425,7 @@ pub(crate) fn thread_cpu_seconds() -> f64 {
     if unsafe { clock_gettime(CLOCK_THREAD_CPUTIME_ID, &raw mut ts) } != 0 {
         return 0.0;
     }
-    ts.tv_sec as f64 + ts.tv_nsec as f64 * 1e-9
+    (ts.tv_nsec as f64).mul_add(1e-9, ts.tv_sec as f64)
 }
 
 #[cfg(not(unix))]
@@ -424,6 +445,8 @@ pub(crate) struct checkerPool {
     checker_count: usize,
     single_threaded: bool,
     state: OnceLock<poolState>,
+    // tsrs-only: the file assignment of the pool of the program this one reuses (`inherited_associations`).
+    pub(crate) inherited_associations: Option<Vec<usize>>,
 }
 
 /*
@@ -518,7 +541,7 @@ fn get_checker_associations_in_order(
             None => position,
         };
 
-        neighbor_counts.iter_mut().for_each(|c| *c = 0);
+        neighbor_counts.fill(0);
         for &adjacent_file in &adjacent_files[file_index] {
             if let Some(checker_index) = associations[adjacent_file] {
                 neighbor_counts[checker_index] += 1;
@@ -613,7 +636,7 @@ fn get_checker_association_weights(base_weights: &[i64], import_counts: &[i64]) 
 
 impl checkerPool {
     // checkerpool.go:305 newCheckerPool / checkerpool.go:309 newCheckerPoolWithTracing (tracing is not ported).
-    pub(crate) fn new(program: &'static Program) -> checkerPool {
+    pub(crate) fn new(program: &'static Program, previous: Option<&checkerPool>) -> checkerPool {
         // Go's default is a constant 4; tsrs picks it per machine and program (default_checker_count).
         let checker_count: i64 = if program.single_threaded() {
             1
@@ -624,9 +647,10 @@ impl checkerPool {
         };
 
         // Go `max(min(checkerCount, len(files), 256), 1)` on int: a negative or zero count is one checker.
-        let checker_count = checker_count.min(program.files.len() as i64).min(256).max(1) as usize;
+        let checker_count = checker_count.min(program.files.len() as i64).clamp(1, 256) as usize;
 
-        checkerPool { program, checker_count, single_threaded: program.single_threaded() || checker_count == 1, state: OnceLock::new() }
+        let inherited_associations = previous.and_then(|previous| inherited_associations(program, checker_count, previous));
+        checkerPool { program, checker_count, single_threaded: program.single_threaded() || checker_count == 1, state: OnceLock::new(), inherited_associations }
     }
 
     // checkerpool.go:331
@@ -686,11 +710,11 @@ impl checkerPool {
             let create_and_assign = || {
                 let create_start = std::time::Instant::now();
                 tsrs_checker::links::set_multiple_checkers(self.checker_count > 1);
-                let slots: Vec<Mutex<Option<CheckerSlot>>> = (0..self.checker_count).map(|_| Mutex::new(None)).collect();
+                let slots: Vec<Mutex<Option<CheckerSlot>>> = std::iter::repeat_with(|| Mutex::new(None)).take(self.checker_count).collect();
                 // With the shared graph (sharedgraph.rs) the pool's checkers are plain until the type-check pass makes
                 // them forks of the seed.
                 run_work_group(self.single_threaded, self.checker_count, |i| {
-                    let c = SlotChecker::new(program, recycle);
+                    let c = SlotChecker::new(program, recycle || program.checker_regions);
                     if shared && i == 0 {
                         crate::sharedgraph::note_fresh_checker(&c.checker);
                     }
@@ -699,7 +723,10 @@ impl checkerPool {
                 let checkers: &'static [CheckerSlot] =
                     Box::leak(slots.into_iter().map(|s| s.into_inner().unwrap().unwrap()).collect::<Vec<_>>().into_boxed_slice());
                 tsrs_core::phases::record("Checkers: create", create_start.elapsed());
-                let associations = tsrs_core::phases::time("Checkers: assign files", || compute_associations(program, self.checker_count));
+                let associations = match &self.inherited_associations {
+                    Some(associations) => associations.clone(),
+                    None => tsrs_core::phases::time("Checkers: assign files", || compute_associations(program, self.checker_count)),
+                };
                 (checkers, associations)
             };
             // tsrs-only: the CLI's leaf classification reads only the loaded program; it runs meanwhile
@@ -718,12 +745,14 @@ impl checkerPool {
             let files = &program.files;
             let file_indices: FxHashMap<P<SourceFile>, usize> = files.iter().enumerate().map(|(i, &f)| (f, i)).collect();
             let owners = associations.iter().map(|&c| std::sync::atomic::AtomicU32::new(c as u32)).collect();
+            let associations_for_reuse = associations;
             let weights = if self.checker_count > 1 { checked_file_weights(program) } else { Vec::new() };
             poolState {
                 shared_graph: shared,
                 checkers,
                 file_indices,
                 owners,
+                associations: associations_for_reuse,
                 weights,
                 group_stolen: Mutex::new(Vec::new()),
                 group_runs: Mutex::new(Vec::new()),
@@ -765,7 +794,7 @@ impl checkerPool {
     // checkerpool.go:464
     pub(crate) fn get_global_diagnostics(&self) -> Vec<P<Diagnostic>> {
         let state = self.create_checkers();
-        let global_diagnostics: Vec<Mutex<Vec<P<Diagnostic>>>> = (0..state.checkers.len()).map(|_| Mutex::new(Vec::new())).collect();
+        let global_diagnostics: Vec<Mutex<Vec<P<Diagnostic>>>> = std::iter::repeat_with(|| Mutex::new(Vec::new())).take(state.checkers.len()).collect();
         self.for_each_checker_parallel(|idx, checker| {
             *global_diagnostics[idx].lock().unwrap() = checker.get_global_diagnostics();
         });
@@ -805,9 +834,9 @@ impl checkerPool {
         let state = self.create_checkers();
         let stats = assignment_stats_enabled();
         let n = state.checkers.len();
-        let times: Vec<Mutex<(f64, usize)>> = if stats { (0..n).map(|_| Mutex::new((0.0, 0))).collect() } else { Vec::new() };
-        let cpu: Vec<Mutex<f64>> = if stats { (0..n).map(|_| Mutex::new(0.0)).collect() } else { Vec::new() };
-        let stolen: Vec<std::sync::atomic::AtomicUsize> = (0..n).map(|_| std::sync::atomic::AtomicUsize::new(0)).collect();
+        let times: Vec<Mutex<(f64, usize)>> = if stats { std::iter::repeat_with(|| Mutex::new((0.0, 0))).take(n).collect() } else { Vec::new() };
+        let cpu: Vec<Mutex<f64>> = if stats { std::iter::repeat_with(|| Mutex::new(0.0)).take(n).collect() } else { Vec::new() };
+        let stolen: Vec<std::sync::atomic::AtomicUsize> = std::iter::repeat_with(|| std::sync::atomic::AtomicUsize::new(0)).take(n).collect();
         let file_times = file_times_path().is_some();
         let cost_cache = checker_cost_cache_path().is_some() && n > 1;
         // Each checker's positions in `files`, in the order of `files` (visit_order).
@@ -842,7 +871,9 @@ impl checkerPool {
             // Each owner starts with the files that could be the pass's tail (heavy_files_first).
             let total: u64 = positions.iter().flatten().map(|&i| weight(i)).sum();
             let threshold = total / (active.len() as u64 * heavy_share_divisor());
-            positions.iter_mut().for_each(|p| heavy_files_first(p, threshold, weight));
+            for position in &mut positions {
+                heavy_files_first(position, threshold, weight);
+            }
             if state.recycle && leaves_first() {
                 // With checkers retired under a memory target their memory stops growing, and what the front end holds sets
                 // the peak: the leaves' trees go once they are checked, so each checker checks its leaves first
@@ -867,7 +898,7 @@ impl checkerPool {
         }
         let queues: Vec<FileQueue> = positions.into_iter().map(|p| FileQueue::new(p, weight)).collect();
         // `--maxMemory`: each checker's region size after its last file, to retire the largest.
-        let region_sizes: Vec<std::sync::atomic::AtomicUsize> = (0..n).map(|_| std::sync::atomic::AtomicUsize::new(0)).collect();
+        let region_sizes: Vec<std::sync::atomic::AtomicUsize> = std::iter::repeat_with(|| std::sync::atomic::AtomicUsize::new(0)).take(n).collect();
         // TSRS_MEM_SPLIT: the type-check pass reports once every checker is done and before any thread exits.
         let mem_split = (allow_steal && tsrs_core::memsplit::enabled()).then(|| std::sync::Barrier::new(if single { 1 } else { active.len() }));
         let run = |checker_idx: usize| {
@@ -994,7 +1025,8 @@ impl checkerPool {
     // diagnostics of the files the old checker checked have been collected, and no later pass runs a checker over
     // them (the CLI's `--noEmit` check, as for leaf freeing).
     fn retire_checker(&self, state: &poolState, slot: &mut SlotChecker) {
-        let mut old = std::mem::replace(slot, SlotChecker::new_replacement(self.program));
+        let diagnostics = slot.diagnostics.take();
+        let mut old = std::mem::replace(slot, SlotChecker::new_replacement(self.program, diagnostics));
         {
             let _scope = old.enter();
             // Making the replacement left the thread's overlay (sharedgraph.rs): the old checker reads its own again.
@@ -1391,6 +1423,10 @@ fn splitmix64(state: &mut u64) -> u64 {
 
 // Go `createCheckers`' association step (FENNEL over the import graph, see above).
 fn go_associations(program: &Program, checker_count: usize, concurrent: bool) -> Vec<usize> {
+    go_associations_with_adjacency(program, checker_count, &get_import_adjacency(program, concurrent))
+}
+
+fn go_associations_with_adjacency(program: &Program, checker_count: usize, adjacent_files: &[Vec<usize>]) -> Vec<usize> {
     let files = &program.files;
     let mut base_weights = vec![0i64; files.len()];
     let mut import_counts = vec![0i64; files.len()];
@@ -1418,16 +1454,30 @@ fn go_associations(program: &Program, checker_count: usize, concurrent: bool) ->
         }
     }
     let file_weights = get_checker_association_weights(&base_weights, &import_counts);
-    let adjacent_files = get_import_adjacency(program, concurrent);
     let file_order = get_checker_association_order(&file_weights, &is_declaration_file, policy.prioritize_source_files);
     get_checker_associations_in_order(
         &file_weights,
-        &adjacent_files,
+        adjacent_files,
         file_order.as_deref(),
         checker_count,
         policy.balance_penalty_multiplier,
         None,
     )
+}
+
+// tsrs-only: the file assignment a program made by `reuse_program` takes over from `previous`, the pool of the
+// program it reuses, instead of computing its own: the files are the same, at the same indices, except for one
+// that was reparsed with the same imports. Computing the locality assignment of a large program takes longer than
+// the rest of a one-file watch cycle (12 ms of 80 on a 9.4k-file project), and its output is a function of the
+// program alone (see CheckerAssignment), so any assignment gives the same diagnostics and emit. The other
+// assignments are computed again: `go` keeps tsgo's assignment-dependent cache, and the debug ones should differ
+// per program.
+fn inherited_associations(program: &Program, checker_count: usize, previous: &checkerPool) -> Option<Vec<usize>> {
+    let state = previous.state.get()?;
+    let reusable = matches!(checker_assignment(), CheckerAssignment::Locality)
+        && previous.checker_count == checker_count
+        && state.associations.len() == program.files.len();
+    reusable.then(|| state.associations.clone())
 }
 
 // tsrs-only: where tsgo's compiler pool at its default checker count (`newCheckerPool`) type checks each file: the
@@ -1437,7 +1487,15 @@ fn go_associations(program: &Program, checker_count: usize, concurrent: bool) ->
 pub(crate) fn tsgo_default_check_slots(program: &Program) -> FxHashMap<P<SourceFile>, (u32, u32)> {
     let checker_count = GO_DEFAULT_CHECKERS.min(program.files.len() as i64).max(1) as usize;
     // Called while holding a checker and initializing a OnceLock: nested worker-pool jobs could re-enter either.
-    let associations = if checker_count > 1 { go_associations(program, checker_count, false) } else { vec![0; program.files.len()] };
+    // The import graph comes from the program this one reuses when there is one (`Program::tsgo_import_adjacency`):
+    // resolving every import again took 19 of the 21 ms this costs in each one-file watch cycle on a 9.4k-file
+    // project. The weights are computed again: an edit can change the reparsed file's text length.
+    let associations = if checker_count > 1 {
+        let adjacency = program.tsgo_import_adjacency.get_or_init(|| std::sync::Arc::from(get_import_adjacency(program, false)));
+        go_associations_with_adjacency(program, checker_count, adjacency)
+    } else {
+        vec![0; program.files.len()]
+    };
     program
         .files
         .iter()
@@ -1456,7 +1514,7 @@ fn compute_associations(program: &Program, checker_count: usize) -> Vec<usize> {
         CheckerAssignment::Locality => locality_associations(program, checker_count),
         CheckerAssignment::Random(seed) => {
             let mut state = seed;
-            (0..program.files.len()).map(|_| (splitmix64(&mut state) % checker_count as u64) as usize).collect()
+            std::iter::repeat_with(|| (splitmix64(&mut state) % checker_count as u64) as usize).take(program.files.len()).collect()
         }
         CheckerAssignment::File(path) => {
             let text = tsrs_core::utf8::read_to_string(path).expect("TSRS_CHECKER_ASSIGNMENT file");
@@ -1669,13 +1727,13 @@ fn default_checker_count_by_machine() -> i64 {
     if GO_DEFAULT_CHECKER_COUNT.load(std::sync::atomic::Ordering::Relaxed) {
         return GO_DEFAULT_CHECKERS;
     }
-    default_checkers_for_parallelism(std::thread::available_parallelism().map_or(1, |n| n.get()) as i64)
+    default_checkers_for_parallelism(std::thread::available_parallelism().map_or(1, std::num::NonZero::get) as i64)
 }
 
 // The machine rule of `default_checker_count_by_machine` for a core count (bench/run.py `tsrs_default_checkers` mirrors
 // it for the results tables).
 fn default_checkers_for_parallelism(parallelism: i64) -> i64 {
-    (parallelism / 2).max(parallelism.min(SMALL_MACHINE_CHECKERS)).min(MAX_DEFAULT_CHECKERS).max(GO_DEFAULT_CHECKERS)
+    (parallelism / 2).max(parallelism.min(SMALL_MACHINE_CHECKERS)).clamp(GO_DEFAULT_CHECKERS, MAX_DEFAULT_CHECKERS)
 }
 
 #[cfg(test)]
@@ -1922,7 +1980,7 @@ fn refine_group_associations(associations: &mut [usize], costs: &[i64], adjacenc
             if associations[g] != heavy {
                 continue;
             }
-            affinity.iter_mut().for_each(|a| *a = 0);
+            affinity.fill(0);
             for &n in &adjacency[g] {
                 affinity[associations[n]] += 1;
             }
@@ -1931,7 +1989,7 @@ fn refine_group_associations(associations: &mut [usize], costs: &[i64], adjacenc
                 if dest == heavy {
                     continue;
                 }
-                let mut new_max = (loads[heavy] - cost).max(loads[dest] + cost * MOVE_COST_PREMIUM);
+                let mut new_max = (loads[heavy] - cost).max(cost.mul_add(MOVE_COST_PREMIUM, loads[dest]));
                 for (c, element) in loads[..checker_count].iter().enumerate() {
                     if c != heavy && c != dest {
                         new_max = new_max.max(*element);
@@ -1948,7 +2006,7 @@ fn refine_group_associations(associations: &mut [usize], costs: &[i64], adjacenc
             break;
         }
         loads[heavy] -= costs[g] as f64;
-        loads[dest] += costs[g] as f64 * MOVE_COST_PREMIUM;
+        loads[dest] = (costs[g] as f64).mul_add(MOVE_COST_PREMIUM, loads[dest]);
         associations[g] = dest;
     }
 }
@@ -2012,7 +2070,7 @@ fn dump_assignment_inputs(program: &Program, associations: &[usize], path: &str)
         let mut targets: Vec<usize> = resolved_modules
             .values()
             .filter(|r| r.is_resolved())
-            .filter_map(|r| program.get_source_file_for_resolved_module(&r.resolved_file_name))
+            .filter_map(|r| program.get_source_file_for_resolved_module(r.resolved_file_name))
             .filter_map(|f| file_indices.get(&f).copied())
             .filter(|&t| t != file_index)
             .collect();
@@ -2045,7 +2103,7 @@ fn get_import_targets(program: &Program, concurrent: bool) -> Vec<Vec<usize>> {
         resolved_modules
             .values()
             .filter(|resolved| resolved.is_resolved())
-            .filter_map(|resolved| program.get_source_file_for_resolved_module(&resolved.resolved_file_name))
+            .filter_map(|resolved| program.get_source_file_for_resolved_module(resolved.resolved_file_name))
             .filter_map(|imported_file| file_indices.get(&imported_file).copied())
             .filter(|&imported_index| imported_index != file_index)
             .collect()

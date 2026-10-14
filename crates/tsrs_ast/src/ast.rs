@@ -150,17 +150,15 @@ fn new_node_with_rare<T: NodeRareTail>(kind: Kind, data: T, rare: T::Rare, hooks
 #[inline]
 pub(crate) fn rare_tail<T: NodeRareTail>(data: &T) -> Option<&'static T::Rare> {
     let () = T::SAME_OFFSET;
-    let at = std::ptr::from_ref::<T>(data).cast::<u8>();
     // SAFETY: data structs are created only inside a `NodeAlloc<T>` or `NodeAllocRare<T, _>` (both `repr(C)`, header
     // first, data at the same offset: asserted in `NodeRareTail`), which is never moved or freed while reachable.
-    #[expect(clippy::cast_ptr_alignment, reason = "the header starts the `NodeAlloc`, so it has the allocation's alignment")]
-    let node = unsafe { &*at.sub(std::mem::offset_of!(NodeAlloc<T>, data)).cast::<Node>() };
+    let node: &Node = unsafe { tsrs_core::ptr::arena_neighbor(data, -(std::mem::offset_of!(NodeAlloc<T>, data) as isize)) };
     if !node.header.get().has_rare_tail() {
         return None;
     }
     let off = std::mem::offset_of!(NodeAllocRare<T, T::Rare>, rare) - std::mem::offset_of!(NodeAllocRare<T, T::Rare>, data);
     // SAFETY: the rare bit is set only by `new_node_with_rare`, which allocated the tail at this offset.
-    Some(unsafe { &*at.add(off).cast::<T::Rare>() })
+    Some(unsafe { tsrs_core::ptr::arena_neighbor(data, off as isize) })
 }
 
 /// Creates a node whose data struct has no fields (`Token`, `KeywordTypeNode`, ...): just the header.
@@ -328,7 +326,7 @@ impl NodeList {
     pub fn lazy_record(&self) -> Option<&'static crate::lazylist::LazyNodeList> {
         let head = self.nodes.long_ref()?;
         // SAFETY: a long-form slice whose data is the lazy head was made by `new_lazy` from a record's `head`.
-        crate::lazylist::is_lazy_head(*head).then(|| unsafe { crate::lazylist::LazyNodeList::from_head(head) })
+        crate::lazylist::is_lazy_head(head).then(|| unsafe { crate::lazylist::LazyNodeList::from_head(head) })
     }
     #[inline]
     pub fn loc(&self) -> TextRange {
@@ -474,7 +472,7 @@ impl NodeHeaderWord {
 
     #[inline]
     fn new(kind: Kind, data_tag: NodeDataTag) -> NodeHeaderWord {
-        NodeHeaderWord((kind as u16 as u64) << Self::KIND_SHIFT | (data_tag as u8 as u64) << Self::TAG_SHIFT)
+        NodeHeaderWord(((kind as u16 as u64) << Self::KIND_SHIFT) | ((data_tag as u8 as u64) << Self::TAG_SHIFT))
     }
 
     #[inline]
@@ -581,10 +579,10 @@ impl Node {
     /// The data struct after this node's header. Callers check `data_tag() == T::TAG` first.
     #[inline]
     pub(crate) fn payload<T: NodePayload>(&self) -> &'static T {
-        debug_assert!(self.data_tag() == T::TAG);
+        debug_assert_eq!(self.data_tag(), T::TAG);
         // SAFETY: a node tagged `T::TAG` was allocated by `new_node::<T>` as a `NodeAlloc<T>` whose header is
         // `self`, so its data struct lives at this offset from the header, for the rest of the process.
-        unsafe { &*std::ptr::from_ref::<Node>(self).cast::<u8>().add(std::mem::offset_of!(NodeAlloc<T>, data)).cast::<T>() }
+        unsafe { tsrs_core::ptr::arena_neighbor(self, std::mem::offset_of!(NodeAlloc<T>, data) as isize) }
     }
 
     /// The arena pointer for this node. Every `Node` is created by `NodeFactory`/`new_node` in the leak
@@ -617,7 +615,7 @@ impl Node {
         if self.data_tag() == NodeDataTag::Identifier && loc.end() != self.end() {
             crate::identifier::check_source_identifier_loc(self, loc);
         }
-        self.loc.set(loc)
+        self.loc.set(loc);
     }
     #[inline]
     pub fn flags(&self) -> NodeFlags {
@@ -625,7 +623,7 @@ impl Node {
     }
     #[inline]
     pub fn set_flags(&self, flags: NodeFlags) {
-        self.flags.set(flags)
+        self.flags.set(flags);
     }
     #[inline]
     pub fn parent(&self) -> Option<P<Node>> {
@@ -633,7 +631,7 @@ impl Node {
     }
     #[inline]
     pub fn set_parent(&self, parent: Option<P<Node>>) {
-        self.header.set(self.header.get().with_parent(parent))
+        self.header.set(self.header.get().with_parent(parent));
     }
 
     #[inline]
@@ -643,7 +641,7 @@ impl Node {
 
     #[inline]
     pub fn mark_trailing_comma(&self) {
-        self.header.set(self.header.get().with_trailing_comma())
+        self.header.set(self.header.get().with_trailing_comma());
     }
 
     /// Go `IterChildren`: the children in `for_each_child` order.
@@ -689,7 +687,7 @@ impl Node {
     }
 
     pub fn set_modifiers(&self, modifiers: Option<P<ModifierList>>) {
-        self.set_modifiers_data(modifiers)
+        self.set_modifiers_data(modifiers);
     }
 
     pub fn symbol(&self) -> Option<P<Symbol>> {
@@ -737,7 +735,7 @@ impl Node {
         if self.data_tag() == NodeDataTag::Identifier {
             return self.as_identifier().set_flow_node(flow);
         }
-        self.flow_node_base().expect("node has no flow node data").flow_node.set(flow)
+        self.flow_node_base().expect("node has no flow node data").flow_node.set(flow);
     }
 
     pub fn body(&self) -> Option<P<Node>> {
@@ -1321,9 +1319,7 @@ impl Node {
                 return true;
             }
             let parent = d.parent();
-            if parent.is_none() && !is_source_file(d) {
-                panic!("descendant is not parented");
-            }
+            assert!(parent.is_some() || is_source_file(d), "descendant is not parented");
             descendant = parent;
         }
         false
@@ -2009,9 +2005,7 @@ impl SourceFile {
     // SetContentMapperInfo initializes all content-mapper metadata before the source file is published.
     // ast.go:2644
     pub fn set_content_mapper_info(&self, info: ContentMapperSourceFileInfo) {
-        if self.content_mapper_info.get().is_some() {
-            panic!("content mapper source file info already set");
-        }
+        assert!(self.content_mapper_info.get().is_none(), "content mapper source file info already set");
         self.content_mapper_info.set(Some(P::new(info)));
     }
 
@@ -2068,9 +2062,14 @@ impl SourceFile {
                     || is_private_identifier(node)
                 {
                     let text = node.text();
+                    // Go stores Pos() unchanged, so a reparsed name without a position (the `this` parameter
+                    // a JSDoc `@this` tag adds) stores -1, the same value as "appears more than once".
                     name_table.entry(text)
                         .and_modify(|entry| *entry = NameTableEntry::Multiple)
-                        .or_insert_with(|| NameTableEntry::Unique(node.pos().expect_source("parsed names have source positions")));
+                        .or_insert_with(|| match node.pos().source_offset() {
+                            Some(pos) => NameTableEntry::Unique(pos),
+                            None => NameTableEntry::Multiple,
+                        });
                 }
 
                 node.for_each_child(&mut |c| walk(c, file, name_table));
@@ -2118,7 +2117,7 @@ impl SourceFile {
     }
 
     pub fn set_diagnostics(&self, diags: &[P<Diagnostic>]) {
-        self.diagnostics.set(alloc_slice(diags))
+        self.diagnostics.set(alloc_slice(diags));
     }
 
     pub fn js_diagnostics(&self) -> &'static [P<Diagnostic>] {
@@ -2126,7 +2125,7 @@ impl SourceFile {
     }
 
     pub fn set_js_diagnostics(&self, diags: &[P<Diagnostic>]) {
-        self.js_diagnostics.set(alloc_slice(diags))
+        self.js_diagnostics.set(alloc_slice(diags));
     }
 
     pub fn jsdoc_diagnostics(&self) -> &'static [P<Diagnostic>] {
@@ -2134,7 +2133,7 @@ impl SourceFile {
     }
 
     pub fn set_jsdoc_diagnostics(&self, diags: &[P<Diagnostic>]) {
-        self.jsdoc_diagnostics.set(alloc_slice(diags))
+        self.jsdoc_diagnostics.set(alloc_slice(diags));
     }
 
     pub fn set_jsdoc_cache(&self, cache: FxHashMap<P<Node>, &'static [P<Node>]>) {
@@ -2142,7 +2141,7 @@ impl SourceFile {
     }
 
     pub fn set_has_lazy_jsdoc(&self, lazy: bool) {
-        self.has_lazy_jsdoc.set(lazy)
+        self.has_lazy_jsdoc.set(lazy);
     }
 
     pub(crate) fn resolve_jsdoc(&'static self, n: P<Node>) -> &'static [P<Node>] {
@@ -2173,7 +2172,7 @@ impl SourceFile {
     }
 
     pub fn set_bind_diagnostics(&self, diags: &[P<Diagnostic>]) {
-        self.bind_diagnostics.set(alloc_slice(diags))
+        self.bind_diagnostics.set(alloc_slice(diags));
     }
 
     pub fn for_each_child<V: FnMut(P<Node>) -> bool + ?Sized>(&self, v: &mut V) -> bool {
@@ -2431,15 +2430,11 @@ impl SourceFile {
         match token_cache.entry(key) {
             Entry::Occupied(entry) => {
                 let token = *entry.get();
-                if token.kind() != kind {
-                    panic!("Token cache mismatch: {:?} != {:?}", token.kind(), kind);
-                }
+                assert!(token.kind() == kind, "Token cache mismatch: {:?} != {:?}", token.kind(), kind);
                 token
             }
             Entry::Vacant(entry) => {
-                if parent.flags().intersects(NodeFlags::Reparsed) {
-                    panic!("Cannot create token from reparsed node of kind {:?}", parent.kind());
-                }
+                assert!(!parent.flags().intersects(NodeFlags::Reparsed), "Cannot create token from reparsed node of kind {:?}", parent.kind());
                 let token = create_token(kind, self, pos, end, flags);
                 token.set_loc(loc);
                 token.set_parent(Some(parent));
@@ -2808,7 +2803,7 @@ mod tests {
     }
 
     #[test]
-    #[should_panic]
+    #[should_panic(expected = "as_binary_expression called on")]
     fn cast_mismatch_panics() {
         let f = NodeFactory::default();
         let a = f.new_identifier("a");
@@ -2870,7 +2865,7 @@ mod tests {
         let bin = f.new_binary_expression(None, a, None, plus, b);
         bin.set_loc(TextRange::new(3, 8));
 
-        let copy = bin.clone_node(&mut f);
+        let copy = bin.clone_node(&f);
         assert_ne!(copy, bin);
         assert_eq!(copy.loc(), bin.loc());
         assert_eq!(copy.as_binary_expression().left(), a);

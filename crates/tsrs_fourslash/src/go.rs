@@ -15,6 +15,7 @@ use crate::testing::T;
 
 // Go `any` (and its aliases MarkerInput, MarkerOrRangeOrName, CompletionsExpectedItem,
 // ExpectedCompletionEditRange). One variant per dynamic type the tests store in one; `Nil` is the nil interface.
+#[expect(clippy::large_enum_variant, reason = "Go interface payloads stay by value to match the generated harness API.")]
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum Any {
     #[default]
@@ -141,11 +142,11 @@ pub fn untranslated(t: &T, what: &str) -> ! {
 }
 
 pub fn strs(v: &[String]) -> Vec<&str> {
-    v.iter().map(|s| s.as_str()).collect()
+    v.iter().map(std::string::String::as_str).collect()
 }
 
 pub fn owned_strs(v: &[&str]) -> Vec<String> {
-    v.iter().map(|s| s.to_string()).collect()
+    v.iter().map(std::string::ToString::to_string).collect()
 }
 
 pub fn map_of<K: Hash + Eq, V, const N: usize>(items: [(K, V); N]) -> OrderedMap<K, V> {
@@ -186,34 +187,7 @@ pub fn slice_str(s: &str, lo: Option<usize>, hi: Option<usize>) -> String {
 
 // strconv.Quote
 pub fn quote(s: &str) -> String {
-    let mut b = String::with_capacity(s.len() + 2);
-    b.push('"');
-    b = s.chars().fold(b, |mut b, c| {
-        match c {
-            '"' => b.push_str("\\\""),
-            '\\' => b.push_str("\\\\"),
-            '\x07' => b.push_str("\\a"),
-            '\x08' => b.push_str("\\b"),
-            '\x0c' => b.push_str("\\f"),
-            '\n' => b.push_str("\\n"),
-            '\r' => b.push_str("\\r"),
-            '\t' => b.push_str("\\t"),
-            '\x0b' => b.push_str("\\v"),
-            c if (c as u32) < 0x20 || c as u32 == 0x7f => b.push_str(&format!("\\x{:02x}", c as u32)),
-            c if c.is_control() => {
-                if (c as u32) < 0x10000 {
-                    b.push_str(&format!("\\u{:04x}", c as u32))
-                } else {
-                    b.push_str(&format!("\\U{:08x}", c as u32))
-                }
-            }
-            c => b.push(c),
-        }
-
-        b
-    });
-    b.push('"');
-    b
+    tsrs_core::gocompat::quote(s.as_bytes(), tsrs_core::gocompat::QuoteStyle::Fourslash)
 }
 
 // map[string]any configuration literal -> the JSON object lsutil.ParseUserPreferences receives.
@@ -262,12 +236,14 @@ pub mod assert {
         }
     }
 
+    #[expect(clippy::needless_pass_by_value, reason = "Go assertions take their interface arguments by value; generated calls retain that API.")]
     pub fn equal<A: PartialEq + Debug>(t: &T, x: A, y: A, msg: &str) {
         if x != y {
             t.fatal(&with_msg(format!("assertion failed: {x:?} (x) != {y:?} (y)"), msg));
         }
     }
 
+    #[expect(clippy::needless_pass_by_value, reason = "Go assertions take their interface arguments by value; generated calls retain that API.")]
     pub fn deep_equal<A: PartialEq + Debug>(t: &T, x: A, y: A, msg: &str) {
         if x != y {
             t.fatal(&with_msg(format!("assertion failed: \n--- x\n+++ y\n{x:#?}\n{y:#?}"), msg));

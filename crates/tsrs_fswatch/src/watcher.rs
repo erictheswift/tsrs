@@ -17,6 +17,7 @@ use crate::pathcompare::{comparisonCache, comparisonPath, pathComparer};
 pub struct Sentinel(pub &'static str);
 
 #[derive(Clone, PartialEq, Eq, Debug)]
+#[expect(clippy::error_impl_error, reason = "the public name mirrors Go's package-level error value used throughout the port")]
 pub struct Error {
     message: String,
     wraps: Vec<Sentinel>,
@@ -118,6 +119,7 @@ pub static ErrUnavailable: Sentinel = Sentinel("fswatch: watcher not available o
 pub static ErrFilesystemUnsupported: Sentinel = Sentinel("fswatch: watcher backend unsupported on this filesystem");
 
 // `fmt.Errorf("%w: watched directory removed", ErrWatchTerminated)`.
+#[cfg(unix)]
 pub(crate) fn err_watched_directory_removed() -> Error {
     Error::wrap(format!("{}: watched directory removed", ErrWatchTerminated.0), &ErrWatchTerminated.into())
 }
@@ -308,6 +310,25 @@ pub fn fanotify() -> &'static dyn Watcher {
     &*fanotifyFallbackWatcher
 }
 
+static WRITE_SETTLING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// tsrs-only, process-wide: on backends that report when a writer closes a file (inotify), callbacks wait until
+/// every file being written has been closed, then fire at once. Go fires the first event after a quiet period
+/// immediately, so a save is seen right after its truncation and the file is read half-written; batching for a
+/// fixed time instead adds that time to every save. FSEvents has no close event: there a file that is empty when
+/// its event arrives counts as being written (a truncation whose data has not followed yet), until an event shows
+/// it non-empty. kqueue ignores the setting. For the CLI's `--watch`, which turns it on before it watches anything.
+pub fn set_write_settling(on: bool) {
+    WRITE_SETTLING.store(on, std::sync::atomic::Ordering::Relaxed);
+}
+
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+pub(crate) fn write_settling() -> bool {
+    // Relaxed: set before the first watch is made; the backend threads that read it took the locks that publish
+    // that watch, which order the store before this load.
+    WRITE_SETTLING.load(std::sync::atomic::Ordering::Relaxed)
+}
+
 // watcher.go:230
 // Default returns the recommended watcher for the current OS.
 pub fn default() -> &'static dyn Watcher {
@@ -406,7 +427,7 @@ impl PartialEq for dwKey {
 impl Eq for dwKey {}
 impl std::hash::Hash for dwKey {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
-        (Arc::as_ptr(&self.0) as usize).hash(state)
+        (Arc::as_ptr(&self.0) as usize).hash(state);
     }
 }
 
@@ -473,7 +494,7 @@ impl watcher {
     // watcher.go:377
     fn key_for_dir_watch(&self, dir: &str, recursive: bool) -> String {
         if recursive {
-            return format!("{}\x00recursive", dir);
+            return format!("{dir}\x00recursive");
         }
         dir.to_string()
     }
@@ -514,9 +535,9 @@ impl watcher {
                 .dir_watches
                 .values()
                 .filter(|dw| is_in_directory_or_self(&parent, &dw.dir) && is_in_directory_or_self(&physical_parent, &dw.physical_dir))
-                .take((recursiveConsolidateThreshold - count) as usize)
+                .take(recursiveConsolidateThreshold - count)
                 .count()
-                >= (recursiveConsolidateThreshold - count) as usize
+                >= recursiveConsolidateThreshold - count
             {
                 return parent;
             }
@@ -710,7 +731,7 @@ impl watcher {
     fn as_static(&self) -> &'static watcher {
         if let Some(result) = ([&*inotifyWatcher, &*fseventsWatcher, &*kqueueWatcher, &*windowsWatcher, &*fanotifyWatcher, &*unsupportedWatcher])
             .into_iter()
-            .find_map(|w| if std::ptr::eq(w, self) { Some(w) } else { None })
+            .find(|w| std::ptr::eq(*w, self))
         {
             return result;
         }
@@ -800,7 +821,7 @@ impl watcherBase {
         let subs: Vec<Arc<dirWatch>> = st.subscriptions.iter().map(|k| Arc::clone(&k.0)).collect();
         drop(st);
         for w in subs {
-            w.notify_error(&err);
+            w.notify_error(err);
         }
         self.notify_started();
     }
@@ -818,7 +839,7 @@ fn run(impl_: &Arc<dyn watcherImpl>) -> Result<(), Error> {
                 Ok(Ok(())) => {}
                 Ok(Err(err)) => base_owner.base().handle_start_error(&err),
                 Err(panic) => {
-                    let msg = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(|s| s.to_string())).unwrap_or_default();
+                    let msg = panic.downcast_ref::<String>().cloned().or_else(|| panic.downcast_ref::<&str>().map(std::string::ToString::to_string)).unwrap_or_default();
                     base_owner.base().handle_start_error(&Error::new(msg));
                 }
             }
@@ -965,7 +986,7 @@ impl dirWatch {
             #[cfg(target_os = "macos")]
             state: Mutex::new(None),
             sequence,
-            mu: Mutex::new(dirWatchState { callbacks: Vec::new(), debounce: Some(Arc::clone(&db)), next_cb_id: 0 }),
+            mu: Mutex::new(dirWatchState { callbacks: Vec::new(), debounce: Some(Arc::clone(db)), next_cb_id: 0 }),
             key: nextDirWatchKey.fetch_add(1, Ordering::Relaxed) as usize,
         });
         let target = Arc::clone(&dw);
@@ -976,6 +997,7 @@ impl dirWatch {
     // watcher.go:866
     // displayPath maps a physical event path back under the caller-visible
     // watch root.
+    #[cfg(unix)]
     pub(crate) fn display_path(&self, watch_path: &str) -> String {
         rebase_path(watch_path, &self.physical_dir, &self.dir)
     }
@@ -995,7 +1017,34 @@ impl dirWatch {
         }
     }
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    // tsrs-only (`set_write_settling`): see `debounce::write_started` / `write_finished`.
+    pub(crate) fn write_started(&self, path: &str) {
+        let db = self.mu.lock().unwrap().debounce.clone();
+        if let Some(db) = db {
+            db.write_started(path);
+        }
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    pub(crate) fn write_finished(&self, path: &str) {
+        let db = self.mu.lock().unwrap().debounce.clone();
+        if let Some(db) = db {
+            db.write_finished(path);
+        }
+    }
+
+    #[cfg(target_os = "macos")]
+    // tsrs-only: see `debounce::hold_leading_edge`.
+    pub(crate) fn hold_leading_edge(&self) {
+        let db = self.mu.lock().unwrap().debounce.clone();
+        if let Some(db) = db {
+            db.hold_leading_edge();
+        }
+    }
+
     // watcher.go:926
+    #[cfg(unix)]
     pub(crate) fn notify(&self) {
         let st = self.mu.lock().unwrap();
         let has_pending_cbs = st.callbacks.iter().any(|cb| !cb.delivered);
@@ -1045,8 +1094,11 @@ impl dirWatch {
         if !has_events && !has_error && !has_terminal {
             return;
         }
-        let start_seqs: Vec<u64> = cbs.iter().map(|cb| cb.since_seq).collect();
-        let (events_by_callback, err) = self.events.drain_for_sequences(&start_seqs);
+        // tsrs-only: the entries are taken under the locks and each callback's events made outside them (Go makes every
+        // callback's snapshot under both). A watch shared by a few hundred callbacks (the CLI watch's directories,
+        // consolidated) and a burst of a few thousand events (an emit) spent ~190 ms here with both locks held,
+        // stalling the backend's event thread and new watches.
+        let (entries, err) = self.events.drain_entries();
         for cb in &cbs {
             if cb.terminal.is_none() {
                 continue;
@@ -1058,8 +1110,12 @@ impl dirWatch {
         drop(st);
 
         let comparisons = Mutex::new(comparisonCache::default());
-        for (i, cb) in cbs.iter().enumerate() {
-            let mut cb_events = events_by_callback[i].clone();
+        let index = (cbs.len() > 1 && entries.len() > 1).then(|| eventIndex::new(&entries, self));
+        for cb in &cbs {
+            let mut cb_events: Vec<Event> = match index.as_ref().and_then(|index| index.candidates(cb)) {
+                Some(candidates) => candidates.into_iter().filter_map(|i| entries[i].1.event_since(&entries[i].0, cb.since_seq)).collect(),
+                None => entries.iter().filter_map(|(path, e)| e.event_since(path, cb.since_seq)).collect(),
+            };
             if cb.ignore.is_some() || !cb.recursive || cb.dir != self.dir || !cb.file_comparison.path.is_empty() {
                 let mut filtered = Vec::with_capacity(cb_events.len());
                 for e in cb_events {
@@ -1084,8 +1140,15 @@ impl dirWatch {
                         if cb.dir != self.dir && !is_in_directory_or_self(&cb.dir, &e.path) {
                             continue;
                         }
-                    } else if !is_direct_child(&cb.dir, &e.path) && !(cb.dir != self.dir && e.path == cb.dir) {
-                        continue;
+                    } else {
+                        let is_shared_watch_root = if cb.dir == self.dir {
+                            false
+                        } else {
+                            e.path == cb.dir
+                        };
+                        if !is_direct_child(&cb.dir, &e.path) && !is_shared_watch_root {
+                            continue;
+                        }
                     }
                     filtered.push(e);
                 }
@@ -1217,6 +1280,75 @@ impl callback {
     }
 }
 
+// tsrs-only (`trigger_callbacks`): a dirWatch's pending events by parent directory, so that a non-recursive callback
+// considers only the events in its own directory instead of all of them. Each event is keyed by its display path and
+// by its physical path (the two spaces a callback's filter compares in), folded when the comparer ignores case; a
+// non-ASCII path, which folding would compare through CoreFoundation, is a candidate for every callback. The callback's
+// filter then runs on the candidates unchanged, so the keys only need to cover every event it can accept: a direct
+// child of its directory, or its directory itself.
+struct eventIndex {
+    ignore_case: bool,
+    by_parent: FxHashMap<String, Vec<usize>>,
+    by_path: FxHashMap<String, Vec<usize>>,
+    everyone: Vec<usize>,
+}
+
+impl eventIndex {
+    fn new(entries: &[(String, crate::event::eventEntry)], w: &dirWatch) -> eventIndex {
+        let mut index = eventIndex { ignore_case: w.comparer.ignore_case, by_parent: FxHashMap::default(), by_path: FxHashMap::default(), everyone: Vec::new() };
+        for (i, (path, _)) in entries.iter().enumerate() {
+            let physical = if !w.physical_dir.is_empty() && w.physical_dir != w.dir && is_in_directory_or_self(&w.dir, path) {
+                rebase_path(path, &w.dir, &w.physical_dir)
+            } else {
+                path.clone()
+            };
+            let (Some(display), Some(physical)) = (index.key(path), index.key(&physical)) else {
+                index.everyone.push(i);
+                continue;
+            };
+            for key in [display, physical] {
+                let parent = filepath_dir(&key);
+                let list = index.by_parent.entry(parent).or_default();
+                if list.last() != Some(&i) {
+                    list.push(i);
+                }
+                let list = index.by_path.entry(key).or_default();
+                if list.last() != Some(&i) {
+                    list.push(i);
+                }
+            }
+        }
+        index
+    }
+
+    fn key(&self, path: &str) -> Option<String> {
+        if !self.ignore_case {
+            return Some(path.to_string());
+        }
+        path.is_ascii().then(|| path.to_ascii_lowercase())
+    }
+
+    // The entries `cb` may accept, in entry order; None when it may accept any (a recursive callback, or a directory
+    // the keys cannot express).
+    fn candidates(&self, cb: &callback) -> Option<Vec<usize>> {
+        if cb.recursive {
+            return None;
+        }
+        let mut out: Vec<usize> = self.everyone.clone();
+        for dir in [&cb.dir, &cb.physical_dir] {
+            if dir.is_empty() {
+                continue;
+            }
+            let key = self.key(dir)?;
+            out.extend(self.by_parent.get(&key).into_iter().flatten());
+            out.extend(self.by_path.get(&key).into_iter().flatten());
+        }
+        out.sort_unstable();
+        out.dedup();
+        Some(out)
+    }
+}
+
 // watcher.go:850
 // physicalDirFor returns the physical path to watch for dir. If dir, or an
 // ancestor of dir, is a symlink or reparse point, events are subscribed on its
@@ -1263,14 +1395,14 @@ pub(crate) fn join_path_suffix(root: &str, suffix: &str) -> String {
     }
     if let Some(rest) = suffix.strip_prefix('/') {
         if root.ends_with('/') {
-            return format!("{}{}", root, rest);
+            return format!("{root}{rest}");
         }
-        return format!("{}{}", root, suffix);
+        return format!("{root}{suffix}");
     }
     if root.ends_with('/') {
-        return format!("{}{}", root, suffix);
+        return format!("{root}{suffix}");
     }
-    format!("{}/{}", root, suffix)
+    format!("{root}/{suffix}")
 }
 
 // watcher.go:1087
@@ -1334,7 +1466,7 @@ pub(crate) fn filepath_clean(path: &str) -> String {
     }
     let joined = out.join("/");
     if rooted {
-        format!("/{}", joined)
+        format!("/{joined}")
     } else if joined.is_empty() {
         ".".to_string()
     } else {
@@ -1344,6 +1476,6 @@ pub(crate) fn filepath_clean(path: &str) -> String {
 
 // Go `filepath.Dir` (Unix).
 pub(crate) fn filepath_dir(path: &str) -> String {
-    let i = path.rfind('/').map(|i| i + 1).unwrap_or(0);
+    let i = path.rfind('/').map_or(0, |i| i + 1);
     filepath_clean(&path[..i])
 }

@@ -13,7 +13,7 @@ use crate::{content_mapper_identities, read_build_info_program, BuildInfo, Build
 // buildinfo_contentmapper_test.go:16
 fn config_with_mappers(mappers: Vec<Mapper>) -> P<ParsedCommandLine> {
     let mut config = new_parsed_command_line(P::new(CompilerOptions::default()), Vec::new(), Vec::new(), Default::default());
-    config.parsed_config.content_mappers = mappers;
+    config.parsed_config.content_mappers = mappers.into();
     P::new(config)
 }
 
@@ -78,7 +78,7 @@ fn incremental_build_info(content_mapper_identities: &[&str]) -> BuildInfo {
     BuildInfo {
         version: tsrs_core::version().to_string(),
         file_names: vec!["/src/a.ts".to_string()],
-        content_mapper_identities: Some(content_mapper_identities.iter().map(|s| s.to_string()).collect()),
+        content_mapper_identities: Some(content_mapper_identities.iter().map(std::string::ToString::to_string).collect()),
         ..Default::default()
     }
 }

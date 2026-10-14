@@ -32,12 +32,28 @@ fn io_error(err: &std::io::Error) -> Error {
 
 // Go strconv.ParseInt(s, 10, 64).
 fn parse_int(s: &str) -> Result<i64, String> {
-    let syntax = || format!("strconv.ParseInt: parsing {}: invalid syntax", go_quote(s.as_bytes()));
-    let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
-    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
-        return Err(syntax());
+    tsrs_core::gocompat::parse_int64(s.as_bytes(), tsrs_core::gocompat::QuoteStyle::Lsp)
+}
+
+// Go bytes.TrimSpace: trims Unicode white space (including '\v', U+0085 and U+00A0 as UTF-8, which `trim_ascii`
+// keeps); an invalid UTF-8 byte decodes as RuneError and stops the trim.
+fn trim_space(mut s: &[u8]) -> &[u8] {
+    let is_space = |r: u32| char::from_u32(r).is_some_and(char::is_whitespace);
+    loop {
+        let (r, size) = tsrs_core::stringutil::decode_rune(s);
+        if size == 0 || !is_space(r) {
+            break;
+        }
+        s = &s[size..];
     }
-    s.parse::<i64>().map_err(|_| format!("strconv.ParseInt: parsing {}: value out of range", go_quote(s.as_bytes())))
+    loop {
+        let (r, size) = tsrs_core::stringutil::decode_last_rune(s);
+        if size == 0 || !is_space(r) {
+            break;
+        }
+        s = &s[..s.len() - size];
+    }
+    s
 }
 
 impl<R: Read> Reader<R> {
@@ -64,20 +80,20 @@ impl<R: Read> Reader<R> {
             let (key, value) = (&line[..colon], &line[colon + 1..]);
 
             if key == b"Content-Length" {
-                let value = tsrs_core::utf8::from_utf8_lossy(value.trim_ascii()).into_owned();
+                let value = tsrs_core::utf8::from_utf8_lossy(trim_space(value)).into_owned();
                 content_length = match parse_int(&value) {
                     Ok(n) => n,
                     Err(err) => {
                         return Err(Error::tagged(
                             ErrorTag::InvalidContentLength,
-                            format!("{}: parse error: {}", ERR_INVALID_CONTENT_LENGTH, err),
+                            format!("{ERR_INVALID_CONTENT_LENGTH}: parse error: {err}"),
                         ));
                     }
                 };
                 if content_length < 0 {
                     return Err(Error::tagged(
                         ErrorTag::InvalidContentLength,
-                        format!("{}: negative value {}", ERR_INVALID_CONTENT_LENGTH, content_length),
+                        format!("{ERR_INVALID_CONTENT_LENGTH}: negative value {content_length}"),
                     ));
                 }
             }

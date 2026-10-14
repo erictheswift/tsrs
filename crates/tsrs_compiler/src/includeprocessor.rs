@@ -31,9 +31,19 @@ impl includeProcessor {
     pub(crate) fn get_diagnostics(&self, p: &Program) -> &Mutex<DiagnosticsCollection> {
         self.computed_diagnostics.get_or_init(|| {
             let mut computed = DiagnosticsCollection::default();
-            for d in p.processing_diagnostics().iter() {
+            let processing_diagnostics = p.processing_diagnostics();
+            if !processing_diagnostics.is_empty() {
+                // What this makes (diagnostics, the include processor's caches) goes to the current allocation target,
+                // a checker's region when semantic diagnostics ask first: the language server's pool keeps it while
+                // the program lives.
+                if let Some(region) = tsrs_core::arena::current_region() {
+                    region.mark_escaped();
+                }
+            }
+            for d in processing_diagnostics.iter() {
                 computed.add(d.to_diagnostic(p));
             }
+            drop(processing_diagnostics);
             // Go ranges over both maps too. The collection drops a diagnostic equal to one it has (equal in
             // everything compare_diagnostics looks at) and sorts on read, and that comparator only ties on equal
             // diagnostics, so the order of the adds cannot be seen.
@@ -62,14 +72,14 @@ impl includeProcessor {
             return existing;
         }
         let loc: &'static referenceFileLocation = Box::leak(Box::new(get_referenced_location(r, program)));
-        *self.reason_to_reference_location.lock().unwrap().entry(r).or_insert(loc)
+        self.reason_to_reference_location.lock().unwrap().entry(r).or_insert(loc)
     }
 
     pub(crate) fn get_compiler_options_object_literal_syntax(&self, program: &Program) -> Option<P<Node>> {
         *self.compiler_options_syntax.get_or_init(|| {
             let config_file = program.opts.config.config_file.as_ref()?;
             let compiler_options_property =
-                tsoptions::for_each_ts_config_prop_array(Some(config_file.source_file), "compilerOptions", |p| Some(p))?;
+                tsoptions::for_each_ts_config_prop_array(Some(config_file.source_file), "compilerOptions", Some)?;
             let initializer = compiler_options_property.initializer()?;
             if ast::is_object_literal_expression(initializer) {
                 Some(initializer)

@@ -1,6 +1,6 @@
 use std::f64::consts::PI;
 
-use super::jsnum_test::{assert_equal_number, number_from_bits, number_to_bits};
+use super::jsnum_test::{assert_equal_number, number_from_bits};
 use super::ryu_test::ryu_tests;
 use super::*;
 
@@ -33,16 +33,16 @@ fn string_tests() -> Vec<StringTest> {
         st(Number(-PI), "-3.141592653589793"),
         st(MaxSafeInteger, "9007199254740991"),
         st(MinSafeInteger, "-9007199254740991"),
-        st(number_from_bits(0x000FFFFFFFFFFFFF), "2.225073858507201e-308"),
-        st(number_from_bits(0x0010000000000000), "2.2250738585072014e-308"),
-        st(Number(1234567.8), "1234567.8"),
-        st(Number(19686109595169230000.0), "19686109595169230000"),
+        st(number_from_bits(0x000F_FFFF_FFFF_FFFF), "2.225073858507201e-308"),
+        st(number_from_bits(0x0010_0000_0000_0000), "2.2250738585072014e-308"),
+        st(Number(1_234_567.8), "1234567.8"),
+        st(Number(19_686_109_595_169_230_000.0), "19686109595169230000"),
         st(Number(123.456), "123.456"),
         st(Number(-123.456), "-123.456"),
-        st(Number(444123.0), "444123"),
-        st(Number(-444123.0), "-444123"),
-        st(Number(444123.789123456789875436), "444123.7891234568"),
-        st(Number(-444123.78963636363636363636), "-444123.7896363636"),
+        st(Number(444_123.0), "444123"),
+        st(Number(-444_123.0), "-444123"),
+        st(Number(444_123.789_123_456_8), "444123.7891234568"),
+        st(Number(-444_123.789_636_363_6), "-444123.7896363636"),
         st(Number(1.0e21), "1e+21"),
         st(Number(1.0e20), "100000000000000000000"),
     ];
@@ -108,12 +108,12 @@ fn from_string_tests() -> Vec<StringTest> {
         st(Number(0b1010u64 as f64), "0B1010"),
         st(Number(0o12u64 as f64), "0o12"),
         st(Number(0o12u64 as f64), "0O12"),
-        st(Number(0x123456789abcdef0u64 as f64), "0x123456789abcdef0"),
-        st(Number(0x123456789abcdef0u64 as f64), "0X123456789ABCDEF0"),
-        st(Number(18446744073709552000.0), "0X10000000000000000"),
-        st(Number(18446744073709597000.0), "0X1000000000000A801"),
+        st(Number(0x1234_5678_9abc_def0_u64 as f64), "0x123456789abcdef0"),
+        st(Number(0x1234_5678_9abc_def0_u64 as f64), "0X123456789ABCDEF0"),
+        st(Number(18_446_744_073_709_552_000.0), "0X10000000000000000"),
+        st(Number(18_446_744_073_709_597_000.0), "0X1000000000000A801"),
         st(nan(), "0B0.0"),
-        st(Number(1.231235345083403e+91), "12312353450834030486384068034683603046834603806830644850340602384608368034634603680348603864"),
+        st(Number(1.231_235_345_083_403e+91), "12312353450834030486384068034683603046834603806830644850340602384608368034634603680348603864"),
         st(nan(), "XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX8OOOOOOOOOOOOOOOOOOO"),
         st(inf(1), "+Infinity"),
         st(Number(1234.56), "  \t1234.56  "),
@@ -129,15 +129,15 @@ fn from_string_tests() -> Vec<StringTest> {
         st(Number(0.0), "\u{000C}"),
         st(Number(0.0), "\u{FEFF}"),
         st(Number(0.0), "\u{00A0}"),
-        st(Number(10000000000000000000.0), "010000000000000000000"),
+        st(Number(10_000_000_000_000_000_000.0), "010000000000000000000"),
         st(nan(), "0x1.fffffffffffffp1023"), // Make sure Go's extended float syntax doesn't work.
         st(nan(), "0X_1FFFP-16"),
         st(nan(), "1_000"), // NumberToString doesn't handle underscores.
         st(Number(0.0), "0x0"),
         st(Number(0.0), "0X0"),
         st(nan(), "0xOOPS"),
-        st(Number(0xABCDEFu64 as f64), "0xABCDEF"),
-        st(Number(0xABCDEFu64 as f64), "0xABCDEF"),
+        st(Number(0x00AB_CDEF_u64 as f64), "0xABCDEF"),
+        st(Number(0x00AB_CDEF_u64 as f64), "0xABCDEF"),
         st(Number(0.0), "0o0"),
         st(Number(0.0), "0O0"),
         st(nan(), "0o8"),
@@ -188,24 +188,25 @@ fn test_string_roundtrip() {
 }
 
 #[test]
-fn cut_any_preserves_unicode_cutsets() {
-    assert_eq!(cut_any("é1E2e3", "eE"), ("é1", "2e3", true));
-    assert_eq!(cut_any("é😀1", "😀é"), ("", "😀1", true));
-    assert_eq!(cut_any("a😀b", "😀"), ("a", "b", true));
-    assert_eq!(cut_any("aébE2", "éE"), ("a", "bE2", true));
-    assert_eq!(cut_any("é😀", "eE"), ("é😀", "", false));
-    assert_eq!(cut_any("é😀", ""), ("é😀", "", false));
+fn from_string_preserves_decimal_bits() {
+    for (text, expected) in [
+        ("-000.000", (-0.0f64).to_bits()),
+        ("-1e-1000", (-0.0f64).to_bits()),
+        ("000.001e+000003", 1.0f64.to_bits()),
+        (".5E+0001", 5.0f64.to_bits()),
+        ("0e999999999999999999", 0.0f64.to_bits()),
+        ("+1e999999999999999999", f64::INFINITY.to_bits()),
+        ("-1e999999999999999999", f64::NEG_INFINITY.to_bits()),
+        ("1e1.0", nan().0.to_bits()),
+        ("1.e-", nan().0.to_bits()),
+        ("+0x1", nan().0.to_bits()),
+        ("inf", nan().0.to_bits()),
+    ] {
+        assert_eq!(from_string(text).0.to_bits(), expected, "{text}");
+    }
+    let padded_exponent = format!("1e+{}1", "0".repeat(1000));
+    assert_eq!(from_string(&padded_exponent).0.to_bits(), 10.0f64.to_bits());
 }
 
 // TestStringJS, FuzzStringJS, FuzzFromStringJS and getStringResultsFromJS
 // compare against Node.js and are not ported.
-
-pub(super) fn number_to_uint32_array(n: Number) -> [u32; 2] {
-    let bits = number_to_bits(n);
-    [bits as u32, (bits >> 32) as u32]
-}
-
-pub(super) fn uint32_array_to_number(a: [u32; 2]) -> Number {
-    let bits = a[0] as u64 | (a[1] as u64) << 32;
-    number_from_bits(bits)
-}

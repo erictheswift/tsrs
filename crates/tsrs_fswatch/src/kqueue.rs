@@ -52,6 +52,46 @@ fn open_for_events(path: &str) -> Result<i32, Error> {
     Ok(fd)
 }
 
+// tsrs-only: kqueue needs a descriptor per watched file and directory, and macOS starts a process with a soft limit of
+// 256. Go's runtime raises the soft RLIMIT_NOFILE to the hard limit at startup (capped at kern.maxfilesperproc on
+// macOS), so tsgo has room; a Rust process does not, and the watch ran out after 256 files. Raised the same way when
+// the backend starts.
+fn raise_open_file_limit() {
+    static RAISED: std::sync::Once = std::sync::Once::new();
+    RAISED.call_once(|| {
+        let mut lim = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
+        // SAFETY: `lim` is a live, writable rlimit out-parameter.
+        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &raw mut lim) } != 0 {
+            return;
+        }
+        let mut target = lim.rlim_max;
+        #[cfg(target_os = "macos")]
+        {
+            let mut max_files: libc::c_int = 0;
+            let mut len = std::mem::size_of::<libc::c_int>();
+            let name = c"kern.maxfilesperproc";
+            // SAFETY: `name` is NUL-terminated; `max_files` and `len` are live out-parameters of the sizes given.
+            if unsafe { libc::sysctlbyname(name.as_ptr(), (&raw mut max_files).cast(), &raw mut len, std::ptr::null_mut(), 0) } == 0 && max_files > 0 {
+                target = target.min(max_files as libc::rlim_t);
+            }
+        }
+        if target > lim.rlim_cur {
+            lim.rlim_cur = target;
+            // SAFETY: `lim` is a valid rlimit; failure leaves the old limit.
+            unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &raw const lim) };
+        }
+    });
+}
+
+// tsrs-only: out of descriptors. Go skips a file it cannot open, which here would stop watching it without a word.
+fn is_out_of_descriptors(err: &Error) -> bool {
+    err.is_errno(libc::EMFILE) || err.is_errno(libc::ENFILE)
+}
+
+fn err_out_of_descriptors(path: &str, err: &Error) -> Error {
+    Error::wrap(format!("fswatch: kqueue: cannot watch {path}: {err} (each watched file needs a descriptor; raise the limit with `ulimit -n`)"), err)
+}
+
 fn close_fd(fd: i32) {
     // SAFETY: closing an fd this backend opened and still tracks.
     unsafe { libc::close(fd) };
@@ -165,7 +205,7 @@ impl kqueueBackend {
         // Watch the read side of the pipe so we can break the loop on shutdown.
         let pipe_ev = new_kevent(pipe_fds[0], libc::EVFILT_READ, libc::EV_ADD | libc::EV_CLEAR, 0);
         if let Err(err) = kevent_register(kq, &pipe_ev) {
-            return Err(Error::new(format!("unable to watch pipe: {}", err)));
+            return Err(Error::new(format!("unable to watch pipe: {err}")));
         }
 
         self.base.notify_started();
@@ -181,13 +221,13 @@ impl kqueueBackend {
                 if err.raw_os_error() == Some(libc::EINTR) {
                     continue;
                 }
-                return Err(Error::new(format!("kevent error: {}", err)));
+                return Err(Error::new(format!("kevent error: {err}")));
             }
 
             let mut stop = false;
             for ev in &events[..n as usize] {
-                let mut fflags = ev.fflags as u32;
-                let flags = ev.flags as u16;
+                let mut fflags = ev.fflags;
+                let flags = ev.flags;
                 let fd = ev.ident as i32;
                 if fd == pipe_fds[0] {
                     stop = true;
@@ -223,6 +263,7 @@ impl kqueueBackend {
                 }
             }
 
+            #[expect(clippy::iter_with_drain, reason = "the vector is reused by the long-running event loop so draining retains its allocation")]
             for w in watchers_touched.drain(..) {
                 w.notify();
             }
@@ -325,9 +366,20 @@ impl kqueueBackend {
             return;
         }
 
+        // tsrs-only (`set_write_settling`): kqueue reports a save's truncation at once, before its data; an empty file
+        // holds the callbacks until an event shows it written (see fsevents_darwin.rs).
+        #[cfg(target_os = "macos")]
+        let being_written = (crate::watcher::write_settling() && !entry.is_dir && fflags & (libc::NOTE_WRITE | libc::NOTE_ATTRIB | libc::NOTE_EXTEND) != 0)
+            .then(|| std::fs::metadata(&entry.watch_path).is_ok_and(|m| m.is_file() && m.len() == 0));
         for sub in &subs {
             touch(touched, &sub.dir_watch);
             if fflags & (libc::NOTE_WRITE | libc::NOTE_ATTRIB | libc::NOTE_EXTEND) != 0 {
+                #[cfg(target_os = "macos")]
+                match being_written {
+                    Some(true) => sub.dir_watch.write_started(&sub.path),
+                    Some(false) => sub.dir_watch.write_finished(&sub.path),
+                    None => {}
+                }
                 sub.dir_watch.events.update(&sub.path);
             }
         }
@@ -374,8 +426,14 @@ impl kqueueBackend {
         let fd = match entry.state {
             Some(fd) => fd,
             None => {
-                let Ok(fd) = open_for_events(&entry.watch_path) else {
-                    return false;
+                let fd = match open_for_events(&entry.watch_path) {
+                    Ok(fd) => fd,
+                    Err(err) => {
+                        if is_out_of_descriptors(&err) {
+                            w.events.set_error(err_out_of_descriptors(&entry.watch_path, &err));
+                        }
+                        return false;
+                    }
                 };
                 let ev = new_kevent(fd, libc::EVFILT_VNODE, libc::EV_ADD | libc::EV_CLEAR | libc::EV_ENABLE, vnodeFflags);
                 if kevent_register(self.kq.load(Ordering::SeqCst), &ev).is_err() {
@@ -418,7 +476,7 @@ impl kqueueBackend {
         }
         let subs = filtered_subs;
 
-        let dir_start = format!("{}/", path);
+        let dir_start = format!("{path}/");
         struct diskSnapshot {
             entries: Vec<(String, bool)>,
             current_display_paths: rustc_hash::FxHashSet<String>,
@@ -434,7 +492,7 @@ impl kqueueBackend {
                 continue;
             };
             let watch_path = base_entry.watch_path.clone();
-            let watch_dir_start = format!("{}/", watch_path);
+            let watch_dir_start = format!("{watch_path}/");
 
             let snapshot = match snapshots.get(&watch_path) {
                 Some(s) => Arc::clone(s),
@@ -442,7 +500,7 @@ impl kqueueBackend {
                     let Ok(disk_entries) = read_entries(&watch_path) else {
                         continue;
                     };
-                    let current_display_paths = disk_entries.iter().map(|(name, _)| format!("{}{}", dir_start, name)).collect();
+                    let current_display_paths = disk_entries.iter().map(|(name, _)| format!("{dir_start}{name}")).collect();
                     let s = Arc::new(diskSnapshot { entries: disk_entries, current_display_paths });
                     snapshots.insert(watch_path.clone(), Arc::clone(&s));
                     s
@@ -451,8 +509,8 @@ impl kqueueBackend {
 
             let map_id = sub.entries;
             for (name, ent_is_dir) in &snapshot.entries {
-                let full_path = format!("{}{}", dir_start, name);
-                let full_watch_path = format!("{}{}", watch_dir_start, name);
+                let full_path = format!("{dir_start}{name}");
+                let full_watch_path = format!("{watch_dir_start}{name}");
 
                 let existing = st.entry_maps.get(&map_id).and_then(|m| m.get(&full_path)).cloned();
                 if let Some(existing) = existing {
@@ -608,7 +666,7 @@ impl kqState {
     // the corresponding b.subsByPath / b.fdToEntry bookkeeping, and emits a
     // delete event for each.
     fn close_descendant_fds_locked(&mut self, w: &Arc<dirWatch>, map_id: entriesID, root: &str) {
-        let prefix = format!("{}/", root);
+        let prefix = format!("{root}/");
         let Some(m) = self.entry_maps.get_mut(&map_id) else {
             return;
         };
@@ -697,7 +755,7 @@ fn read_entries(path: &str) -> Result<Vec<(String, bool)>, Error> {
     let mut out = Vec::new();
     out = (std::fs::read_dir(path).map_err(Error::from_io)?).try_fold(out, |mut out, ent| {
         let ent = ent.map_err(Error::from_io)?;
-        let is_dir = ent.file_type().map(|t| t.is_dir()).unwrap_or(false);
+        let is_dir = ent.file_type().is_ok_and(|t| t.is_dir());
         out.push((ent.file_name().to_string_lossy().into_owned(), is_dir));
         Ok::<_, Error>(out)
     })?;
@@ -720,6 +778,7 @@ impl watcherImpl for kqueueBackend {
 
     // kqueue.go:146
     fn start(self: Arc<Self>) -> Result<(), Error> {
+        raise_open_file_limit();
         let result = self.run_loop();
         self.close_subscriptions();
         self.close_fds();
@@ -768,6 +827,10 @@ impl watcherImpl for kqueueBackend {
                         st.cleanup_entries_locked(&mut entries);
                         return Err(Error::wrap(format!("error watching {}: {}", w.dir, err), &err));
                     }
+                    if is_out_of_descriptors(&err) {
+                        st.cleanup_entries_locked(&mut entries);
+                        return Err(err_out_of_descriptors(&watch_path, &err));
+                    }
                     entries.remove(&path);
                     continue;
                 }
@@ -804,7 +867,7 @@ impl watcherImpl for kqueueBackend {
         let mut maps_of_watch = rustc_hash::FxHashSet::default();
         let paths: Vec<String> = st.subs_by_path.keys().cloned().collect();
         for path in paths {
-            let list = st.subs_by_path.get(&path).unwrap();
+            let list = &st.subs_by_path[&path];
             let removed_any = list.iter().any(|s| dwKey(Arc::clone(&s.dir_watch)) == key);
             if !removed_any {
                 continue;

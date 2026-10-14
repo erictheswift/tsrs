@@ -126,7 +126,7 @@ impl<K: Eq + Hash + Clone + 'static, V: Clone + 'static> GoMap<K, V> {
     }
     #[inline]
     pub fn len(&self) -> usize {
-        self.0.get().map_or(0, |m| tsrs_core::sharedgraph::with_ref(&m, |m| m.len()))
+        self.0.get().map_or(0, |m| tsrs_core::sharedgraph::with_ref(&m, FxHashMap::len))
     }
     #[inline]
     pub fn clear(&self) {
@@ -156,13 +156,13 @@ impl<K: Eq + Hash + Clone + 'static, V: Clone + 'static> GoMap<K, V> {
     }
     #[inline]
     pub fn set_ref(&self, m: Option<P<RefCell<FxHashMap<K, V>>>>) {
-        self.0.set(m)
+        self.0.set(m);
     }
     /// Go `a.m = someFreshlyBuiltMap`.
     #[inline]
     pub fn assign(&self, m: FxHashMap<K, V>) {
         let scratch = tsrs_core::arena::scratch_contains(std::ptr::from_ref::<Self>(self) as usize);
-        self.0.set(Some(P::new_in(scratch, RefCell::new(m))))
+        self.0.set(Some(P::new_in(scratch, RefCell::new(m))));
     }
     /// Snapshot of the entries (Go `for k, v := range m`).
     #[inline]
@@ -374,19 +374,21 @@ enum LinksMode {
 
 /// A pointer stored in a link word whose type depends on the mode.
 #[inline]
+#[expect(clippy::single_option_map, reason = "this helper erases the pointee type while preserving absence")]
 fn erase<T>(p: Option<P<T>>) -> Option<P<()>> {
     // SAFETY: a `()` is zero-sized; the word only keeps the object's position.
     p.map(|p| unsafe { p.cast::<()>() })
 }
 
-/// SAFETY: `w` was stored by `erase` from a `P<T>` (arena values are never freed or moved).
+/// # Safety `w` was stored by `erase` from a `P<T>` (arena values are never freed or moved).
 #[inline]
+#[expect(clippy::single_option_map, reason = "this helper restores the pointee type while preserving absence")]
 unsafe fn restore<T: 'static>(w: Option<P<()>>) -> Option<P<T>> {
     // SAFETY: this function's contract: `w` was a `P<T>`.
     w.map(|w| unsafe { w.cast::<T>() })
 }
 
-/// SAFETY: `bits` is 0 or `P::to_bits` of a `P<T>` (mode bits cleared).
+/// # Safety `bits` is 0 or `P::to_bits` of a `P<T>` (mode bits cleared).
 #[inline]
 unsafe fn restore_bits<T: 'static>(bits: usize) -> Option<P<T>> {
     // SAFETY: this function's contract: `bits` is 0 or the bits of a `P<T>`.
@@ -1216,10 +1218,9 @@ impl ObjectFlagsCell {
         ObjectFlagsCell(Cell::new(f))
     }
     #[inline]
-    #[expect(clippy::cast_ptr_alignment, reason = "the field's address minus its offset is its Type, which is 8-aligned")]
     fn owner(&self) -> &Type {
-        // SAFETY: an `ObjectFlagsCell` exists only as the `object_flags` field of a `Type`.
-        unsafe { &*std::ptr::from_ref(self).cast::<u8>().sub(std::mem::offset_of!(Type, object_flags)).cast::<Type>() }
+        // SAFETY: an `ObjectFlagsCell` exists only as the `object_flags` field of a `Type`, which is an arena value.
+        unsafe { tsrs_core::ptr::arena_neighbor(self, -(std::mem::offset_of!(Type, object_flags) as isize)) }
     }
     /// The flags as created plus what this checker computed lazily, except on a frozen type, where the lazily
     /// computed families (members resolved, could contain type variables, is generic, unknown-like, uniform enum,
@@ -1550,10 +1551,10 @@ impl Type {
     /// The data struct after this type's header. Callers check `data_tag == T::TAG` first.
     #[inline]
     fn payload<T: TypePayload>(&self) -> &'static T {
-        debug_assert!(self.data_tag == T::TAG);
+        debug_assert_eq!(self.data_tag, T::TAG);
         // SAFETY: a type tagged `T::TAG` was allocated by `Type::alloc::<T>` as a `TypeAlloc<T>` whose header is
         // `self`, so its data struct lives at this offset from the header, for the rest of the process.
-        unsafe { &*std::ptr::from_ref::<Type>(self).cast::<u8>().add(std::mem::offset_of!(TypeAlloc<T>, data)).cast::<T>() }
+        unsafe { tsrs_core::ptr::arena_neighbor(self, std::mem::offset_of!(TypeAlloc<T>, data) as isize) }
     }
 
     /// The type-specific data (Go `t.data`).
@@ -1615,121 +1616,87 @@ impl Type {
 
     #[inline]
     pub fn as_intrinsic_type(&self) -> &'static IntrinsicType {
-        if self.data_tag != TypeDataTag::Intrinsic {
-            panic!("as_intrinsic_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Intrinsic, "as_intrinsic_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_literal_type(&self) -> &'static LiteralType {
-        if self.data_tag != TypeDataTag::Literal {
-            panic!("as_literal_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Literal, "as_literal_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_unique_es_symbol_type(&self) -> &'static UniqueESSymbolType {
-        if self.data_tag != TypeDataTag::UniqueESSymbol {
-            panic!("as_unique_es_symbol_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::UniqueESSymbol, "as_unique_es_symbol_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_tuple_type(&self) -> &'static TupleType {
-        if self.data_tag != TypeDataTag::Tuple {
-            panic!("as_tuple_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Tuple, "as_tuple_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_instantiation_expression_type(&self) -> &'static InstantiationExpressionType {
-        if self.data_tag != TypeDataTag::InstantiationExpression {
-            panic!("as_instantiation_expression_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::InstantiationExpression, "as_instantiation_expression_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_mapped_type(&self) -> &'static MappedType {
-        if self.data_tag != TypeDataTag::Mapped {
-            panic!("as_mapped_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Mapped, "as_mapped_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_reverse_mapped_type(&self) -> &'static ReverseMappedType {
-        if self.data_tag != TypeDataTag::ReverseMapped {
-            panic!("as_reverse_mapped_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::ReverseMapped, "as_reverse_mapped_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_evolving_array_type(&self) -> &'static EvolvingArrayType {
-        if self.data_tag != TypeDataTag::EvolvingArray {
-            panic!("as_evolving_array_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::EvolvingArray, "as_evolving_array_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_type_parameter(&self) -> &'static TypeParameter {
-        if self.data_tag != TypeDataTag::TypeParameter {
-            panic!("as_type_parameter: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::TypeParameter, "as_type_parameter: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_union_type(&self) -> &'static UnionType {
-        if self.data_tag != TypeDataTag::Union {
-            panic!("as_union_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Union, "as_union_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_intersection_type(&self) -> &'static IntersectionType {
-        if self.data_tag != TypeDataTag::Intersection {
-            panic!("as_intersection_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Intersection, "as_intersection_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_index_type(&self) -> &'static IndexType {
-        if self.data_tag != TypeDataTag::Index {
-            panic!("as_index_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Index, "as_index_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_indexed_access_type(&self) -> &'static IndexedAccessType {
-        if self.data_tag != TypeDataTag::IndexedAccess {
-            panic!("as_indexed_access_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::IndexedAccess, "as_indexed_access_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_template_literal_type(&self) -> &'static TemplateLiteralType {
-        if self.data_tag != TypeDataTag::TemplateLiteral {
-            panic!("as_template_literal_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::TemplateLiteral, "as_template_literal_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_string_mapping_type(&self) -> &'static StringMappingType {
-        if self.data_tag != TypeDataTag::StringMapping {
-            panic!("as_string_mapping_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::StringMapping, "as_string_mapping_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_substitution_type(&self) -> &'static SubstitutionType {
-        if self.data_tag != TypeDataTag::Substitution {
-            panic!("as_substitution_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Substitution, "as_substitution_type: wrong type data");
         self.payload()
     }
     #[inline]
     pub fn as_conditional_type(&self) -> &'static ConditionalType {
-        if self.data_tag != TypeDataTag::Conditional {
-            panic!("as_conditional_type: wrong type data");
-        }
+        assert!(self.data_tag == TypeDataTag::Conditional, "as_conditional_type: wrong type data");
         self.payload()
     }
 
@@ -2799,13 +2766,13 @@ impl UnionType {
     fn union_rare(&self) -> Option<&'static UnionRare> {
         debug_assert!(!self.union_or_intersection_type.is_intersection_data());
         // SAFETY: a union's tail is a `UnionRare` (`rare_for_write` with the kind bit clear).
-        self.union_or_intersection_type.rare().map(|r| unsafe { &*std::ptr::from_ref::<UnionOrIntersectionRare>(r).cast::<UnionRare>() })
+        self.union_or_intersection_type.rare().map(|r| unsafe { tsrs_core::ptr::arena_neighbor::<_, UnionRare>(r, 0) })
     }
     #[inline]
     fn union_rare_for_write(&self) -> &'static UnionRare {
         let r = self.union_or_intersection_type.rare_for_write();
         // SAFETY: as in `union_rare`.
-        unsafe { &*std::ptr::from_ref::<UnionOrIntersectionRare>(r).cast::<UnionRare>() }
+        unsafe { tsrs_core::ptr::arena_neighbor::<_, UnionRare>(r, 0) }
     }
     #[inline]
     pub fn resolved_reduced_type(&self) -> Option<P<Type>> {
@@ -2886,13 +2853,13 @@ impl IntersectionType {
     fn intersection_rare(&self) -> Option<&'static IntersectionRare> {
         debug_assert!(self.union_or_intersection_type.is_intersection_data());
         // SAFETY: an intersection's tail is an `IntersectionRare` (`rare_for_write` with the kind bit set).
-        self.union_or_intersection_type.rare().map(|r| unsafe { &*std::ptr::from_ref::<UnionOrIntersectionRare>(r).cast::<IntersectionRare>() })
+        self.union_or_intersection_type.rare().map(|r| unsafe { tsrs_core::ptr::arena_neighbor::<_, IntersectionRare>(r, 0) })
     }
     #[inline]
     fn intersection_rare_for_write(&self) -> &'static IntersectionRare {
         let r = self.union_or_intersection_type.rare_for_write();
         // SAFETY: as in `intersection_rare`.
-        unsafe { &*std::ptr::from_ref::<UnionOrIntersectionRare>(r).cast::<IntersectionRare>() }
+        unsafe { tsrs_core::ptr::arena_neighbor::<_, IntersectionRare>(r, 0) }
     }
     #[inline]
     pub fn resolved_apparent_type(&self) -> Option<P<Type>> {
@@ -3375,13 +3342,13 @@ impl std::ops::BitOr for Ternary {
 impl std::ops::BitAndAssign for Ternary {
     #[inline]
     fn bitand_assign(&mut self, rhs: Ternary) {
-        self.0 &= rhs.0
+        self.0 &= rhs.0;
     }
 }
 impl std::ops::BitOrAssign for Ternary {
     #[inline]
     fn bitor_assign(&mut self, rhs: Ternary) {
-        self.0 |= rhs.0
+        self.0 |= rhs.0;
     }
 }
 

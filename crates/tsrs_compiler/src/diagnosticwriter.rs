@@ -242,13 +242,8 @@ pub fn format_diagnostic_with_color_and_context(output: &mut dyn Write, diagnost
     }
 }
 
-fn is_go_space(c: char) -> bool {
-    // unicode.IsSpace
-    matches!(c, '\t' | '\n' | '\u{000B}' | '\u{000C}' | '\r' | ' ' | '\u{0085}' | '\u{00A0}') || (c as u32 > 0xFF && c.is_whitespace())
-}
-
 fn utf16_len(s: &str) -> usize {
-    s.chars().map(|c| c.len_utf16()).sum()
+    s.chars().map(char::len_utf16).sum()
 }
 
 fn write_code_snippet(
@@ -305,7 +300,7 @@ fn write_code_snippet(
             text.len()
         };
 
-        let line_content = text[line_start..line_end].trim_end_matches(is_go_space); // trim from end
+        let line_content = text[line_start..line_end].trim_end(); // trim from end
         let line_content = line_content.replace('\t', " "); // convert tabs to single spaces
 
         // Output the gutter and the actual contents of the line.
@@ -331,7 +326,7 @@ fn write_code_snippet(
 
             // Fill with spaces until the first character,
             // then squiggle the remainder of the line.
-            w!(writer, "{}", " ".repeat(first_line_char.max(0) as usize));
+            w!(writer, "{}", " ".repeat(first_line_char as usize));
             w!(writer, "{}", "~".repeat(go_repeat_count(last_char_for_line - first_line_char as i64)));
         } else if i == last_line {
             // Squiggle until the final character.
@@ -348,9 +343,7 @@ fn write_code_snippet(
 
 // strings.Repeat panics on a negative count; the Go code never passes one for valid diagnostics.
 fn go_repeat_count(n: i64) -> usize {
-    if n < 0 {
-        panic!("strings: negative Repeat count");
-    }
+    assert!(n >= 0, "strings: negative Repeat count");
     n as usize
 }
 
@@ -594,4 +587,23 @@ pub fn format_diagnostics_status_with_color_and_time(output: &mut dyn Write, tim
 pub fn format_diagnostics_status_and_time(output: &mut dyn Write, time: &str, diag: P<Diagnostic>, format_opts: &FormattingOptions) {
     w!(output, "{} - ", time);
     write_flattened_diagnostic_message(output, diag, &format_opts.new_line);
+}
+
+// diagnosticwriter.go:596 ScreenStartingCodes
+fn is_screen_starting_code(code: i32) -> bool {
+    code == diagnostics::Starting_compilation_in_watch_mode.code() || code == diagnostics::File_change_detected_Starting_incremental_compilation.code()
+}
+
+// diagnosticwriter.go:601
+pub fn try_clear_screen(output: &mut dyn Write, diag: P<Diagnostic>, options: &tsrs_core::CompilerOptions) -> bool {
+    if !options.preserve_watch_output.is_true()
+        && !options.extended_diagnostics.is_true()
+        && !options.diagnostics.is_true()
+        && is_screen_starting_code(diag.code())
+    {
+        // Clear screen and move cursor to home position
+        w!(output, "\x1B[2J\x1B[3J\x1B[H");
+        return true;
+    }
+    false
 }

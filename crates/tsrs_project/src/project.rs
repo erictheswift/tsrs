@@ -60,9 +60,7 @@ pub struct SyntheticProjectID(pub String);
 
 // project.go:46
 pub fn new_synthetic_project_id(id: i64) -> SyntheticProjectID {
-    if id <= 0 {
-        panic!("invalid synthetic project ID: {id}");
-    }
+    assert!(id > 0, "invalid synthetic project ID: {id}");
     SyntheticProjectID(format!("{syntheticProjectPrefix}{id}"))
 }
 
@@ -311,7 +309,7 @@ pub(crate) fn new_inferred_project_command_line(
     errors: Vec<P<Diagnostic>>,
 ) -> P<ParsedCommandLine> {
     let mut command_line = tsoptions::new_parsed_command_line(compiler_options, root_file_names, project_references, compare_paths_options);
-    command_line.parsed_config.content_mappers = content_mappers;
+    command_line.parsed_config.content_mappers = content_mappers.into();
     command_line.errors = errors;
     P::new(command_line)
 }
@@ -420,18 +418,14 @@ impl Project {
     // project.go:338
     // ConfigFileName panics if Kind() is not KindConfigured.
     pub fn config_file_name(&self) -> &str {
-        if self.kind != Kind::Configured {
-            panic!("ConfigFileName called on non-configured project");
-        }
+        assert!(self.kind == Kind::Configured, "ConfigFileName called on non-configured project");
         &self.config_file_name
     }
 
     // project.go:346
     // ConfigFilePath panics if Kind() is not KindConfigured.
     pub fn config_file_path(&self) -> &Path {
-        if self.kind != Kind::Configured {
-            panic!("ConfigFilePath called on non-configured project");
-        }
+        assert!(self.kind == Kind::Configured, "ConfigFilePath called on non-configured project");
         &self.config_file_path
     }
 
@@ -674,7 +668,7 @@ impl Project {
             None => builder.push_str("\tFiles (0) NoProgram\n"),
             Some(program) => {
                 let source_files = program.get_source_files();
-                let _ = write!(builder, "\tFiles ({})\n", source_files.len());
+                let _ = writeln!(builder, "\tFiles ({})", source_files.len());
                 if write_file_names {
                     builder.extend(source_files.iter().flat_map(|source_file| ["\t\t", source_file.file_name(), "\n"]));
                     // !!!

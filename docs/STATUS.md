@@ -1,6 +1,22 @@
-# Status
+# Release notes
+
+Release entries describe changes and evidence recorded for that version. Measurements from an individual
+change are identified separately from measurements of the packaged release. For current support and known gaps,
+see the [compatibility table](COMPATIBILITY.md); detailed investigations are indexed in the
+[engineering notes](../notes/README.md). The early development log follows the release entries.
 
 ## 2026-10-13: 0.14.1 release
+
+Highlights:
+
+- Fix false diagnostics involving merged interfaces, lazy mapped types and nested instantiation limits.
+- Ship default libraries beside the native binary and report the matching TypeScript nightly version.
+- Stop the language-server and API processes on SIGINT/SIGTERM, and preserve control characters in user strings.
+
+Known limitations: the repository-conformance smoke run still differs on opencode (member order in a message),
+n8n (an export name) and dify (a missing TS2578). The fixes below do not resolve those cases.
+
+Implementation and validation details:
 
 Fixes since 0.14.0. All seven packages use `0.14.1-ts7.1.0-dev.20260929`; the TypeScript source pin remains
 `b85298b6a81f772d080b0455de0ca9d744cd6fd6` (7.1.0-dev.20260929). Release binaries now report the nightly built from
@@ -11,7 +27,8 @@ reports at tsgo's four-checker sites, API builds keep per-file diagnostics and G
 builds refresh interface errors when file order, imports or skip flags change (#349). Lazy mapped types no longer
 raise false TS5115/TS2456 cycles (#348), a nested check no longer leaves its instantiation count in the caller and
 adds a false TS2589 (#352), and user strings starting with DEL print as written (#351). Measurements are in
-`notes/fix-history-dependent-diagnostics.md`; warm incremental wall time on stagehand was about 7% higher locally.
+[the incremental diagnostic note](../notes/fix-history-dependent-diagnostics.md); warm incremental wall time on
+stagehand was about 7% higher locally.
 
 Parity with tsgo: the npm packages ship the default libraries beside the binary (#354); a non-array `paths`
 substitution reports TS5063 (#355); `--traceResolution` loads programs in Go's single-threaded order (#356); a closed
@@ -20,8 +37,7 @@ tsrs-only bits (#359) and the completion error comes back unwrapped (#361).
 
 CI: the release workflow waits for optional dependencies before publishing `tsrs` (#333), Clippy is enforced without
 a baseline (#342) and a 400-repository conformance workflow compares tsrs with tsgo (#345, #350). Its 20-repository
-smoke run is identical on 59 of 62 projects; opencode (object-type member order in a message), n8n (export name in
-TS2460) and dify (missing TS2578) still differ. These are not fixed in this release.
+smoke run is identical on 59 of 62 projects; the three known differences are listed above.
 
 Scanner and binder hot-path changes (#336, #337, #338, #339) and the round-4 checker change (#319) were merged
 without new release measurements.
@@ -555,7 +571,7 @@ lost). 60 of the 62 fails are declaration-emit diagnostics (TS4xxx/TS9xxx/TS7056
 other 2 fails (`mutuallyRecursiveInference`, `recursiveMappedTypes`) and both codes tests are harness artifacts: the Go
 harness runs JS emit, whose const-enum inliner type-checks every property access, before collecting diagnostics, so
 errors are first reported from a different current node; the `tsgo` CLI reports what we report. Details and the
-clustering tool (`tools/cluster-diffs.py`): `notes/fix-nb-integrate.md`.
+clustering tool (`tools/cluster-diffs.py`).
 
 The private monorepo (release, 0 errors): counters now equal the reference exactly; peak memory unchanged versus main (19.5 vs
 19.4 GB single-threaded, measured back to back).
@@ -592,7 +608,7 @@ with Go's per-file cache, `emithost.rs`, `emitter::get_declaration_diagnostics`)
 called it at Go's points (harness: after semantic/global/suggestion diagnostics when `GetEmitDeclarations()`; CLI:
 `GetDiagnosticsOfAnyProgram` under `--noEmit`, only when no earlier diagnostics were found). Design notes:
 `crates/tsrs_declarations/src/lib.rs`, `crates/tsrs_transformers/src/resolver.rs` (the checker is lent to the transformer through a `CheckerSlot`;
-Go's `checkerMu`-locking resolver methods borrow it per call), `notes/fix-decl-diagnostics.md`.
+Go's `checkerMu`-locking resolver methods borrow it per call).
 
 Conformance: **13,458 pass / 2 codes / 2 fail / 0 timeout / 0 crash** (was 13,398 / 2 / 62; all 60 declaration-
 diagnostic fails pass, no previous pass lost; same with `TS_TEST_PROGRAM_SINGLE_THREADED=false`). `.types` now
@@ -624,7 +640,7 @@ the private monorepo depends on: types and symbols identical (1,526 files), coun
 The private monorepo's peak footprint is now below the Go reference: 15.35 GB `--singleThreaded` (was 19.5; tsgo 16.7) and
 23.35 GB with 4 checkers (was 28.3; tsgo 24.4), counters and conformance unchanged. The largest item was lazy JSDoc
 parsing copying the whole file text per node (3 GB). Opt-in arena/heap allocation profile:
-`--features alloc-profile` on `tsrs_cli` (+ `TSRS_HEAP_PROFILE=1`). Details: `notes/fix-perf-memory.md`.
+`--features alloc-profile` on `tsrs_cli` (+ `TSRS_HEAP_PROFILE=1`; docs/DEBUGGING.md).
 
 ## 2026-09-30 (later): lazy member resolution on by default
 
@@ -685,7 +701,7 @@ index only past 8 entries, rarely set `ValueSymbolLinks` and `Symbol` fields in 
 stores paged by id. The private monorepo, reference mode (isolates these changes; medians of 3, interleaved): single-threaded
 peak 13.94 -> 11.08 GB, check 21.2 -> 18.2 s; 4 checkers 21.21 -> 17.06 GB, check 10.07 -> 8.66 s. Default mode
 (with lazy tuples and locality assignment landed meanwhile): 10.80 -> 8.39 GB / 20.0 -> 17.1 s single, 16.09 ->
-11.33 GB / 9.1 -> 6.7 s on 4 checkers. Details and per-change numbers: `notes/mem-layout.md`.
+11.33 GB / 9.1 -> 6.7 s on 4 checkers.
 
 ## 2026-10-01: frontend wall time (program construction, config, statistics)
 

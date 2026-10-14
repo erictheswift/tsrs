@@ -294,7 +294,9 @@ impl LanguageService {
 
         locations.extend(declarations.iter().filter_map(|&decl| {
             let file = ast::get_source_file_of_node(decl).unwrap();
-            let name = ast::get_name_of_declaration(decl).unwrap_or(decl);
+            // The `this` parameter a JSDoc `@this` tag adds has a name without a position; Go converts its -1
+            // range to the start of the file. Point at the declaration (the tag name) instead.
+            let name = ast::get_name_of_declaration(decl).filter(|name| !name.pos().is_synthetic()).unwrap_or(decl);
             let name_range = if name.kind() == Kind::EmptyStatement {
                 let pos = name
                     .pos()
@@ -401,7 +403,7 @@ pub(crate) fn get_declarations_from_location(c: &mut Checker, node: P<Node>) -> 
                     types
                         .into_iter()
                         .filter_map(|union_type| {
-                            if let Some(prop) = c.get_property_of_type_exported(union_type, &name) { Some(prop.declarations().iter().copied()) } else { None }
+                            c.get_property_of_type_exported(union_type, &name).map(|prop| prop.declarations().iter().copied())
                         })
                         .flatten(),
                 );

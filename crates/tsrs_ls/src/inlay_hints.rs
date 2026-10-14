@@ -181,9 +181,7 @@ impl InlayHintState<'_> {
                     let required_args = element_flags
                         .iter()
                         .position(|f| !f.intersects(ElementFlags::Required))
-                        .unwrap_or_else(|| {
-                            usize::try_from(fixed_length).expect("tuple fixed length is negative")
-                        });
+                        .unwrap_or(fixed_length);
                     if required_args > 0 {
                         spread_args = required_args;
                     }
@@ -236,7 +234,9 @@ impl InlayHintState<'_> {
 
     // inlay_hints.go:228
     fn visit_variable_like_declaration(&mut self, decl: P<Node>) {
-        if decl.initializer().is_none() && !(ast::is_property_declaration(decl) && !self.checker.get_type_at_location(decl).flags().intersects(TypeFlags::Any))
+        let missing_initializer_without_specific_property_type = decl.initializer().is_none()
+            && (!ast::is_property_declaration(decl) || self.checker.get_type_at_location(decl).flags().intersects(TypeFlags::Any));
+        if missing_initializer_without_specific_property_type
             || ast::is_binding_pattern(decl.name().unwrap())
             || (ast::is_variable_declaration(decl) && !is_hintable_declaration(decl))
         {
@@ -943,8 +943,8 @@ impl InlayHintState<'_> {
             let element_infos = rest_type.target().unwrap().as_tuple_type().element_infos();
             let mut associated_names: Vec<Option<P<Node>>> = Vec::with_capacity(element_infos.len());
             associated_names.extend(element_infos.iter().map(|element_info| {
-                let labeled_element = element_info.labeled_declaration();
-                labeled_element
+
+                element_info.labeled_declaration()
             }));
             let index = pos - param_count;
             if index < associated_names.len() {
@@ -990,11 +990,6 @@ fn identifier_or_access_expression_postfix_matches_parameter_name(expr: P<Node>,
     false
 }
 
-// Go unicode.IsSpace.
-fn go_is_space(r: char) -> bool {
-    matches!(r, '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{85}' | '\u{A0}') || (!r.is_ascii() && r.is_whitespace())
-}
-
 impl InlayHintState<'_> {
     // inlay_hints.go:918
     fn leading_comments_contains_parameter_name(&self, node: P<Node>, name: &str) -> bool {
@@ -1015,7 +1010,7 @@ impl InlayHintState<'_> {
                     .end()
                     .expect_source("comment ranges have source positions")
                     as usize]
-                .trim_matches(|r: char| go_is_space(r) || r == '/' || r == '*');
+                .trim_matches(|r: char| r.is_whitespace() || r == '/' || r == '*');
             comment_text == name
         }) {
             return true;

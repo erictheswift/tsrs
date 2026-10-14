@@ -346,7 +346,7 @@ fn read_process_memory() -> usize {
     if kr != 0 || count < 38 {
         return 0;
     }
-    (u64::from(info[36]) | u64::from(info[37]) << 32) as usize
+    (u64::from(info[36]) | (u64::from(info[37]) << 32)) as usize
 }
 
 #[cfg(target_os = "linux")]
@@ -360,4 +360,18 @@ fn read_process_memory() -> usize {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 fn read_process_memory() -> usize {
     0
+}
+
+// Watch memory: called on the watch's free thread after each cycle's frees; the alloc-profile build installs
+// `alloc_profile::cycle_report` (`set_cycle_hook`).
+static CYCLE_HOOK: OnceLock<fn()> = OnceLock::new();
+
+pub fn set_cycle_hook(hook: fn()) {
+    let _ = CYCLE_HOOK.set(hook);
+}
+
+pub fn cycle_done() {
+    if let Some(f) = CYCLE_HOOK.get() {
+        f();
+    }
 }

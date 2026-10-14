@@ -135,7 +135,7 @@ pub fn decode_bytes(b: &[u8]) -> String {
     if b.len() >= 2 && (b[0..2] == [0xFF, 0xFE] || b[0..2] == [0xFE, 0xFF]) {
         let le = b[0] == 0xFF;
         let units: Vec<u16> =
-            b[2..].chunks_exact(2).map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
+            b[2..].as_chunks::<2>().0.iter().map(|c| if le { u16::from_le_bytes([c[0], c[1]]) } else { u16::from_be_bytes([c[0], c[1]]) }).collect();
         return String::from_utf16_lossy(&units);
     }
     let b = if b.len() >= 3 && b[0..3] == [0xEF, 0xBB, 0xBF] { &b[3..] } else { b };
@@ -145,7 +145,7 @@ pub fn decode_bytes(b: &[u8]) -> String {
 pub fn read_test_file(path: &str) -> String {
     match std::fs::read(path) {
         Ok(b) => decode_bytes(&b),
-        Err(_) => panic!("Could not read test file: {path}"),
+        Err(err) => panic!("Could not read test file {path}: {err}"),
     }
 }
 
@@ -315,6 +315,7 @@ mod tests {
         for suite in SUITES {
             paths.extend(enumerate_test_files(suite).into_iter().map(|p| (format!("{suite}/{}", tspath::get_base_file_name(&p)), p)));
         }
+        let variant_suffix = regex::Regex::new(r"\(.*\)").unwrap();
         for line in diags.lines() {
             let v: serde_json::Value = serde_json::from_str(line).unwrap();
             if v.get("error").is_some() || v.get("files").is_none() {
@@ -322,7 +323,7 @@ mod tests {
             }
             let suite = v["suite"].as_str().unwrap();
             let name = v["name"].as_str().unwrap();
-            let file = regex::Regex::new(r"\(.*\)").unwrap().replace(name, "").into_owned();
+            let file = variant_suffix.replace(name, "").into_owned();
             let path = &paths[&format!("{suite}/{file}")];
             let content = read_test_file(path);
             let stem = baseline_stem(name);

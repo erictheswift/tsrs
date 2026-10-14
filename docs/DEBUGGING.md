@@ -13,8 +13,10 @@ this repository.
 - You get a private git worktree `$TSRS_WORK/wt/<agent-name>` on branch `fix/<agent-name>`,
   created from `origin/main`. Work only there (never in the main checkout `$TSRS_WORK/tsrs`
   or another agent's worktree). `ts-ref` inside it is a symlink to the Go reference checkout.
-- Build with your own target dir: `CARGO_TARGET_DIR=$PWD/target cargo build --release -p tsrs_testrunner -p tsrs_cli`
-  (release: the suite runs in ~25 s; a debug build is much slower to run).
+- Build with your own target dir: `CARGO_TARGET_DIR=$PWD/target cargo build --profile fast -p tsrs_testrunner -p tsrs_cli`
+  (`fast`: release optimization without LTO, incremental; a checker edit rebuilds in about 5 s, and the suite runs as
+  fast as on a `--release` build, notes/dev-loop-build.md. A debug build is much slower to run. Build `--release`
+  only to measure performance.)
 
 ## Landing changes (trunk-based, through GitHub)
 
@@ -34,7 +36,7 @@ understand, read both versions and the Go source; do not blindly take one side.
 
 ## Running tests
 
-- Full suite: `./target/release/tsrs-test run --suite all` -> summary table; per-class name lists in
+- Full suite: `./target/fast/tsrs-test run --suite all` -> summary table; per-class name lists in
   `target/test-results/{pass,codes,fail,crash,timeout}.txt`; `summary.json` has the first difference per test.
 - One test / a cluster: `tsrs-test run --filter <substring|regex>`, `tsrs-test show <suite/name>` (expected vs actual),
   `tsrs-test crashes --top 20` (panics grouped by location).
@@ -218,9 +220,10 @@ up in the referrer's current layout (`offset_of!`) before believing it: the stro
 `tsrs_core::census_layout` (`tsrs_checker::types::census_layouts`, `tsrs_ast::census_layouts`). **A layout change
 must update those registrations** (they are computed with `offset_of!`, so reordering fields is covered, but a new
 packed word, flag bits above an address or a new enum payload is not). Stale registrations both invent violations
-(padding read as pointers) and hide real ones (pointer fields skipped); notes/census-regress.md is what happened
-when they were hard-coded offsets. A violation that survives that check is a real bug: fix the escape tracking or
-stop freeing that class.
+(padding read as pointers) and hide real ones (pointer fields skipped). A violation that survives that check is a
+real bug: fix the escape tracking or stop freeing that class. Several census processes run in parallel can report a
+non-zero line for a file that reports 0 alone (the conservative mark's roots include stack contents, which depend on
+scheduling): rerun such a file alone before treating it as a violation.
 
 ## What each checker holds on the heap: the heap census
 
@@ -429,6 +432,26 @@ suite in the default checker mode with forced splits and compare its lists with 
 330 test programs are split). `cargo test -p tsrs_cli --test split_check` runs testdata/split-check in every mode
 against tsgo-ref's output.
 
+## What survives a watch cycle: the per-cycle heap report
+
+An alloc-profile build prints, after each watch cycle (`--watch` and `-b --watch`, on the free thread once the
+cycle's frees are done), the exact live Rust heap, mimalloc's committed memory and the process RSS, the sampled live
+bytes by the cycle that allocated them (epoch 0 is the first build), and the stacks of the bytes allocated by a cycle
+that are still live `TSRS_CYCLE_REPORT_AGE` (default 4) cycles later, the top `TSRS_CYCLE_REPORT_TOP` (default 12).
+`TSRS_CYCLE_MI_STATS=1` adds mimalloc's own statistics (blocks in use per size class, pages, abandoned pages,
+committed). It needs the heap sampler on:
+
+```sh
+CARGO_TARGET_DIR=target/prof CARGO_PROFILE_RELEASE_STRIP=false CARGO_PROFILE_RELEASE_DEBUG=line-tables-only \
+  cargo build --release -p tsrs_cli --features alloc-profile
+TSRS_HEAP_PROFILE=1 TSRS_HEAP_PROFILE_RATE=65536 target/prof/release/tsrs --watch -p . 2> cycles.err
+```
+
+Rows whose first frames are `alloc_profile::record` are the profiler's own per-site table growing (its newest buffer
+always looks like a survivor); leave them out. The build is several times slower than release, and the counting
+allocator's mimalloc does not take the collect hook (`set_heap_hooks`), so its committed and RSS numbers are those of
+a watch without the post-cycle collect. notes/watch-macos.md ("Memory") has a worked example.
+
 ## Profiling
 
 Profile the `dist` profile. It inherits `release` (fat LTO, one codegen unit, symbols stripped, no debug info);
@@ -456,7 +479,7 @@ Build the Go reference with a patched copy of one Go file, without editing `ts-r
 overlay JSON that maps *both* the symlinked and the real path of the file to the copy. Then, in `ts-ref/tsc`, run
 `GOTOOLCHAIN=auto go build -overlay <overlay.json> -o <bin> ./cmd/tsrs-oracle-testrunner` (the copy of
 `tools/oracle/testrunner/main.go`, placed as docs/PORTING.md "Reference tooling" describes) and `<bin> diags <regexp>`
-(one JSON line per variant of each test whose file name matches). notes/fix-compiler.md has an example.
+(one JSON line per variant of each test whose file name matches).
 
 ## How to fix
 

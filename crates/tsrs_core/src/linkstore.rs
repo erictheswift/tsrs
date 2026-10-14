@@ -71,7 +71,7 @@ impl<V> Default for PagedLinkStore<V> {
 
 impl<V: Default> PagedLinkStore<V> {
     fn new_page() -> &'static [PSlot<V>] {
-        crate::alloc_vec((0..PAGE_SIZE).map(|_| PSlot(V::default())).collect())
+        crate::alloc_vec(std::iter::repeat_with(|| PSlot(V::default())).take(PAGE_SIZE).collect())
     }
 
     pub fn get(&self, key: u64) -> P<V> {
@@ -131,7 +131,7 @@ mod tests {
         assert!(!store.has(k));
         store.get(k).n.set(5);
         assert_eq!(store.try_get(k).unwrap().n.get(), 5);
-        assert!(store.get(k) == store.get(k));
+        assert_eq!(store.get(k), store.get(k));
 
         let paged: PagedLinkStore<Links> = PagedLinkStore::default();
         assert!(!paged.has(3));

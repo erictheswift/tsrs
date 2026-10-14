@@ -125,8 +125,8 @@ impl<K: 'static, V: Default + LinkCopy + 'static> LinkStore<K, V> {
         tsrs_core::sitecount::hit("links", std::any::type_name::<V>());
         let index = self.len;
         self.slots.insert_unique(Self::hash(key), LinkSlot { key, index }, |slot| Self::hash(slot.key));
-        if index as usize % LINK_CHUNK == 0 {
-            self.chunks.push(PSlot::first(alloc_vec((0..LINK_CHUNK).map(|_| PSlot(V::default())).collect())));
+        if (index as usize).is_multiple_of(LINK_CHUNK) {
+            self.chunks.push(PSlot::first(alloc_vec(std::iter::repeat_with(|| PSlot(V::default())).take(LINK_CHUNK).collect())));
         }
         self.len += 1;
         if let Some(frozen) = self.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN).and_then(|p| p.index_by_pkey(key).map(|i| p.at(i))) {
@@ -270,8 +270,8 @@ impl<K: 'static, V: KeyedLinks + Default + LinkCopy + 'static> KeyedLinkStore<K,
     fn create(&mut self, key: PKey) -> P<V> {
         tsrs_core::sitecount::hit("links", std::any::type_name::<V>());
         let index = self.len;
-        if index as usize % LINK_CHUNK == 0 {
-            self.chunks.push(PSlot::first(alloc_vec((0..LINK_CHUNK).map(|_| PSlot(V::default())).collect())));
+        if (index as usize).is_multiple_of(LINK_CHUNK) {
+            self.chunks.push(PSlot::first(alloc_vec(std::iter::repeat_with(|| PSlot(V::default())).take(LINK_CHUNK).collect())));
         }
         self.len += 1;
         let value = keyed_at(&self.chunks, index);
@@ -516,11 +516,11 @@ impl<V: Default + LinkCopy + 'static> IdLinkStore<V> {
     fn create(&mut self, id: u64) -> P<V> {
         tsrs_core::sitecount::hit("links", std::any::type_name::<V>());
         let slot = self.len;
-        if slot as usize % ID_LINK_CHUNK == 0 {
-            self.chunks.push(PSlot::first(alloc_vec((0..ID_LINK_CHUNK).map(|_| PSlot(V::default())).collect())));
+        if (slot as usize).is_multiple_of(ID_LINK_CHUNK) {
+            self.chunks.push(PSlot::first(alloc_vec(std::iter::repeat_with(|| PSlot(V::default())).take(ID_LINK_CHUNK).collect())));
         }
         self.len += 1;
-        if id <= u32::MAX as u64 {
+        if u32::try_from(id).is_ok() {
             let group_index = (id >> ID_GROUP_SHIFT) as usize;
             if group_index >= self.index.len() {
                 // Grow by a quarter, not double: ids keep arriving in every checker's blocks for the whole run, so the
@@ -642,7 +642,7 @@ impl<V: 'static> InlineIdStore<V> {
             tables.containers += 1;
             tables.cap += INLINE_BLOCK_GROUPS as u64;
             tables.bytes += std::mem::size_of::<InlineBlock<V>>() as u64;
-            for group in block.get().iter().filter_map(|g| g.get()) {
+            for group in block.get().iter().filter_map(std::cell::Cell::get) {
                 tables.len += 1;
                 groups.containers += 1;
                 groups.len += INLINE_GROUP as u64;
@@ -861,7 +861,7 @@ mod tests {
     fn scrambled(mut ids: Vec<u64>, seed: u64) -> Vec<u64> {
         let mut x = seed;
         for i in (1..ids.len()).rev() {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             ids.swap(i, (x >> 33) as usize % (i + 1));
         }
         ids
@@ -890,13 +890,13 @@ mod tests {
             assert!(std::ptr::eq(store.get(id), address), "id {id} moved");
         }
         for id in (0..300_000u64).chain([(1 << 20) - 1, 1 << 20, (1 << 24) + 5]) {
-            assert_eq!(store.try_get(id).map_or(0, |v| v.get()), expected.get(&id).copied().unwrap_or(0), "id {id}");
+            assert_eq!(store.try_get(id).map_or(0, std::cell::Cell::get), expected.get(&id).copied().unwrap_or(0), "id {id}");
         }
         assert!(store.try_get(5_000_000).is_none());
         assert!(store.try_get((1 << 24) + 64).is_none()); // same block as (1 << 24) + 5, another group
         assert!(store.try_get(1 << 40).is_none());
         store.get(1 << 40).set(7);
-        assert_eq!(store.try_get(1 << 40).map(|v| v.get()), Some(7));
+        assert_eq!(store.try_get(1 << 40).map(std::cell::Cell::get), Some(7));
     }
 
     // The block index grows by a quarter, once per new top block: values written before every growth must still be
@@ -908,8 +908,8 @@ mod tests {
             store.get(b * 1024 + b % 1024).set(b as u32 + 1);
         }
         for b in 0..3000u64 {
-            assert_eq!(store.try_get(b * 1024 + b % 1024).map(|v| v.get()), Some(b as u32 + 1), "block {b}");
-            assert_eq!(store.try_get(b * 1024 + (b + 32) % 1024).map(|v| v.get()), None, "block {b}");
+            assert_eq!(store.try_get(b * 1024 + b % 1024).map(std::cell::Cell::get), Some(b as u32 + 1), "block {b}");
+            assert_eq!(store.try_get(b * 1024 + (b + 32) % 1024).map(std::cell::Cell::get), None, "block {b}");
         }
     }
 
@@ -946,7 +946,7 @@ mod tests {
         for (i, &key) in keys.iter().enumerate() {
             let value = store.try_get(key).unwrap();
             assert!(Some(value) == held[i], "key {i} moved");
-            assert!(store.get(key) == value);
+            assert_eq!(store.get(key), value);
             assert_eq!(value.n.get(), i as u32 + 1);
             assert_eq!(value.key.get(), key.key());
         }
@@ -960,7 +960,7 @@ mod tests {
     // never referenced must read as `None` without getting a record.
     #[test]
     fn reference_kinds_accumulate_in_their_slots() {
-        let symbols: Vec<P<Symbol>> = (0..20_000).map(|_| P::new(Symbol::default())).collect();
+        let symbols: Vec<P<Symbol>> = std::iter::repeat_with(|| P::new(Symbol::default())).take(20000).collect();
         let mut store = SymbolReferenceLinkStore::default();
         for (i, &symbol) in symbols.iter().enumerate().filter(|(i, _)| i % 3 != 0) {
             store.add_reference_kinds(symbol, SymbolFlags::Value);
@@ -987,7 +987,7 @@ mod tests {
         let mut ids: Vec<u64> = (0..3000u64).map(|i| (i * 7919) % 40_000).collect();
         let mut x = 12345u64;
         for i in (1..ids.len()).rev() {
-            x = x.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            x = x.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
             ids.swap(i, (x >> 33) as usize % (i + 1));
         }
         let mut expected: FxHashMap<u64, u32> = FxHashMap::default();

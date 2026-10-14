@@ -3,7 +3,6 @@
 use rustc_hash::FxHashSet;
 use tsrs_ast::{self as ast, Kind, Node, NodeFlags, SourceFile};
 use tsrs_core::context::Context;
-use tsrs_core::goslices;
 use tsrs_core::{TextRange, P};
 use tsrs_lsproto as lsproto;
 use tsrs_printer as printer;
@@ -30,7 +29,7 @@ impl LanguageService {
             }
             ranges
         }));
-        goslices::sort_stable_func(&mut res, |a, b| {
+        res.sort_by(|a, b| {
             let c = a.start_line.cmp(&b.start_line);
             if c != std::cmp::Ordering::Equal {
                 return c;
@@ -432,18 +431,13 @@ struct RegionDelimiterResult {
     name: String,
 }
 
-// Go strings.TrimSpace / unicode.IsSpace: ASCII white space plus U+0085, U+00A0 and the Unicode White_Space set.
-fn go_is_space(r: char) -> bool {
-    matches!(r, '\t' | '\n' | '\u{0B}' | '\u{0C}' | '\r' | ' ' | '\u{85}' | '\u{A0}') || (!r.is_ascii() && r.is_whitespace())
-}
-
 // folding.go:372
 fn parse_region_delimiter(line_text: &str) -> Option<RegionDelimiterResult> {
     // We trim the leading whitespace and // without the regex since the
     // multiple potential whitespace matches can make for some gnarly backtracking behavior
-    let line_text = line_text.trim_start_matches(go_is_space);
+    let line_text = line_text.trim_start();
     let line_text = line_text.strip_prefix("//")?;
-    let line_text = line_text.trim_matches(go_is_space);
+    let line_text = line_text.trim();
     let line_text = line_text.strip_suffix('\r').unwrap_or(line_text);
     let mut line_text = line_text.strip_prefix('#')?;
     let mut is_start = true;
@@ -452,7 +446,7 @@ fn parse_region_delimiter(line_text: &str) -> Option<RegionDelimiterResult> {
         line_text = rest;
     }
     let line_text = line_text.strip_prefix("region")?;
-    Some(RegionDelimiterResult { is_start, name: line_text.trim_matches(go_is_space).to_string() })
+    Some(RegionDelimiterResult { is_start, name: line_text.trim().to_string() })
 }
 
 // folding.go:400
@@ -555,7 +549,7 @@ fn span_for_import_export_elements(ctx: &Context, node: P<Node>, source_file: P<
         Kind::ImportAttributes => Some(node.as_import_attributes().attributes.nodes()),
         _ => None,
     };
-    if elements.is_none_or(|e| e.is_empty()) {
+    if elements.is_none_or(<[tsrs_core::P<tsrs_ast::Node>]>::is_empty) {
         return None;
     }
     let open_token = astnav::find_child_of_kind(node, Kind::OpenBraceToken, source_file);

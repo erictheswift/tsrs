@@ -74,38 +74,9 @@ pub fn is_ascii_letter(ch: Rune) -> bool {
 }
 
 pub fn split_lines(text: &str) -> Vec<&str> {
-    let bytes = text.as_bytes();
-    let mut lines = Vec::with_capacity(memchr::memchr_iter(b'\n', bytes).count() + 1);
-    let mut start = 0;
-    let mut pos = 0;
-    while pos < bytes.len() {
-        match bytes[pos] {
-            b'\r' => {
-                if pos + 1 < bytes.len() && bytes[pos + 1] == b'\n' {
-                    lines.push(&text[start..pos]);
-                    pos += 2;
-                    start = pos;
-                    continue;
-                }
-                lines.push(&text[start..pos]);
-                pos += 1;
-                start = pos;
-                continue;
-            }
-            b'\n' => {
-                lines.push(&text[start..pos]);
-                pos += 1;
-                start = pos;
-                continue;
-            }
-            _ => {}
-        }
-        pos += 1;
-    }
-    if start < bytes.len() {
-        lines.push(&text[start..]);
-    }
-    lines
+    text.split_terminator('\n')
+        .flat_map(|line| line.strip_suffix('\r').unwrap_or(line).split('\r'))
+        .collect()
 }
 
 pub fn guess_indentation(lines: &[&str]) -> usize {
@@ -261,7 +232,7 @@ pub fn truncate_by_runes(str: &str, max_length: usize) -> &str {
     if max_length == 0 {
         return "";
     }
-    if let Some((i, _)) = str.char_indices().nth(max_length as usize) {
+    if let Some((i, _)) = str.char_indices().nth(max_length) {
         return &str[..i];
     }
     str
@@ -286,13 +257,13 @@ pub fn is_surrogate(ch: Rune) -> bool {
 
 pub fn surrogate_pair_to_code_point(r1: Rune, r2: Rune) -> Rune {
     if (0xD800..0xDC00).contains(&r1) && (0xDC00..0xE000).contains(&r2) {
-        return ((r1 - 0xD800) << 10 | (r2 - 0xDC00)) + 0x10000;
+        return (((r1 - 0xD800) << 10) | (r2 - 0xDC00)) + 0x10000;
     }
     0xFFFD
 }
 
 pub fn code_point_to_surrogate_pair(r: Rune) -> (Rune, Rune) {
-    if r < 0x10000 || r > 0x10FFFF {
+    if !(0x0001_0000..=0x0010_FFFF).contains(&r) {
         return (0xFFFD, 0xFFFD);
     }
     let r = r - 0x10000;
@@ -349,7 +320,7 @@ pub fn decode_js_string_rune_bytes(s: &[u8]) -> (Rune, usize) {
         && s[2] >= UTF8_CONT_MARKER
         && s[2] <= UTF8_CONT_MAX
     {
-        return (SURROGATE_UTF8_LEAD_BITS | ((s[1] & UTF8_CONT_MASK) as Rune) << 6 | (s[2] & UTF8_CONT_MASK) as Rune, 3);
+        return (SURROGATE_UTF8_LEAD_BITS | (((s[1] & UTF8_CONT_MASK) as Rune) << 6) | (s[2] & UTF8_CONT_MASK) as Rune, 3);
     }
     decode_rune(s)
 }
@@ -402,7 +373,15 @@ mod tests {
 
     #[test]
     fn test_misc() {
-        assert_eq!(split_lines("a\r\nb\rc\nd"), vec!["a", "b", "c", "d"]);
+        for (text, expected) in [
+            ("", vec![]),
+            ("a\r\nb\rc\nd", vec!["a", "b", "c", "d"]),
+            ("a\r\n", vec!["a"]),
+            ("\r\n\r\r\n", vec!["", "", ""]),
+            ("é\ra\n\n", vec!["é", "a", ""]),
+        ] {
+            assert_eq!(split_lines(text), expected);
+        }
         assert_eq!(unquote_string("\"a\\\"b\""), "a\"b");
         assert_eq!(strip_quotes("'x'"), "x");
         assert!(is_unicode_identifier_start('é' as Rune));

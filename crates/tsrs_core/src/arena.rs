@@ -501,7 +501,7 @@ impl Arena {
 /// possible pointer; with the arena next to the malloc heap (around 0x200_0000_0000), any pair of 32-bit fields
 /// whose second half is 0x200 (a common flag value) "points" into it, which shows up as spurious would-free
 /// violations. Bytes 4-5 = 00 7c (NUL then `|`) are rare in numbers and text.
-#[cfg(feature = "alloc-profile")]
+#[cfg(all(feature = "alloc-profile", not(compressed_ptrs)))]
 fn census_chunk(size: usize) -> *mut u8 {
     use std::sync::atomic::AtomicUsize;
     unsafe extern "C" {
@@ -576,9 +576,33 @@ const CENSUS_GAP: usize = if cfg!(feature = "alloc-profile") { CHUNK_ALIGN } els
 
 thread_local! {
     /// The thread's current slab and its bump position (upwards).
-    static SLAB: Cell<(*const Slab, usize)> = const { Cell::new((std::ptr::null(), 0)) };
+    static SLAB: CurrentSlab = const { CurrentSlab(Cell::new((std::ptr::null(), 0))) };
     /// The same for large slabs (`LARGE_SLAB_SIZE`).
-    static LARGE_SLAB: Cell<(*const Slab, usize)> = const { Cell::new((std::ptr::null(), 0)) };
+    static LARGE_SLAB: CurrentSlab = const { CurrentSlab(Cell::new((std::ptr::null(), 0))) };
+}
+
+/// A thread's current slab, which holds one of the slab's references until the thread exits. Without the release,
+/// every thread that ended kept its current slab: a watch session's checker and worker threads are made per build
+/// and end with it, and switching branches on vscode kept about 0.9 GB of the arena address range per round trip.
+struct CurrentSlab(Cell<(*const Slab, usize)>);
+
+impl CurrentSlab {
+    fn get(&self) -> (*const Slab, usize) {
+        self.0.get()
+    }
+
+    fn set(&self, v: (*const Slab, usize)) {
+        self.0.set(v);
+    }
+}
+
+impl Drop for CurrentSlab {
+    fn drop(&mut self) {
+        let (slab, _) = self.0.get();
+        if !slab.is_null() {
+            slab_release(slab);
+        }
+    }
 }
 
 /// Released standard-size slabs kept for reuse instead of going back to the system (compressed pointers: a
@@ -606,11 +630,12 @@ fn new_slab(size: usize, live: usize) -> *const Slab {
 fn slab_carve(size: usize, large: bool) -> (*mut u8, *const Slab) {
     let (current, slab_size) = if large { (&LARGE_SLAB, LARGE_SLAB_SIZE) } else { (&SLAB, SLAB_SIZE) };
     if size > slab_size / 4 {
-        let slab = new_slab(size, 1);
-        // SAFETY: just made.
-        return (unsafe { (*slab).base }, slab);
+        return own_slab(size);
     }
-    let (mut cur, mut bump) = current.with(|s| s.get());
+    // A thread-local destructor that allocates in a region after the thread's slab was released gets a slab of its own.
+    let Ok((mut cur, mut bump)) = current.try_with(CurrentSlab::get) else {
+        return own_slab(size);
+    };
     // SAFETY: the current slab is kept alive by the thread's reference.
     if cur.is_null() || bump + size + CENSUS_GAP > unsafe { (*cur).base.addr() + (*cur).size } {
         if !cur.is_null() {
@@ -627,18 +652,27 @@ fn slab_carve(size: usize, large: bool) -> (*mut u8, *const Slab) {
     (slab.base.with_addr(bump), cur)
 }
 
+/// A slab for one chunk.
+fn own_slab(size: usize) -> (*mut u8, *const Slab) {
+    let slab = new_slab(size, 1);
+    // SAFETY: just made.
+    (unsafe { (*slab).base }, slab)
+}
+
 /// Moves the thread's slab position back from `end` to `new_end` if the chunk ending at `end` was its last carve.
 fn slab_trim(slab: *const Slab, end: usize, new_end: usize) -> bool {
     [&SLAB, &LARGE_SLAB].into_iter().any(|current| {
-        current.with(|s| {
-            let (cur, bump) = s.get();
-            if cur == slab && bump == end + CENSUS_GAP {
-                s.set((cur, new_end + CENSUS_GAP));
-                true
-            } else {
-                false
-            }
-        })
+        current
+            .try_with(|s| {
+                let (cur, bump) = s.get();
+                if cur == slab && bump == end + CENSUS_GAP {
+                    s.set((cur, new_end + CENSUS_GAP));
+                    true
+                } else {
+                    false
+                }
+            })
+            .unwrap_or(false)
     })
 }
 
@@ -735,7 +769,7 @@ fn census_mode() -> bool {
 /// are not recycled.
 #[inline]
 pub const fn free_class(size: usize, align: usize) -> usize {
-    if size >= 8 && size <= MAX_FREE_SIZE && size % 8 == 0 && align <= 8 {
+    if size >= 8 && size <= MAX_FREE_SIZE && size.is_multiple_of(8) && align <= 8 {
         size / 8
     } else {
         0
@@ -749,7 +783,7 @@ pub const fn free_class(size: usize, align: usize) -> usize {
 #[inline]
 pub(crate) unsafe fn free_block(arena: &Arena, addr: usize, size: usize, align: usize, needs_drop: bool) {
     let class = free_class(size, align);
-    if class == 0 || addr % 8 != 0 {
+    if class == 0 || !addr.is_multiple_of(8) {
         return;
     }
     // A region's drop list still names the block; it is dropped (not reused) when the region is freed.
@@ -807,7 +841,7 @@ pub(crate) fn rewind(arena: &Arena, cp: Checkpoint) {
     #[cfg(debug_assertions)]
     // SAFETY: as above.
     unsafe {
-        std::ptr::write_bytes(now, POISON, len)
+        std::ptr::write_bytes(now, POISON, len);
     };
     #[cfg(feature = "alloc-profile")]
     assert!(!crate::alloc_profile::census::active(), "arena rewind while the census records");
@@ -839,9 +873,11 @@ thread_local! {
     /// Scope tokens: a scope is `!Send`, so tokens only need to be unique on their thread (a global counter was a
     /// contended cache line once scratch regions push a scope per checker call).
     static NEXT_TOKEN: Cell<u64> = const { Cell::new(1) };
-    /// While a scratch region is entered on this thread (`Region::enter_scratch`): its arena, and the allocation
-    /// target that was current when it was entered (`escape_scratch`). Null when none is.
-    static SCRATCH: Cell<(*const Arena, *const Arena)> = const { Cell::new((std::ptr::null(), std::ptr::null())) };
+    /// While a scratch region is entered on this thread (`Region::enter_scratch`): its arena, the allocation target
+    /// that was current when it was entered (`escape_scratch_one_level`), and the one that was current when the
+    /// outermost entered scratch region was entered (`escape_scratch`). Null when none is.
+    static SCRATCH: Cell<(*const Arena, *const Arena, *const Arena)> =
+        const { Cell::new((std::ptr::null(), std::ptr::null(), std::ptr::null())) };
 }
 
 /// A lock that the thread holding it may take again (a region entered while it is already entered).
@@ -901,6 +937,8 @@ pub(crate) struct RegionInner {
     on_free: Mutex<Vec<Box<dyn FnOnce() + Send>>>,
     /// `retire_on_free`.
     retire: AtomicBool,
+    /// `note_escape`.
+    escaped: AtomicBool,
 }
 
 #[expect(clippy::non_send_fields_in_send_ty, reason = "the arena's cells: see the SAFETY comment")]
@@ -944,6 +982,7 @@ impl Region {
             owners: Mutex::new(Vec::new()),
             on_free: Mutex::new(Vec::new()),
             retire: AtomicBool::new(false),
+            escaped: AtomicBool::new(false),
         }))
     }
 
@@ -1044,6 +1083,16 @@ impl Region {
     pub fn ptr_eq(&self, other: &Region) -> bool {
         Arc::ptr_eq(&self.0, &other.0)
     }
+
+    /// Whether an object in the region was stored in a structure that may outlive it (`note_escape`).
+    pub fn escaped(&self) -> bool {
+        self.0.escaped.load(Ordering::Acquire)
+    }
+
+    /// `note_escape` for the whole region.
+    pub fn mark_escaped(&self) {
+        self.0.escaped.store(true, Ordering::Release);
+    }
 }
 
 impl std::fmt::Debug for Region {
@@ -1109,6 +1158,11 @@ pub(crate) fn no_scope_open() -> bool {
     SCOPES.with(|s| s.borrow().is_empty()) && SCRATCH.with(|s| s.get().0.is_null())
 }
 
+/// `no_scope_open` while the thread exits: the scope stack may be gone already, and with it every scope.
+pub(crate) fn no_scope_open_at_exit() -> bool {
+    SCOPES.try_with(|s| s.borrow().is_empty()).unwrap_or(true) && SCRATCH.with(|s| s.get().0.is_null())
+}
+
 pub(crate) fn give_spare_arena(arena: &'static Arena) {
     CURRENT.with(|c| c.set(std::ptr::null()));
     SPARE_ARENAS.lock().unwrap().push(SpareArena(arena));
@@ -1138,13 +1192,23 @@ pub fn trim_own_arena_tail() {
 
 /// The region that is the current thread's allocation target, if any (`None`: the thread's own arena).
 pub fn current_region() -> Option<Region> {
-    let p = CURRENT.with(|c| c.get());
+    let p = CURRENT.with(std::cell::Cell::get);
     if p.is_null() {
         return None;
     }
     // SAFETY: a non-null `CURRENT` is the thread arena or the arena of a region kept alive by an entered scope.
     let arena = unsafe { &*p };
-    arena.region.as_ref().and_then(|w| w.upgrade()).map(Region)
+    arena.region.as_ref().and_then(std::sync::Weak::upgrade).map(Region)
+}
+
+/// Records that the object at `addr` was stored in a structure that may outlive the owner of its region (a
+/// program-lifetime cache filled while a checker is held, whose region is the allocation target): the owner must then
+/// keep the region until that structure goes (`Region::escaped`; tsrs_project checkerpool.rs). No-op for an object
+/// outside every region, and while no region exists (the CLI).
+pub fn note_escape(addr: usize) {
+    if let Some(region) = Region::containing(addr) {
+        region.mark_escaped();
+    }
 }
 
 /// Makes the current thread's own (never freed) arena the allocation target until the scope is dropped: for data
@@ -1166,6 +1230,9 @@ pub fn enter_owner(addr: usize) -> Option<RegionScope> {
     }
     Some(match Region::containing(addr) {
         Some(region) => region.enter(),
+        // Scratch regions are not registered: an object of the one entered on this thread (a checker's, a file's
+        // emit) keeps its data there, as when no region is registered, instead of leaking it into the thread arena.
+        None if scratch_contains(addr) => return None,
         None => enter_thread_arena(),
     })
 }
@@ -1180,9 +1247,11 @@ pub fn enter_table_owner(addr: usize) -> Option<RegionScope> {
     if !ANY_REGION.load(Ordering::Relaxed) {
         return escape_scratch_unless_inside(addr);
     }
-    let current = CURRENT.with(|c| c.get());
+    let current = CURRENT.with(std::cell::Cell::get);
     match Region::containing(addr) {
         Some(region) if std::ptr::eq(&raw const *region.0.arena, current) => None,
+        // As in `enter_owner`: a table in the scratch region entered on this thread, which is the current target.
+        None if std::ptr::eq(scratch_arena(), current) && scratch_contains(addr) => None,
         _ => Some(enter_thread_arena()),
     }
 }
@@ -1198,7 +1267,7 @@ pub fn enter_table_owner(addr: usize) -> Option<RegionScope> {
 /// printer and the node builder's per-call state allocate in it, the checker escapes (its types, symbols and caches
 /// outlive the file).
 pub struct ScratchScope {
-    saved: (*const Arena, *const Arena),
+    saved: (*const Arena, *const Arena, *const Arena),
     _scope: RegionScope,
 }
 
@@ -1206,10 +1275,14 @@ impl Region {
     /// `enter`, and makes the region the thread's scratch region (see `ScratchScope`). Scratch scopes nest; the
     /// innermost one is the scratch region.
     pub fn enter_scratch(&self) -> ScratchScope {
-        let outer = CURRENT.with(|c| c.get());
+        let outer = CURRENT.with(std::cell::Cell::get);
         let outer = if outer.is_null() { std::ptr::from_ref::<Arena>(crate::ptr::own_arena()) } else { outer };
         let scope = self.enter();
-        let saved = SCRATCH.with(|s| s.replace((&raw const *self.0.arena, outer)));
+        let saved = SCRATCH.with(|s| {
+            let (enclosing, _, enclosing_root) = s.get();
+            let root = if enclosing.is_null() { outer } else { enclosing_root };
+            s.replace((&raw const *self.0.arena, outer, root))
+        });
         ScratchScope { saved, _scope: scope }
     }
 }
@@ -1220,17 +1293,83 @@ impl Drop for ScratchScope {
     }
 }
 
-/// Inside a scratch region, makes the allocation target that was current when it was entered (the thread's own arena,
-/// or an enclosing region) the target until the scope is dropped: for code whose allocations may outlive the scratch
-/// region (the checker called from emit, program caches, diagnostics). `None` (no cost beyond a thread-local read)
-/// outside scratch regions or when that target is already current.
+/// Inside scratch regions, makes the allocation target that was current when the outermost of them was entered (the
+/// thread's own arena, or an enclosing region that is not a scratch region) the target until the scope is dropped:
+/// for code whose allocations may outlive every scratch region (program caches, diagnostics, the lazily filled data
+/// of shared objects). Scratch regions nest when a checker that runs in a region of its own (checkerpool.rs
+/// `SlotChecker`) emits a file (program_emit.rs): what escapes the file's region must outlive the checker too, as an
+/// incremental snapshot keeps the diagnostics after their program's checkers are freed (watch mode). `None` (no cost
+/// beyond a thread-local read) outside scratch regions or when that target is already current.
 #[inline]
 pub fn escape_scratch() -> Option<RegionScope> {
-    let (scratch, outer) = SCRATCH.with(|s| s.get());
-    if scratch.is_null() || CURRENT.with(|c| c.get()) == outer {
+    let (scratch, _, root) = SCRATCH.with(std::cell::Cell::get);
+    if scratch.is_null() || CURRENT.with(std::cell::Cell::get) == root {
+        return None;
+    }
+    Some(RegionScope::push(root, None))
+}
+
+/// `escape_scratch` to the target that was current when the innermost scratch region was entered: for the checker
+/// called from emit, whose types, symbols and caches outlive one file's emit region and belong to the checker's own
+/// region when it has one.
+#[inline]
+pub fn escape_scratch_one_level() -> Option<RegionScope> {
+    let (scratch, outer, _) = SCRATCH.with(std::cell::Cell::get);
+    if scratch.is_null() || CURRENT.with(std::cell::Cell::get) == outer {
         return None;
     }
     Some(RegionScope::push(outer, None))
+}
+
+thread_local! {
+    /// `Region::route_diagnostics`: (the allocation target the route applies to, the arena the diagnostics go to);
+    /// null while no route is set.
+    static DIAGNOSTIC_ROUTE: Cell<(*const Arena, *const Arena)> = const { Cell::new((std::ptr::null(), std::ptr::null())) };
+}
+
+/// A route set by `Region::route_diagnostics`, until dropped.
+pub struct DiagnosticRoute {
+    saved: (*const Arena, *const Arena),
+    _region: Region,
+    _not_send: std::marker::PhantomData<*const ()>,
+}
+
+impl Region {
+    /// Until the route is dropped, diagnostics made on this thread while the allocation target is the current one
+    /// (`escape_for_diagnostic`) go to this region instead of escaping the thread's scratch regions: for a session
+    /// that frees what it no longer uses (watch mode), whose checkers would otherwise leave every diagnostic they
+    /// report in the thread arenas (a few thousand per cycle on vscode). Diagnostics made under another target (the
+    /// lazily filled data of a file, `enter_owner`; a program cache, `escape_scratch`) are not routed.
+    ///
+    /// The route allocates in the region without entering it: while the route is set, no other thread may allocate
+    /// in it.
+    pub fn route_diagnostics(&self) -> DiagnosticRoute {
+        let saved = DIAGNOSTIC_ROUTE.with(|r| r.replace((current_target(), &raw const *self.0.arena)));
+        DiagnosticRoute { saved, _region: self.clone(), _not_send: std::marker::PhantomData }
+    }
+}
+
+impl Drop for DiagnosticRoute {
+    fn drop(&mut self) {
+        DIAGNOSTIC_ROUTE.with(|r| r.set(self.saved));
+    }
+}
+
+/// For the allocations of a diagnostic: its route's region (`Region::route_diagnostics`) when the allocation target
+/// is the one the route applies to, else `escape_scratch`.
+#[inline]
+pub fn escape_for_diagnostic() -> Option<RegionScope> {
+    let (from, to) = DIAGNOSTIC_ROUTE.with(std::cell::Cell::get);
+    if !from.is_null() && current_target() == from {
+        return Some(RegionScope::push(to, None));
+    }
+    escape_scratch()
+}
+
+/// The allocation target: the current region's arena, or the thread's own.
+fn current_target() -> *const Arena {
+    let cur = CURRENT.with(std::cell::Cell::get);
+    if cur.is_null() { std::ptr::from_ref::<Arena>(crate::ptr::own_arena()) } else { cur }
 }
 
 /// `escape_scratch` unless the object at `addr` lives in the scratch region (`enter_owner` without registered regions).
@@ -1245,7 +1384,7 @@ fn escape_scratch_unless_inside(addr: usize) -> Option<RegionScope> {
 /// Whether a scratch region is entered on this thread.
 #[inline]
 pub fn scratch_active() -> bool {
-    !SCRATCH.with(|s| s.get()).0.is_null()
+    !SCRATCH.with(std::cell::Cell::get).0.is_null()
 }
 
 /// Whether `addr` lies in the thread's scratch region (for caches outside it that must forget keys in it).
@@ -1262,7 +1401,7 @@ pub fn scratch_contains(addr: usize) -> bool {
 /// The thread's scratch region's arena, if one is entered.
 #[inline]
 pub(crate) fn scratch_arena() -> *const Arena {
-    SCRATCH.with(|s| s.get()).0
+    SCRATCH.with(std::cell::Cell::get).0
 }
 
 impl Drop for RegionInner {
@@ -1353,7 +1492,7 @@ mod retired {
     /// Retires `start .. start + len` (nothing uses it any more, and it is never handed out again).
     pub(super) fn retire(start: usize, len: usize) {
         let (pages, calls) = {
-            let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             s.pending.push((start, start + len));
             s.pending_bytes += len;
             if s.pending_bytes < BATCH {
@@ -1368,7 +1507,7 @@ mod retired {
 
     pub(super) fn flush() {
         let (pages, calls) = {
-            let mut s = STATE.lock().unwrap_or_else(|e| e.into_inner());
+            let mut s = STATE.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             let pages = take_pages(&mut s);
             let calls = spans_of(&s, &pages);
             (pages, calls)
@@ -1455,13 +1594,26 @@ mod retired {
         merged
     }
 
+    /// Gives back `calls` (whole pages of retired spans, `spans_of`); `pages`, the ones not given back before, are
+    /// what `stats` counts.
+    fn give_back(pages: &[(usize, usize)], calls: &[(usize, usize)]) {
+        for &(first, last) in calls {
+            // SAFETY: whole pages inside retired spans: chunks and slabs nothing uses any more, never handed out
+            // again; `first` is page aligned (and so is `last - first`).
+            unsafe { crate::reserve::discard(std::ptr::with_exposed_provenance_mut::<u8>(first), last - first) };
+        }
+        // Relaxed: counters (see `stats`).
+        CALLS.fetch_add(calls.len(), Ordering::Relaxed);
+        BYTES.fetch_add(pages.iter().map(|&(first, last)| last - first).sum(), Ordering::Relaxed);
+    }
+
     #[cfg(test)]
     mod tests {
         use super::{spans_of, take_pages, State};
         use std::collections::BTreeMap;
 
         fn batch(s: &mut State, ranges: &[(usize, usize)]) -> Vec<(usize, usize)> {
-            s.pending.extend(ranges.into_iter().map(|&(start, end)| (start, end)));
+            s.pending.extend(ranges.iter().map(|&(start, end)| (start, end)));
             take_pages(s)
         }
 
@@ -1495,19 +1647,6 @@ mod retired {
             assert_eq!(pages, [(8 * p, 10 * p), (12 * p, 14 * p), (30 * p, 31 * p)]);
             assert_eq!(spans_of(&s, &pages), [(8 * p, 14 * p), (30 * p, 31 * p)]);
         }
-    }
-
-    /// Gives back `calls` (whole pages of retired spans, `spans_of`); `pages`, the ones not given back before, are
-    /// what `stats` counts.
-    fn give_back(pages: &[(usize, usize)], calls: &[(usize, usize)]) {
-        for &(first, last) in calls {
-            // SAFETY: whole pages inside retired spans: chunks and slabs nothing uses any more, never handed out
-            // again; `first` is page aligned (and so is `last - first`).
-            unsafe { crate::reserve::discard(std::ptr::with_exposed_provenance_mut::<u8>(first), last - first) };
-        }
-        // Relaxed: counters (see `stats`).
-        CALLS.fetch_add(calls.len(), Ordering::Relaxed);
-        BYTES.fetch_add(pages.iter().map(|&(first, last)| last - first).sum(), Ordering::Relaxed);
     }
 }
 
@@ -1654,12 +1793,14 @@ mod tests {
             let _scope = region.enter();
             let a = P::new([1u64, 2]);
             let a_addr = a.addr();
+            // SAFETY: a is no longer accessed after this call, so its region block can be recycled.
             unsafe { free!(a) };
             let b = P::new_recycled([3u64, 4]);
             assert_eq!(b.addr(), a_addr);
             // A value that needs drop is not recycled in a region: its drop entry stays.
             let c = P::new(Rc::clone(&counter));
             let c_addr = c.addr();
+            // SAFETY: c is no longer accessed; its region retains the drop entry for the Rc payload.
             unsafe { free!(c) };
             let d = P::new_recycled(Rc::clone(&counter));
             assert_ne!(d.addr(), c_addr);
@@ -1671,6 +1812,34 @@ mod tests {
         drop(region);
         // The rewound value lost its entry (not dropped, like a thread arena); `c` and `d` were dropped.
         assert_eq!(Rc::strong_count(&counter), 2);
+    }
+
+    #[test]
+    fn nested_scratch_regions_escape_past_all_of_them() {
+        use super::{escape_scratch, escape_scratch_one_level, Region};
+        // A checker in a scratch region of its own emits a file in a nested scratch region: the checker's data
+        // escapes the file's region into the checker's, diagnostics escape both.
+        let outer = Region::new(4096);
+        let checker = Region::new(4096);
+        let file = Region::new(4096);
+        let _o = outer.enter();
+        let _c = checker.enter_scratch();
+        {
+            let _f = file.enter_scratch();
+            assert!(Region::containing(P::new(1u64).addr()).unwrap().ptr_eq(&file));
+            {
+                let _e = escape_scratch_one_level().unwrap();
+                assert!(Region::containing(P::new(2u64).addr()).unwrap().ptr_eq(&checker));
+                let _d = escape_scratch().unwrap();
+                assert!(Region::containing(P::new(3u64).addr()).unwrap().ptr_eq(&outer));
+            }
+            let _d = escape_scratch().unwrap();
+            assert!(Region::containing(P::new(4u64).addr()).unwrap().ptr_eq(&outer));
+        }
+        // Back in the checker's region alone: both escapes lead to the same target.
+        let _e = escape_scratch().unwrap();
+        assert!(escape_scratch_one_level().is_none());
+        assert!(Region::containing(P::new(5u64).addr()).unwrap().ptr_eq(&outer));
     }
 
     #[test]
@@ -1734,6 +1903,7 @@ mod tests {
         }
         let big = crate::alloc_slice(&vec![0u8; 4 * SIZE]);
         assert!(!range.contains(&(big.as_ptr() as usize)) && !range.contains(&(big.as_ptr() as usize + big.len() - 1)));
+        drop(later);
     }
 
     #[test]

@@ -3,11 +3,12 @@
 `docs/PORTING.md` says how Go becomes Rust. This file says what the Rust must not do, how that is checked, and which
 performance techniques are in place, rejected or untried.
 
-The port keeps the shape of the Go code, so clippy's style advice does not apply. What a port gets wrong is cost that
-Go hides or does not have: copies, allocations, argument passing, hash iteration order, and `unsafe`. The rules below
-target those. They come from reading how other Rust projects with this workload keep their code fast and sound (as of
-2026-10): Bun (also an agent-written port, Zig to Rust), oxc, Rolldown, rust-analyzer, Ruff and ty, Biome, Turborepo
-and swc. Where a rule copies one of them, it says which.
+The Clippy baseline follows oxc: the `all`, `pedantic`, `complexity`, `nursery`, and `cargo` groups, with oxc's
+documented global exceptions. The port keeps the Go source's public API, names, numeric domains, and control-flow
+shape where changing them would obscure parity, so `Cargo.toml` documents the additional active exceptions. The
+stricter rules below target costs and risks that a port can introduce: copies, allocations, argument passing, hash
+iteration order, threading, and `unsafe`. They draw on Bun, oxc, Rolldown, rust-analyzer, Ruff and ty, Biome,
+Turborepo, and swc. Where a rule copies one of them, it says which.
 
 ## Clippy
 
@@ -15,9 +16,9 @@ and swc. Where a rule copies one of them, it says which.
 cargo clippy --workspace --locked --exclude tsrs_fourslash --config 'build.warnings="deny"' -- -D dead-code
 ```
 
-`[workspace.lints.clippy]` in `Cargo.toml` and `clippy.toml` turn on a chosen set of Clippy lints. Every enabled lint
-is `deny`, and CI also denies ordinary compiler warnings. There is no findings baseline: the command above must be
-clean before a change lands (CI runs it in the `lint` job).
+`[workspace.lints.clippy]` in `Cargo.toml` and `clippy.toml` turn on the oxc baseline and the project-specific strict
+lints. The command promotes warnings to errors, and CI also denies ordinary compiler warnings. There is no findings
+baseline: the command above must be clean before a change lands (CI runs it in the `lint` job).
 
 When it fails:
 
@@ -32,11 +33,10 @@ Details:
 - Findings depend on the Clippy version, so `rust-toolchain.toml` pins it everywhere.
 - The command covers the library and binary targets of every workspace crate except `tsrs_fourslash`. That crate is
   mostly 750k lines of generated Go test translations and has its own generator and build gates.
-- Generated schema files that need blanket exemptions emit reasoned file attributes from their generators. Other
-  generated Rust is linted; fix its generator when Clippy finds something.
-- Specialized targets and the generated fourslash harness have target-specific unused items, so `[workspace.lints.rust]`
-  keeps `dead_code` allowed and the Clippy command denies it over Clippy's scope. `unused_imports`, `unused_variables`,
-  `unused_mut` and `unsafe_op_in_unsafe_fn` are ordinary compiler warnings, which `build.warnings=deny` rejects.
+- Generated Rust is linted; fix its generator when Clippy finds something. When generated code intentionally needs
+  an exception, emit the smallest reasoned `#[expect]` from the generator.
+- `dead_code`, `unused_imports`, `unused_variables`, `unused_mut` and `unsafe_op_in_unsafe_fn` are ordinary compiler
+  warnings, which `build.warnings=deny` rejects. The Clippy command also denies `dead_code` explicitly over its scope.
 
 ## Upgrading Rust
 
@@ -90,17 +90,17 @@ Test files, the generated fourslash crate and generated files are not scanned.
 | Leftovers | `dbg_macro`, `todo`, `unimplemented`, `disallowed_macros`, `allow_attributes`, `allow_attributes_without_reason` | Debugging output and placeholders do not land; suppressions are `#[expect]` with a reason. Bun, oxc and Rolldown have all of the first three; rust-analyzer, Ruff and Biome have `dbg_macro`. |
 | Unused code | `dead_code`, `unused_imports`, `unused_variables`, `unused_mut` (rustc) | Clippy denies unused code in its scope; ordinary compiler warnings are denied in every CI build. Unused variables were not prefixed with `_` in bulk: in a port an unused parameter can mean the Rust code dropped something the Go code uses, so each was checked against Go. Bun denies `dead_code`. |
 
-Left off on purpose: the `style`, `complexity` and `pedantic` groups (they would rewrite Go-shaped code), `unwrap_used`
-(Go's nil dereference is a panic too), `or_fun_call` (it turns `unwrap_or(f())` into `unwrap_or_else(f)`; Go evaluates
-`f` eagerly, and when `f` creates a type or symbol, skipping it changes ids and so output order; oxc and Rolldown
-leave it off too), the cast lints (the port has about 1,000 `as usize`), `print_stdout` /
-`print_stderr` (the CLI and the `TSRS_*` diagnostics print).
+Global exceptions beyond oxc's list are limited to active Go-port patterns documented in `Cargo.toml`: Go-shaped
+visibility and signatures, checked numeric-domain crossings, source-order control flow and declarations, and names
+that mirror Go or protocol APIs. `unwrap_used` remains off because Go's nil dereference is a panic too. `or_fun_call`
+stays on oxc's allowlist: changing eager `unwrap_or(f())` evaluation can change type or symbol IDs and output order.
+`print_stdout` and `print_stderr` remain allowed because compiler, CLI, and test-runner output is their interface.
 
 ## Rules that only review checks
 
 1. **A performance claim comes with numbers.** Instructions retired and peak RSS, before and after, same machine,
    one checker and the default: `/usr/bin/time -l` on macOS, `perf stat` on Linux. Wall time on a shared machine is
-   noise. Write the result in `notes/`. (Bun: "Performance claims need numbers ... must not regress ANY measured case".)
+   noise. Put them in the pull request. (Bun: "Performance claims need numbers ... must not regress ANY measured case".)
 2. **Build settings are measurements, not defaults.** `[profile.dist]` (fat LTO, one codegen unit, PGO:
    `notes/perf-pgo.md`), mimalloc, transparent huge pages for the arena on Linux (`notes/linux-perf.md`,
    `notes/linux-x86-round.md`), 32-bit handles (`notes/mem-pointer-compression.md`). Change one only with a
@@ -116,7 +116,7 @@ leave it off too), the cast lints (the port has about 1,000 `as usize`), `print_
    at the boundary and are validated before entering these internal domains.
 4. **Return what is stored; allocate once.** Where Go returns a stored slice or string, Rust returns `&'static [T]`
    or `&'static str`, not a fresh `Vec` or `String` (`notes/cpu-checker.md` changes 6 to 8 found such copies by profiling:
-   304.9 G -> 296.3 G instructions; `notes/fix-perf-memory.md` found per-call copies of names and lists). When a hot path changes, check it with
+   304.9 G -> 296.3 G instructions; per-call copies of names and lists were found the same way). When a hot path changes, check it with
    `--features alloc-profile`. In a recursive collector, pass an accumulator instead of returning a collection per
    level (rust-analyzer style guide, "Premature Pessimization").
 5. **Comparators are total orders.** Rust's `sort_by` may panic on a comparator that is not one; Go's does not.
@@ -142,7 +142,7 @@ In place:
 | mimalloc as the global allocator | `notes/perf-build-level.md`: mimalloc v3 beats mimalloc v2, jemalloc and glibc by 3-14% wall; `notes/perf-mimalloc-safe.md` | oxc, Rolldown, Turborepo, Bun |
 | Leak arenas, one per thread; exact frees of provably dead objects | PORTING.md "Memory model", `notes/mem-recycle.md` | oxc and Bun (arenas with no `Drop`) |
 | 32-bit handles with a niche (`Option<P<T>>` is 4 bytes) | `notes/mem-pointer-compression.md`: -14 to -15% peak memory, +6.5% instructions | oxc and Ruff (`NonMax`/`NonZero` u32 ids), Bun (`StoreRef`) |
-| Packed layouts with size assertions | `notes/mem-layout.md`, `mem-layout3.md`, `mem-round2.md`, `mem-round3.md`, `mem-small.md` | oxc, ty, rust-analyzer, Bun |
+| Packed layouts with size assertions | `notes/mem-layout3.md`, `mem-round2.md`, `mem-round3.md`, `mem-small.md` | oxc, ty, rust-analyzer, Bun |
 | Fx hashing everywhere | `notes/perf-checker-cpu2.md` | oxc, Rolldown, Ruff, rust-analyzer |
 | Lazy members, line maps and rare-field tails | `notes/lazy-members.md`, `notes/mem-lazy.md` | |
 | `#[cold]` slow-path splits | `notes/perf-parse.md` changes 6 to 8: parse instructions 16.66 G -> 15.07 G | oxc, Bun |
@@ -175,7 +175,7 @@ THP off for the whole process (`MIMALLOC_ALLOW_THP=0`, which also drops the aren
 `opt-level = "s"` for the language-server, API and emit crates (`.text` -6%, speed unchanged); adding vscode at eight
 checkers to the PGO training (-3% instructions, cycles unchanged).
 
-Not tried. Each needs a measurement and a note before it is adopted; none is applied yet:
+Not tried. Each needs a measurement before it is adopted; none is applied yet:
 
 | Candidate | Who does it | What it would give | What it needs |
 | --- | --- | --- | --- |

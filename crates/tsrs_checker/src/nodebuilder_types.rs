@@ -225,8 +225,8 @@ impl CheckerSlot {
     /// Calls `f` with the checker lent by the innermost `lend`.
     pub fn with<R>(&self, f: impl FnOnce(&mut Checker) -> R) -> R {
         // The checker's allocations (types, symbols, caches) outlive a scratch region (one file's emit) the caller
-        // may have entered (notes/mem-emit-regions.md).
-        let _outer = tsrs_core::arena::escape_scratch();
+        // may have entered (notes/mem-emit-regions.md), and stay in the checker's own region if it has one.
+        let _outer = tsrs_core::arena::escape_scratch_one_level();
         let mut ptr = self.ptr.get().expect("CheckerSlot::with outside CheckerSlot::lend");
         assert!(!self.in_use.replace(true), "CheckerSlot::with re-entered without CheckerSlot::lend");
         // SAFETY: `ptr` comes from the `&mut Checker` passed to the innermost active `lend`, which is borrowed for
@@ -320,37 +320,37 @@ impl SymbolTracker for wrappingTracker {
         wrappingTracker::track_symbol(self, c, symbol, enclosing_declaration, meaning)
     }
     fn report_inaccessible_this_error(&self) {
-        wrappingTracker::report_inaccessible_this_error(self)
+        wrappingTracker::report_inaccessible_this_error(self);
     }
     fn report_private_in_base_of_class_expression(&self, property_name: &str) {
-        wrappingTracker::report_private_in_base_of_class_expression(self, property_name)
+        wrappingTracker::report_private_in_base_of_class_expression(self, property_name);
     }
     fn report_inaccessible_unique_symbol_error(&self) {
-        wrappingTracker::report_inaccessible_unique_symbol_error(self)
+        wrappingTracker::report_inaccessible_unique_symbol_error(self);
     }
     fn report_cyclic_structure_error(&self) {
-        wrappingTracker::report_cyclic_structure_error(self)
+        wrappingTracker::report_cyclic_structure_error(self);
     }
     fn report_likely_unsafe_import_required_error(&self, specifier: &str, symbol_name: &str) {
-        wrappingTracker::report_likely_unsafe_import_required_error(self, specifier, symbol_name)
+        wrappingTracker::report_likely_unsafe_import_required_error(self, specifier, symbol_name);
     }
     fn report_truncation_error(&self) {
-        wrappingTracker::report_truncation_error(self)
+        wrappingTracker::report_truncation_error(self);
     }
     fn report_nonlocal_augmentation(&self, containing_file: P<SourceFile>, parent_symbol: P<Symbol>, augmenting_symbol: P<Symbol>) {
-        wrappingTracker::report_nonlocal_augmentation(self, containing_file, parent_symbol, augmenting_symbol)
+        wrappingTracker::report_nonlocal_augmentation(self, containing_file, parent_symbol, augmenting_symbol);
     }
     fn report_non_serializable_property(&self, property_name: &str) {
-        wrappingTracker::report_non_serializable_property(self, property_name)
+        wrappingTracker::report_non_serializable_property(self, property_name);
     }
     fn report_inference_fallback(&self, c: &mut Checker, node: P<Node>) {
-        wrappingTracker::report_inference_fallback(self, c, node)
+        wrappingTracker::report_inference_fallback(self, c, node);
     }
     fn push_error_fallback_node(&self, node: Option<P<Node>>) {
-        wrappingTracker::push_error_fallback_node(self, node)
+        wrappingTracker::push_error_fallback_node(self, node);
     }
     fn pop_error_fallback_node(&self) {
-        wrappingTracker::pop_error_fallback_node(self)
+        wrappingTracker::pop_error_fallback_node(self);
     }
 }
 

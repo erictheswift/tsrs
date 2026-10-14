@@ -23,6 +23,24 @@ use std::ops::Deref;
 thread_local! {
     /// The thread's own arena, set on first use (`own_arena`) and cleared by `release_own_arena`.
     static ARENA: std::cell::Cell<Option<&'static Arena>> = const { std::cell::Cell::new(None) };
+    /// Hands the thread's own arena on when the thread exits (`own_arena` registers it).
+    static RELEASE_AT_EXIT: ReleaseAtExit = const { ReleaseAtExit };
+}
+
+/// `release_own_arena` when the thread exits: a thread that ended without it kept its arena, which no thread
+/// allocated in again. A watch session starts threads for each cycle (the signature job, the threads of the pools
+/// that end with their program): on vscode, a thread arena (1 MiB) more about every 15 edits.
+struct ReleaseAtExit;
+
+impl Drop for ReleaseAtExit {
+    fn drop(&mut self) {
+        // The other thread locals may be gone: a scope cannot be open any more (its guard lived on the stack).
+        if arena::no_scope_open_at_exit()
+            && let Some(a) = ARENA.with(std::cell::Cell::take)
+        {
+            arena::give_spare_arena(a);
+        }
+    }
 }
 
 fn new_thread_arena() -> &'static Arena {
@@ -50,6 +68,9 @@ pub(crate) fn own_arena() -> &'static Arena {
         None => {
             let a = arena::take_spare_arena().unwrap_or_else(new_thread_arena);
             c.set(Some(a));
+            // Fails only while the thread exits (a destructor that allocates after the arena was handed on): that
+            // arena stays with the thread.
+            let _ = RELEASE_AT_EXIT.try_with(|_| ());
             a
         }
     })
@@ -88,9 +109,13 @@ fn init_current() -> &'static Arena {
 fn with_arena<R>(f: impl FnOnce(&'static Arena) -> R) -> R {
     #[cfg(feature = "alloc-profile")]
     let _chunk = crate::alloc_profile::ArenaScope::enter();
-    let p = arena::CURRENT.with(|c| c.get());
-    // SAFETY: non-null `CURRENT` is the thread arena or a region kept alive by the entered scope.
-    let a = if p.is_null() { init_current() } else { unsafe { &*p } };
+    let p = arena::CURRENT.with(std::cell::Cell::get);
+    let a = if p.is_null() {
+        init_current()
+    } else {
+        // SAFETY: non-null `CURRENT` is the thread arena or a region kept alive by the entered scope.
+        unsafe { &*p }
+    };
     f(a)
 }
 
@@ -121,6 +146,22 @@ pub(crate) const fn p_layout<T>() -> std::alloc::Layout {
     } else {
         l
     }
+}
+
+/// The arena value `offset` bytes from `r`, in the same arena allocation: a node's or a type's data struct after its
+/// header, the header before it, or (offset 0) the struct whose first field `r` is. A reference's provenance covers
+/// only its referent (`&Node` the 24-byte header),
+/// so a pointer stepped from it to a neighbour is out of bounds under Stacked Borrows; the address is rebuilt with
+/// the provenance the arena exposed for the whole chunk (`Arena::new_chunk_at`).
+///
+/// # Safety
+/// `r` must be an arena value, and a `U` must live at `offset` bytes from it in the same allocation for the rest of
+/// the process.
+#[inline]
+pub unsafe fn arena_neighbor<T: ?Sized, U>(r: &T, offset: isize) -> &'static U {
+    // SAFETY: the address is in an arena chunk, whose provenance was exposed, and holds a live `U` (this function's
+    // contract).
+    unsafe { &*std::ptr::with_exposed_provenance::<U>(std::ptr::from_ref(r).addr().wrapping_add_signed(offset)) }
 }
 
 /// Pointer to an arena value. Never null; use `Option<P<T>>` for Go's nil-able pointers
@@ -201,6 +242,7 @@ impl<T> P<T> {
     /// `r` must be an 8-aligned object in the arena: a block allocated with `p_layout` (`P::new`, `alloc`), or a view
     /// of one that starts 8-aligned inside it.
     #[inline]
+    #[expect(clippy::verbose_bit_mask, reason = "the mask directly documents the arena's 8-byte alignment invariant")]
     pub unsafe fn from_arena(r: &'static T) -> P<T> {
         #[cfg(compressed_ptrs)]
         {
@@ -219,6 +261,7 @@ impl<T> P<T> {
     /// # Safety
     /// `bits` must come from `to_bits` of a live `P<T>` (same `T`, or a type whose value starts there).
     #[inline]
+    #[expect(clippy::verbose_bit_mask, reason = "the mask directly documents the encoded pointer's 8-byte alignment invariant")]
     pub unsafe fn from_bits(bits: usize) -> P<T> {
         #[cfg(compressed_ptrs)]
         {
@@ -305,7 +348,7 @@ impl<T> P<T> {
     pub unsafe fn array_add(self, n: usize) -> P<T> {
         #[cfg(compressed_ptrs)]
         {
-            const { assert!(std::mem::size_of::<T>() % 8 == 0, "P::array_add needs 8-byte multiples") };
+            const { assert!(std::mem::size_of::<T>().is_multiple_of(8), "P::array_add needs 8-byte multiples") };
             let h = self.0.get() + (n * (std::mem::size_of::<T>() >> crate::reserve::UNIT_SHIFT)) as u32;
             // SAFETY: `h` is past a nonzero handle, inside the same array (this function's contract).
             return P(unsafe { std::num::NonZeroU32::new_unchecked(h) }, std::marker::PhantomData);
@@ -665,7 +708,7 @@ impl<T> Eq for SP<T> {}
 impl<T> Hash for SP<T> {
     #[inline]
     fn hash<H: Hasher>(&self, state: &mut H) {
-        state.write_usize(self.addr())
+        state.write_usize(self.addr());
     }
 }
 impl<T> fmt::Debug for SP<T> {
@@ -698,7 +741,7 @@ impl<A, B> Copy for SlicePair<A, B> {}
 impl<A, B> SlicePair<A, B> {
     #[inline]
     pub fn new(a: &'static [A], b: &'static [B]) -> Self {
-        assert!(a.len() <= u32::MAX as usize && b.len() <= u32::MAX as usize);
+        assert!(u32::try_from(a.len()).is_ok() && u32::try_from(b.len()).is_ok());
         SlicePair {
             a: std::ptr::NonNull::from(a).cast(),
             b: std::ptr::NonNull::from(b).cast(),
@@ -1016,7 +1059,7 @@ impl<T> ThinSliceCell<T> {
     #[inline]
     #[cfg_attr(feature = "alloc-profile", track_caller)]
     pub fn set(&self, s: &'static [T]) {
-        self.0.set(ThinSlice::new(s))
+        self.0.set(ThinSlice::new(s));
     }
 }
 
@@ -1042,7 +1085,7 @@ impl<T> OptionThinSliceCell<T> {
     #[inline]
     #[cfg_attr(feature = "alloc-profile", track_caller)]
     pub fn set(&self, s: Option<&'static [T]>) {
-        self.0.set(s.map(ThinSlice::new))
+        self.0.set(s.map(ThinSlice::new));
     }
 }
 
@@ -1090,7 +1133,7 @@ impl<T> SliceCell<T> {
     }
     #[inline]
     pub fn set(&self, s: &'static [T]) {
-        self.0.set(Self::pack(s))
+        self.0.set(Self::pack(s));
     }
 }
 
@@ -1138,7 +1181,7 @@ impl<T> OptionSliceCell<T> {
     }
     #[inline]
     pub fn set(&self, s: Option<&'static [T]>) {
-        self.0.set(Self::pack(s))
+        self.0.set(Self::pack(s));
     }
 }
 
@@ -1170,7 +1213,7 @@ impl StrCell {
     }
     #[inline]
     pub fn set(&self, s: &'static str) {
-        self.0.set(PackedStr::new(s))
+        self.0.set(PackedStr::new(s));
     }
 }
 
@@ -1493,7 +1536,7 @@ pub fn census_scrub_stack() {
 /// The current thread's arena position, for discarding a speculative parse (`arena_rewind`).
 #[inline]
 pub fn arena_checkpoint() -> Checkpoint {
-    with_arena(|a| a.checkpoint())
+    with_arena(super::arena::Arena::checkpoint)
 }
 
 /// Discards everything the current thread allocated in the arena since `cp`, if nothing can point to it: the
@@ -1514,7 +1557,7 @@ pub fn arena_rewindable(cp: &Checkpoint) -> bool {
 /// outlives it (a cache, a list that is not rolled back), so no open checkpoint may be rewound.
 #[inline]
 pub fn arena_pin() {
-    with_arena(|a| a.bump_epoch());
+    with_arena(super::arena::Arena::bump_epoch);
 }
 
 /// A UTF-8 string constructed directly in the current arena.
@@ -1680,7 +1723,7 @@ pub fn alloc_profile_dump() {
 
 /// Bytes allocated so far by the current thread's arena.
 pub fn arena_allocated_bytes() -> usize {
-    with_arena(|a| a.capacity())
+    with_arena(super::arena::Arena::capacity)
 }
 
 /// Bytes in use in the current allocation target (the thread's arena or an entered region), for measurements.
@@ -1751,9 +1794,7 @@ pub mod shared_check {
         let addr = std::ptr::from_ref::<T>(object).cast::<()>() as usize;
         let frozen = FROZEN.read().unwrap();
         let i = frozen.partition_point(|&(start, _)| start <= addr);
-        if i > 0 && addr < frozen[i - 1].1 {
-            panic!("write to shared {what} at {addr:#x} after binding (threading contract, docs/PORTING.md)");
-        }
+        assert!(!(i > 0 && addr < frozen[i - 1].1), "write to shared {what} at {addr:#x} after binding (threading contract, docs/PORTING.md)");
     }
 }
 
@@ -1771,8 +1812,8 @@ mod tests {
     fn identity_and_mutation() {
         let a = P::new(Thing { n: Cell::new(1), next: Cell::new(None) });
         let b = P::new(Thing { n: Cell::new(1), next: Cell::new(None) });
-        assert!(a != b);
-        assert!(a == a);
+        assert_ne!(a, b);
+        assert_eq!(a, a);
         a.next.set(Some(b));
         b.next.set(Some(a));
         a.next.get().unwrap().n.set(5);

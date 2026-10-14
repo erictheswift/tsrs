@@ -70,11 +70,12 @@ unsafe extern "C" {
 // libSystem (always linked).
 unsafe extern "C" {
     fn dispatch_queue_create(label: *const c_char, attr: *const c_void) -> dispatch_queue_t;
+    fn dispatch_queue_attr_make_with_qos_class(attr: *const c_void, qos_class: u32, relative_priority: i32) -> *const c_void;
     fn dispatch_release(object: *mut c_void);
     fn dispatch_sync_f(queue: dispatch_queue_t, context: *mut c_void, work: extern "C" fn(*mut c_void));
 }
 
-pub(crate) const cfStringEncodingUTF8: u32 = 0x08000100;
+pub(crate) const cfStringEncodingUTF8: u32 = 0x0800_0100;
 const cfStringNormalizationFormC: CFIndex = 2; // kCFStringNormalizationFormC
 // kFSEventStreamCreateFlagUseCFTypes (0x1) | kFSEventStreamCreateFlagFileEvents (0x10); Go hardcodes it in the
 // assembly trampolines.
@@ -146,9 +147,7 @@ pub(crate) fn fold_native_path(s: &str) -> String {
     unsafe { CFStringFold(mut_.0, cfCompareCaseInsensitive, std::ptr::null()) };
     cf_string_normalize(&mut_, cfStringNormalizationFormC);
     let folded = cf_string_to_go(mut_.0);
-    if folded.is_empty() {
-        panic!("fswatch: cannot extract folded CFString");
-    }
+    assert!(!folded.is_empty(), "fswatch: cannot extract folded CFString");
     folded
 }
 
@@ -279,10 +278,20 @@ unsafe impl Sync for streamCallback {}
 // newStreamCallback allocates a streamCallback with its own per-stream serial dispatch queue. The per-stream
 // serial queue serializes this stream's callbacks and prevents cross-stream head-of-line blocking that a
 // process-wide serial queue would cause.
+//
+// tsrs-only: the queue has an explicit QoS class. Go passes a NULL attribute, which leaves the QoS unspecified; while
+// every core is busy (a watch cycle's checkers and emit) such a queue is starved, fseventsd's buffer for the client
+// fills, and it drops events (kFSEventStreamEventFlagUserDropped | MustScanSubDirs), which the watch turns into an
+// overflow and a full rebuild. Writing 10k files with all cores busy dropped events on every run with a NULL
+// attribute and on none with QOS_CLASS_DEFAULT or QOS_CLASS_USER_INITIATED. The callback is short (tens of
+// microseconds per batch), so running it ahead of the compiler's threads costs nothing measurable.
 pub(crate) fn new_stream_callback(watches: &[fseventsWatchSnapshot]) -> Option<Box<streamCallback>> {
     let label = b"typescript.fswatch.fsevents.stream\0";
-    // SAFETY: `label` is NUL-terminated; NULL attr = serial queue.
-    let queue = unsafe { dispatch_queue_create(label.as_ptr().cast::<c_char>(), std::ptr::null()) };
+    const QOS_CLASS_USER_INITIATED: u32 = 0x19;
+    // SAFETY: NULL = DISPATCH_QUEUE_SERIAL; the returned attribute is a static libdispatch object (not released).
+    let attr = unsafe { dispatch_queue_attr_make_with_qos_class(std::ptr::null(), QOS_CLASS_USER_INITIATED, 0) };
+    // SAFETY: `label` is NUL-terminated; `attr` is a serial queue attribute.
+    let queue = unsafe { dispatch_queue_create(label.as_ptr().cast::<c_char>(), attr) };
     if queue.is_null() {
         return None;
     }
@@ -358,7 +367,7 @@ pub(crate) fn create_and_start_stream(paths: &[String], cb: &mut Box<streamCallb
     let info: *mut streamCallback = &raw mut **cb;
     let ctx = FSEventStreamContext { version: 0, info: info.cast::<c_void>(), retain: std::ptr::null(), release: std::ptr::null(), copy_description: std::ptr::null() };
     // kFSEventStreamEventIdSinceNow == ((FSEventStreamEventId)0xFFFFFFFFFFFFFFFFULL)
-    const eventIDSinceNow: u64 = 0xFFFFFFFFFFFFFFFF;
+    const eventIDSinceNow: u64 = 0xFFFF_FFFF_FFFF_FFFF;
     // SAFETY: `ctx` is copied by FSEventStreamCreate; `paths_to_watch` is a valid CFArray of CFStrings; `info`
     // points into the boxed callback, whose address is stable until the stream is torn down.
     let stream = unsafe { FSEventStreamCreate(std::ptr::null(), fs_events_callback_c, &raw const ctx, paths_to_watch.0, eventIDSinceNow, 0.001, fsEventStreamCreateFlags) };

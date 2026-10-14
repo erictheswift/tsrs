@@ -16,7 +16,7 @@ pub fn binary_search_func<E, T: ?Sized>(
     let n = x.len();
     let (mut i, mut j) = (0usize, n);
     while i < j {
-        let h = (i + j) >> 1;
+        let h = usize::midpoint(i, j);
         if cmp(&x[h], target) == Ordering::Less {
             i = h + 1;
         } else {
@@ -88,7 +88,7 @@ fn sym_merge_cmp_func<E>(
     if m - a == 1 {
         let (mut i, mut j) = (m, b);
         while i < j {
-            let h = (i + j) >> 1;
+            let h = usize::midpoint(i, j);
             if cmp(&data[h], &data[a]) == Ordering::Less {
                 i = h + 1;
             } else {
@@ -105,8 +105,8 @@ fn sym_merge_cmp_func<E>(
     if b - m == 1 {
         let (mut i, mut j) = (a, m);
         while i < j {
-            let h = (i + j) >> 1;
-            if !(cmp(&data[m], &data[h]) == Ordering::Less) {
+            let h = usize::midpoint(i, j);
+            if cmp(&data[m], &data[h]) != Ordering::Less {
                 i = h + 1;
             } else {
                 j = h;
@@ -119,13 +119,13 @@ fn sym_merge_cmp_func<E>(
         }
         return;
     }
-    let mid = (a + b) >> 1;
+    let mid = usize::midpoint(a, b);
     let n = mid + m;
     let (mut start, mut r) = if m > mid { (n - b, mid) } else { (a, m) };
     let p = n - 1;
     while start < r {
-        let c = (start + r) >> 1;
-        if !(cmp(&data[p - c], &data[c]) == Ordering::Less) {
+        let c = usize::midpoint(start, r);
+        if cmp(&data[p - c], &data[c]) != Ordering::Less {
             start = c + 1;
         } else {
             r = c;
@@ -206,7 +206,7 @@ fn sift_down_cmp_func<E>(
         if child + 1 < hi && cmp(&data[first + child], &data[first + child + 1]) == Ordering::Less {
             child += 1;
         }
-        if !(cmp(&data[first + root], &data[first + child]) == Ordering::Less) {
+        if cmp(&data[first + root], &data[first + child]) != Ordering::Less {
             return;
         }
         data.swap(first + root, first + child);
@@ -277,7 +277,7 @@ fn pdqsort_cmp_func<E>(
             }
         }
 
-        if a > 0 && !(cmp(&data[a - 1], &data[pivot]) == Ordering::Less) {
+        if a > 0 && (cmp(&data[a - 1], &data[pivot]) != Ordering::Less) {
             let mid = partition_equal_cmp_func(data, a, b, pivot, cmp);
             a = mid;
             continue;
@@ -313,7 +313,7 @@ fn partition_cmp_func<E>(
     while i <= j && cmp(&data[i as usize], &data[a]) == Ordering::Less {
         i += 1;
     }
-    while i <= j && !(cmp(&data[j as usize], &data[a]) == Ordering::Less) {
+    while i <= j && (cmp(&data[j as usize], &data[a]) != Ordering::Less) {
         j -= 1;
     }
     if i > j {
@@ -328,7 +328,7 @@ fn partition_cmp_func<E>(
         while i <= j && cmp(&data[i as usize], &data[a]) == Ordering::Less {
             i += 1;
         }
-        while i <= j && !(cmp(&data[j as usize], &data[a]) == Ordering::Less) {
+        while i <= j && (cmp(&data[j as usize], &data[a]) != Ordering::Less) {
             j -= 1;
         }
         if i > j {
@@ -353,7 +353,7 @@ fn partition_equal_cmp_func<E>(
     let (mut i, mut j) = (a as isize + 1, b as isize - 1);
 
     loop {
-        while i <= j && !(cmp(&data[a], &data[i as usize]) == Ordering::Less) {
+        while i <= j && (cmp(&data[a], &data[i as usize]) != Ordering::Less) {
             i += 1;
         }
         while i <= j && cmp(&data[a], &data[j as usize]) == Ordering::Less {
@@ -380,7 +380,7 @@ fn partial_insertion_sort_cmp_func<E>(
     let mut i = a + 1;
     for _ in 0..MAX_STEPS {
         i += (i..b)
-            .take_while(|&index| !(cmp(&data[index], &data[index - 1]) == Ordering::Less))
+            .take_while(|&index| cmp(&data[index], &data[index - 1]) != Ordering::Less)
             .count();
 
         if i == b {
@@ -397,7 +397,7 @@ fn partial_insertion_sort_cmp_func<E>(
         if i - a >= 2 {
             let mut j = i - 1;
             while j >= 1 {
-                if !(cmp(&data[j], &data[j - 1]) == Ordering::Less) {
+                if cmp(&data[j], &data[j - 1]) != Ordering::Less {
                     break;
                 }
                 data.swap(j, j - 1);
@@ -407,7 +407,7 @@ fn partial_insertion_sort_cmp_func<E>(
         if b - i >= 2 {
             let mut j = i + 1;
             while j < b {
-                if !(cmp(&data[j], &data[j - 1]) == Ordering::Less) {
+                if cmp(&data[j], &data[j - 1]) != Ordering::Less {
                     break;
                 }
                 data.swap(j, j - 1);
@@ -526,7 +526,7 @@ mod tests {
         for n in [0usize, 1, 2, 19, 20, 21, 39, 40, 41, 100, 257, 1000] {
             let mut v: Vec<(u32, usize)> = (0..n)
                 .map(|i| {
-                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
                     ((seed >> 59) as u32, i)
                 })
                 .collect();
@@ -542,29 +542,29 @@ mod tests {
     fn sort_func_matches_go_order_of_equal_elements() {
         let mut seed = 12345u64;
         let expected: [(usize, u64); 10] = [
-            (0, 1469598103934665603),
-            (1, 4953163356653287321),
-            (2, 11126444148914698056),
-            (12, 18432498448998557195),
-            (13, 13263490368736464853),
-            (50, 10544482255686026482),
-            (51, 8859204245189759248),
-            (100, 6651969891758753999),
-            (257, 17806366977940897185),
-            (1000, 5386659266956183601),
+            (0, 1_469_598_103_934_665_603),
+            (1, 4_953_163_356_653_287_321),
+            (2, 11_126_444_148_914_698_056),
+            (12, 18_432_498_448_998_557_195),
+            (13, 13_263_490_368_736_464_853),
+            (50, 10_544_482_255_686_026_482),
+            (51, 8_859_204_245_189_759_248),
+            (100, 6_651_969_891_758_753_999),
+            (257, 17_806_366_977_940_897_185),
+            (1000, 5_386_659_266_956_183_601),
         ];
         for (n, want) in expected {
             let mut v: Vec<(i32, usize)> = (0..n)
                 .map(|i| {
-                    seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                    seed = seed.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
                     ((seed >> 61) as i32, i)
                 })
                 .collect();
             sort_func(&mut v, |a, b| a.0.cmp(&b.0));
             assert!(v.windows(2).all(|w| w[0].0 <= w[1].0));
-            let mut h = 1469598103934665603u64;
+            let mut h = 1_469_598_103_934_665_603_u64;
             h = v.iter().fold(h, |mut h, e| {
-                h = (h ^ e.1 as u64).wrapping_mul(1099511628211);
+                h = (h ^ e.1 as u64).wrapping_mul(1_099_511_628_211);
 
                 h
             });
