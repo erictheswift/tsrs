@@ -3,6 +3,8 @@
 //! The eager parser and binder currently supply private construction storage. Publication copies
 //! their complete syntax payloads and binder graph into immutable records, then frees construction
 //! storage. This is an intermediate step toward allocating the final representation directly.
+//! `FileArena::build` now supports direct construction and publication in the same slots; wiring the
+//! parser and binder to that scoped factory is the next stage.
 //!
 //! ```compile_fail
 //! use tsrs_frontend_arena::{FileArena, ParseOptions, parse_and_bind};
@@ -55,6 +57,8 @@
 //! ```
 
 mod arena;
+pub mod construction;
+mod factory;
 pub mod generated;
 mod metadata;
 mod model;
@@ -65,6 +69,7 @@ pub use scanner::FileTokenBuffer;
 pub use text::Text;
 
 pub use arena::FileArena;
+pub use factory::NodeFactory;
 pub use generated::NodeData;
 pub use metadata::{FileMetadata, FileReference, PatternAmbientModule, Pragma, PragmaArgument};
 pub use model::{

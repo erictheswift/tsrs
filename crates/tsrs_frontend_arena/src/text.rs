@@ -7,6 +7,11 @@
 pub struct Text<'ast>(pub(crate) &'ast [u8]);
 
 impl<'ast> Text<'ast> {
+    /// Borrow cooked token bytes, including lone surrogates, without copying them again.
+    pub const fn from_bytes(bytes: &'ast [u8]) -> Self {
+        Self(bytes)
+    }
+
     pub const fn as_bytes(self) -> &'ast [u8] {
         self.0
     }

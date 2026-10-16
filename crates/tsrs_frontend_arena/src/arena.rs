@@ -68,10 +68,10 @@ impl FileArena {
         self.reserve(Layout::new::<T>()).cast()
     }
 
-    pub(crate) fn alloc<T: Copy>(&self, value: T) -> &T {
+    pub(crate) fn alloc<T>(&self, value: T) -> &T {
         let slot = self.slot::<T>();
         // SAFETY: slot is fresh and properly aligned. T has no destructor, and the returned reference
-        // cannot outlive this arena. Nothing writes this slot after initialization.
+        // cannot outlive this arena. Later mutation, if any, must use the value's interior cells.
         unsafe {
             slot.as_ptr().write(value);
             slot.as_ref()

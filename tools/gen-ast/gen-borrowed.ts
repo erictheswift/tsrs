@@ -161,3 +161,4 @@ w('}');
 const output = path.resolve(import.meta.dirname, '../../crates/tsrs_frontend_arena/src/generated.rs');
 fs.writeFileSync(output, out.join('\n')+'\n');
 console.log(`Wrote ${output}`);
+await import('./gen-construction.ts');

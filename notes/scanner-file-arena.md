@@ -125,3 +125,6 @@ the native arena still reserves chunks of at least 64 KiB per file. Neither resu
 allocator switch under the performance gate. The native path is an explicitly owned building block for the
 requested lifetime migration. It avoids the prototype's graph-copy approach for lexical data, but the main
 parse/bind publication still copies its legacy graph and retains the earlier measured overhead.
+
+The next stage, [native node construction](native-node-factory.md), adds a scoped factory that allocates the
+final records directly and freezes them without a graph copy. Parser/binder integration remains pending.
