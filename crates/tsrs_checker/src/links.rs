@@ -581,44 +581,130 @@ impl<V: Default + LinkCopy + 'static> IdLinkStore<V> {
     }
 }
 
-/// Go `nodeLinkStore`, keyed by node identity. Address-based node ids are sparse, so use the same
-/// handle-keyed storage as the other node links instead of indexing an array by id.
+/// Go `nodeLinkStore`, indexed by allocation addresses in units of `size_of::<Node>()`.
+///
+/// Two live nodes cannot share a unit: their headers alone occupy that many nonoverlapping bytes.
+/// This derives the slot from the existing address without assigning an id or changing the node.
+/// Each page has 128 pointers to lazily allocated groups of 8 values. Groups stay in the arena, so
+/// references remain valid across recursive checks and table growth. Four-byte values need no padding.
+///
+/// A missing value in an allocated group reads as `V::default()`, as in the former dense id store.
+/// The sole production user (`SymbolNodeLinks`) treats missing and default links identically.
+/// A fork copies the frozen parent's whole group on first `get`, keeping all untouched values.
 pub struct NodeLinkStore<V: 'static> {
-    store: LinkStore<Node, V>,
+    pages: Vec<Option<P<NodeLinkPage<V>>>>,
+    wide_pages: FxHashMap<usize, P<NodeLinkPage<V>>>,
+    parent: Option<&'static NodeLinkStore<V>>,
 }
+
+const NODE_LINK_GROUP_SHIFT: u32 = 3;
+const NODE_LINK_GROUP_SIZE: usize = 1 << NODE_LINK_GROUP_SHIFT;
+const NODE_LINK_PAGE_SHIFT: u32 = 10;
+const NODE_LINK_PAGE_GROUPS: usize = 1 << (NODE_LINK_PAGE_SHIFT - NODE_LINK_GROUP_SHIFT);
+type NodeLinkGroup<V> = [V; NODE_LINK_GROUP_SIZE];
+type NodeLinkPage<V> = [Cell<Option<P<NodeLinkGroup<V>>>>; NODE_LINK_PAGE_GROUPS];
 
 impl<V: 'static> Default for NodeLinkStore<V> {
     fn default() -> Self {
-        NodeLinkStore { store: LinkStore::default() }
+        NodeLinkStore { pages: Vec::new(), wide_pages: FxHashMap::default(), parent: None }
     }
 }
 
 impl<V: 'static> NodeLinkStore<V> {
-    /// Shared graph: see `LinkStore::fork`.
+    #[inline]
+    fn index(node: P<Node>) -> usize {
+        if tsrs_core::COMPRESSED_PTRS {
+            tsrs_core::ptr::key_to_usize(node.key()) / (std::mem::size_of::<Node>() / 8)
+        } else {
+            node.addr() / std::mem::size_of::<Node>()
+        }
+    }
+
+    /// Shared graph: read through to the frozen seed until a group is copied on first `get`.
     #[must_use]
     pub fn fork(&'static self) -> Self {
-        NodeLinkStore { store: self.store.fork() }
+        NodeLinkStore { parent: Some(self), ..Self::default() }
+    }
+
+    #[inline]
+    fn own_group(&self, index: usize) -> Option<P<NodeLinkGroup<V>>> {
+        let page = if tsrs_core::COMPRESSED_PTRS {
+            (*self.pages.get(index >> NODE_LINK_PAGE_SHIFT)?)?
+        } else {
+            *self.wide_pages.get(&(index >> NODE_LINK_PAGE_SHIFT))?
+        };
+        page.get()[(index >> NODE_LINK_GROUP_SHIFT) & (NODE_LINK_PAGE_GROUPS - 1)].get()
+    }
+
+    #[inline]
+    fn find_group(&self, index: usize) -> Option<P<NodeLinkGroup<V>>> {
+        self.own_group(index).or_else(|| self.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN)?.find_group(index))
+    }
+
+    /// Reads existing links without allocating or changing the node. An unset cell in an existing group
+    /// reads as default links, with the same meaning as a missing group for `SymbolNodeLinks`.
+    #[inline]
+    pub fn try_get(&self, node: P<Node>) -> Option<&'static V> {
+        let index = Self::index(node);
+        Some(&self.find_group(index)?.get()[index & (NODE_LINK_GROUP_SIZE - 1)])
+    }
+
+    /// Heap census includes the arena tables and groups to expose the full address-to-value cost.
+    pub fn heap_parts(&self) -> Vec<(&'static str, crate::heapcensus::HeapStat)> {
+        use crate::heapcensus::{HeapSize, HeapStat};
+        let mut pages = HeapStat { slot: std::mem::size_of::<Option<P<NodeLinkGroup<V>>>>() as u64, ..HeapStat::default() };
+        let mut groups = HeapStat { slot: std::mem::size_of::<V>() as u64, ..HeapStat::default() };
+        for page in self.pages.iter().flatten().chain(self.wide_pages.values()) {
+            pages.containers += 1;
+            pages.cap += NODE_LINK_PAGE_GROUPS as u64;
+            pages.bytes += std::mem::size_of::<NodeLinkPage<V>>() as u64;
+            for group in page.get().iter().filter_map(Cell::get) {
+                pages.len += 1;
+                groups.containers += 1;
+                groups.len += NODE_LINK_GROUP_SIZE as u64;
+                groups.cap += NODE_LINK_GROUP_SIZE as u64;
+                groups.bytes += std::mem::size_of_val(group.get()) as u64;
+            }
+        }
+        vec![("page index", self.pages.heap_stat()), ("page tables (arena)", pages), ("value groups (arena)", groups), ("wide pages", self.wide_pages.heap_stat())]
     }
 }
 
 impl<V: Default + LinkCopy + 'static> NodeLinkStore<V> {
-    /// The node's links, created on first use. The reference stays valid for the store's lifetime (`LinkStore`).
+    /// The links at a stable address, created on first use.
     #[inline]
     #[cfg_attr(feature = "site-counts", track_caller)]
     pub fn get(&mut self, node: P<Node>) -> &'static V {
-        self.store.get(node).get()
+        let index = Self::index(node);
+        let group = match self.own_group(index) {
+            Some(group) => group,
+            None => self.create_group(index),
+        };
+        &group.get()[index & (NODE_LINK_GROUP_SIZE - 1)]
     }
-}
 
-impl<V: 'static> NodeLinkStore<V> {
-    pub fn heap_parts(&self) -> Vec<(&'static str, crate::heapcensus::HeapStat)> {
-        self.store.heap_parts()
-    }
-
-    /// Reads existing links without allocating or changing the node.
-    #[inline]
-    pub fn try_get(&self, node: P<Node>) -> Option<&'static V> {
-        self.store.try_get(node).map(P::get)
+    #[inline(never)]
+    #[cfg_attr(feature = "site-counts", track_caller)]
+    fn create_group(&mut self, index: usize) -> P<NodeLinkGroup<V>> {
+        crate::sitecount::hit("links", std::any::type_name::<V>());
+        let page_index = index >> NODE_LINK_PAGE_SHIFT;
+        let new_page = || P::new(std::array::from_fn(|_| Cell::new(None)));
+        let page = if tsrs_core::COMPRESSED_PTRS {
+            if self.pages.len() <= page_index {
+                self.pages.resize(page_index + 1, None);
+            }
+            *self.pages[page_index].get_or_insert_with(new_page)
+        } else {
+            *self.wide_pages.entry(page_index).or_insert_with(new_page)
+        };
+        let group: P<NodeLinkGroup<V>> = P::new(std::array::from_fn(|_| V::default()));
+        if let Some(frozen) = self.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN).and_then(|p| p.find_group(index)) {
+            for (dst, src) in group.get().iter().zip(frozen.get()) {
+                dst.copy_link_from(src);
+            }
+        }
+        page.get()[(index >> NODE_LINK_GROUP_SHIFT) & (NODE_LINK_PAGE_GROUPS - 1)].set(Some(group));
+        group
     }
 }
 
@@ -720,7 +806,7 @@ mod tests {
         let nodes: Vec<_> = std::iter::repeat_with(|| factory.new_token(Kind::PlusToken)).take(4000).collect();
         let mut store: NodeLinkStore<Cell<u32>> = NodeLinkStore::default();
         let held: Vec<_> = nodes.iter().enumerate().map(|(i, &node)| {
-            assert!(store.try_get(node).is_none());
+            assert!(store.try_get(node).is_none_or(|value| value.get() == 0));
             let value = store.get(node);
             value.set(i as u32 + 1);
             value
@@ -730,7 +816,37 @@ mod tests {
             assert!(std::ptr::eq(store.try_get(node).unwrap(), value));
             assert_eq!(value.get(), i as u32 + 1);
         }
-        assert!(store.try_get(factory.new_token(Kind::PlusToken)).is_none());
+        assert!(store.try_get(factory.new_token(Kind::PlusToken)).is_none_or(|value| value.get() == 0));
+    }
+
+    #[test]
+    fn node_link_forks_copy_groups_without_mutating_the_seed() {
+        if !tsrs_core::sharedgraph::COMPILED_IN {
+            return;
+        }
+        let factory = ast::NodeFactory::default();
+        let nodes: Vec<_> = std::iter::repeat_with(|| factory.new_token(Kind::PlusToken)).take(128).collect();
+        let mut seed: NodeLinkStore<Cell<u32>> = NodeLinkStore::default();
+        for (i, &node) in nodes.iter().enumerate() {
+            seed.get(node).set(i as u32 + 1);
+        }
+        let seed = Box::leak(Box::new(seed));
+        let mut fork = seed.fork();
+        for &node in &nodes {
+            assert_eq!(fork.try_get(node).unwrap().get(), seed.try_get(node).unwrap().get());
+        }
+        assert!(fork.pages.is_empty() && fork.wide_pages.is_empty());
+        fork.get(nodes[32]).set(0); // An explicit unset shadows the seed's nonempty value.
+        assert_eq!(seed.try_get(nodes[32]).unwrap().get(), 33);
+        for index in scrambled((0..nodes.len() as u64).collect(), 29) {
+            assert_eq!(fork.get(nodes[index as usize]).get(), if index == 32 { 0 } else { index as u32 + 1 });
+        }
+        let fork = Box::leak(Box::new(fork));
+        let mut nested = fork.fork();
+        nested.get(nodes[33]).set(900);
+        assert_eq!(nested.get(nodes[32]).get(), 0);
+        assert_eq!(fork.try_get(nodes[33]).unwrap().get(), 34);
+        assert_eq!(seed.try_get(nodes[33]).unwrap().get(), 34);
     }
 
     #[derive(Default)]
