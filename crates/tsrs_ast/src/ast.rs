@@ -91,6 +91,8 @@ pub struct NodeFactoryHooks {
 /// shared by a visitor, the node builder and an emit context.
 #[derive(Clone)]
 pub struct NodeFactory {
+    #[cfg(feature = "lifetime-prototype")]
+    construction: Option<Rc<tsrs_core::arena::ConstructionAllocator>>,
     pub(crate) hooks: NodeFactoryHooks,
     pub(crate) node_count: Rc<Cell<usize>>,
     pub(crate) text_count: Rc<Cell<usize>>,
@@ -116,7 +118,11 @@ pub fn new_node_factory(hooks: NodeFactoryHooks) -> NodeFactory {
 /// `new_node_factory`; `scratch`: see `NodeFactory::scratch`.
 pub fn new_node_factory_ex(hooks: NodeFactoryHooks, scratch: bool) -> NodeFactory {
     let plain_create = !scratch && hooks.on_create.is_none();
-    NodeFactory { hooks, node_count: Rc::default(), text_count: Rc::default(), scratch, plain_create }
+    NodeFactory {
+        #[cfg(feature = "lifetime-prototype")]
+        construction: None,
+        hooks, node_count: Rc::default(), text_count: Rc::default(), scratch, plain_create
+    }
 }
 
 fn node_header(kind: Kind, data_tag: NodeDataTag) -> Node {
@@ -235,12 +241,24 @@ fn new_empty_node_plain(kind: Kind, data_tag: NodeDataTag) -> P<Node> {
 }
 
 impl NodeFactory {
+    /// A parser-only factory with an explicit, owner-retaining allocation permit.
+    #[cfg(feature = "lifetime-prototype")]
+    pub fn for_publication(region: tsrs_core::arena::Region) -> Self {
+        Self { construction: Some(Rc::new(tsrs_core::arena::ConstructionAllocator::new(region))), ..Self::default() }
+    }
+
     pub fn new(hooks: NodeFactoryHooks) -> NodeFactory {
         new_node_factory(hooks)
     }
 
     #[inline]
     pub(crate) fn new_node<T: NodePayload>(&self, kind: Kind, data: T) -> P<Node> {
+        #[cfg(feature = "lifetime-prototype")]
+        if let Some(a) = &self.construction {
+            self.node_count.set(self.node_count.get() + 1);
+            // SAFETY: repr(C) NodeAlloc starts with its Node header.
+            return unsafe { a.node(NodeAlloc { node: node_header(kind, T::TAG), data }).cast() };
+        }
         self.node_count.set(self.node_count.get() + 1);
         if self.plain_create {
             new_node_plain(kind, data)
@@ -253,6 +271,14 @@ impl NodeFactory {
 
     #[inline]
     pub(crate) fn new_node_with_rare<T: NodeRareTail>(&self, kind: Kind, data: T, rare: T::Rare) -> P<Node> {
+        #[cfg(feature = "lifetime-prototype")]
+        if let Some(a) = &self.construction {
+            self.node_count.set(self.node_count.get() + 1);
+            let mut header = node_header(kind, T::TAG);
+            header.header = OwnedCell::new(header.header.get().with_rare_tail());
+            // SAFETY: repr(C) NodeAllocRare starts with its Node header.
+            return unsafe { a.node(NodeAllocRare { node: header, data, rare }).cast() };
+        }
         self.node_count.set(self.node_count.get() + 1);
         if self.plain_create {
             new_node_with_rare_plain(kind, data, rare)
@@ -265,6 +291,11 @@ impl NodeFactory {
 
     #[inline]
     pub(crate) fn new_empty_node(&self, kind: Kind, data_tag: NodeDataTag) -> P<Node> {
+        #[cfg(feature = "lifetime-prototype")]
+        if let Some(a) = &self.construction {
+            self.node_count.set(self.node_count.get() + 1);
+            return a.node(node_header(kind, data_tag));
+        }
         self.node_count.set(self.node_count.get() + 1);
         if self.plain_create {
             new_empty_node_plain(kind, data_tag)
@@ -297,6 +328,8 @@ impl NodeFactory {
     /// scratch factory, like the node.
     #[inline]
     pub fn alloc_text(&self, s: &str) -> &'static str {
+        #[cfg(feature = "lifetime-prototype")]
+        if let Some(a) = &self.construction { return a.text(s); }
         if self.scratch {
             tsrs_core::alloc_str_scratch(s)
         } else {
@@ -306,6 +339,8 @@ impl NodeFactory {
 
     #[inline]
     fn alloc_nodes_vec(&self, nodes: Vec<P<Node>>) -> &'static [P<Node>] {
+        #[cfg(feature = "lifetime-prototype")]
+        if let Some(a) = &self.construction { return a.slice(&nodes); }
         if self.scratch {
             tsrs_core::alloc_vec_scratch(nodes)
         } else {
@@ -315,6 +350,8 @@ impl NodeFactory {
 
     #[inline]
     fn alloc_nodes_slice(&self, nodes: &[P<Node>]) -> &'static [P<Node>] {
+        #[cfg(feature = "lifetime-prototype")]
+        if let Some(a) = &self.construction { return a.slice(nodes); }
         if self.scratch {
             tsrs_core::alloc_slice_scratch(nodes)
         } else {
@@ -365,6 +402,8 @@ impl NodeFactory {
 
     /// Stores `nodes` without copying (keeps slice identity, e.g. for sentinel slices).
     pub fn new_node_list_from_static(&self, nodes: &'static [P<Node>]) -> P<NodeList> {
+        #[cfg(feature = "lifetime-prototype")]
+        if let Some(a) = &self.construction { return a.node(NodeList::new(undefined_text_range(), nodes)); }
         P::new_in(self.scratch, NodeList::new(undefined_text_range(), nodes))
     }
 
@@ -454,6 +493,8 @@ impl NodeFactory {
     }
 
     fn new_modifier_list_from_static(&self, nodes: &'static [P<Node>]) -> P<ModifierList> {
+        #[cfg(feature = "lifetime-prototype")]
+        if let Some(a) = &self.construction { return a.node(ModifierList { list: NodeList::new(undefined_text_range(), nodes), modifier_flags: modifiers_to_flags(nodes) }); }
         P::new_in(self.scratch, ModifierList {
             list: NodeList::new(undefined_text_range(), nodes),
             modifier_flags: modifiers_to_flags(nodes),

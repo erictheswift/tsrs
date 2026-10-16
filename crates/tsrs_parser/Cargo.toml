@@ -20,3 +20,6 @@ bitflags.workspace = true
 [dev-dependencies]
 tsrs_vfs.workspace = true
 mimalloc-safe.workspace = true
+
+[features]
+lifetime-prototype = ["tsrs_ast/lifetime-prototype"]

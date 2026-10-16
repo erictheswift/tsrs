@@ -15,7 +15,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 generators=(
-  "node tools/gen-ast/gen-ast.ts"
+  "node tools/gen-ast/gen-borrowed.ts"
   "node tools/gen-ast/gen-flags.ts"
   "node crates/tsrs_api_codec/gen/gen-codec.ts"
   "python3 tools/gen/stringutil_tables.py"

@@ -1,0 +1,25 @@
+[package]
+name = "tsrs_frontend_arena"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+tsrs_core.workspace = true
+tsrs_ast.workspace = true
+tsrs_parser = { workspace = true, features = ["lifetime-prototype"] }
+tsrs_binder = { workspace = true, features = ["lifetime-prototype"] }
+tsrs_diagnostics.workspace = true
+rustc-hash.workspace = true
+
+[dev-dependencies]
+libc = "0.2"
+mimalloc-safe.workspace = true
+
+[features]
+plain-ptrs = ["tsrs_core/plain-ptrs"]

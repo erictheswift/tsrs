@@ -94,6 +94,8 @@ bitflags! {
 }
 
 pub struct Parser {
+    #[cfg(feature = "lifetime-prototype")]
+    retain_allocations: bool,
     pub(crate) scanner: Scanner,
     pub(crate) factory: NodeFactory,
 
@@ -142,6 +144,8 @@ pub struct Parser {
 
 pub(crate) fn new_parser() -> Parser {
     Parser {
+        #[cfg(feature = "lifetime-prototype")]
+        retain_allocations: false,
         scanner: Scanner::new(),
         factory: NodeFactory::default(),
         opts: SourceFileParseOptions::default(),
@@ -246,6 +250,32 @@ pub fn parse_source_file_embedded(opts: SourceFileParseOptions, source_text: &'s
             file
         }
     }
+}
+
+/// Eager construction for the isolated lifetime prototype.
+///
+/// The explicit factory owns its allocation permit, speculative objects remain until region release, and registration cleanup is installed
+/// before parsing can unwind. The returned legacy handle is consumed by publication inside this region.
+#[cfg(feature = "lifetime-prototype")]
+pub fn parse_source_file_for_publication(
+    region: &tsrs_core::arena::Region,
+    opts: SourceFileParseOptions,
+    source_text: &str,
+    script_kind: ScriptKind,
+    direct: bool,
+) -> P<SourceFile> {
+    crate::jsdoc::init();
+    let mut p = new_parser();
+    if direct { p.factory = NodeFactory::for_publication(region.clone()); }
+    let source_text = alloc_str(source_text);
+    p.initialize_state_static(opts, source_text, script_kind);
+    p.lazy_dts = false;
+    p.retain_allocations = true;
+    p.source_text_index = ast::register_source_text(source_text);
+    let index = p.source_text_index;
+    region.on_free(Box::new(move || ast::unregister_source_text(index)));
+    p.next_token();
+    if p.script_kind == ScriptKind::JSON { p.parse_json_text() } else { p.parse_source_file_worker() }
 }
 
 fn parse_source_file_static(opts: SourceFileParseOptions, source_text: &'static str, script_kind: ScriptKind) -> P<SourceFile> {
@@ -571,6 +601,8 @@ impl Parser {
     pub(crate) fn rewind(&mut self, state: ParserState) {
         let arena = state.arena;
         self.rewind_keeping_nodes(state);
+        #[cfg(feature = "lifetime-prototype")]
+        if self.retain_allocations { return; }
         tsrs_core::arena_rewind(arena);
     }
 

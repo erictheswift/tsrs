@@ -1519,8 +1519,71 @@ pub fn retired_stats() -> (usize, usize) {
     (0, 0)
 }
 
+/// Explicit allocation target for the lifetime prototype's legacy construction phase.
+///
+/// One entered region is held for the factory's whole lifetime; allocating does not consult CURRENT or take locks.
+/// Like the legacy P API, results must not survive the owning region. Published graphs use borrowed
+/// references in `tsrs_frontend_arena` instead of exposing these construction results.
+#[cfg(feature = "lifetime-prototype")]
+pub struct ConstructionAllocator {
+    region: Region,
+    _scope: RegionScope,
+}
+
+#[cfg(feature = "lifetime-prototype")]
+impl ConstructionAllocator {
+    pub fn new(region: Region) -> Self {
+        let scope = region.enter();
+        Self { region, _scope: scope }
+    }
+
+    pub fn node<T: 'static>(&self, value: T) -> crate::P<T> {
+        let a = &self.region.0.arena;
+        let r = a.alloc_layout(crate::ptr::p_layout::<T>()).cast::<T>();
+        // SAFETY: fresh storage with the layout of T. Keep the allocation pointer for destruction,
+        // rather than deriving it from a mutable reference that later Cell writes can invalidate.
+        unsafe { r.as_ptr().write(value) };
+        a.track_drop(r.as_ptr(), 1);
+        // SAFETY: fresh, aligned allocation under the region's exclusive allocation permit. The
+        // legacy construction caller keeps the region alive until all handles have been consumed.
+        unsafe { crate::P::from_arena(r.as_ref()) }
+    }
+
+    pub fn slice<T: Copy + 'static>(&self, values: &[T]) -> &'static [T] {
+        let r = self.region.0.arena.alloc_slice_copy(values);
+        // SAFETY: the legacy construction caller retains the region until publication has consumed
+        // these values. The allocation is stable and never mutated after this copy.
+        unsafe { &*std::ptr::from_ref::<[T]>(r) }
+    }
+
+    pub fn text(&self, value: &str) -> &'static str {
+        let r = self.region.0.arena.alloc_str(value);
+        // SAFETY: as for slice: this is private construction data, consumed before region release.
+        unsafe { &*std::ptr::from_ref::<str>(r) }
+    }
+}
+
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn region_drops_values_after_interior_mutation() {
+        use std::cell::Cell;
+        use std::rc::Rc;
+        struct Value { field: Cell<u64>, drops: Rc<Cell<u32>> }
+        impl Drop for Value {
+            fn drop(&mut self) { self.drops.set(self.drops.get() + 1); }
+        }
+        let drops = Rc::new(Cell::new(0));
+        let region = crate::arena::Region::new(4096);
+        {
+            let _scope = region.enter();
+            let value = crate::P::new(Value { field: Cell::new(1), drops: Rc::clone(&drops) });
+            value.field.set(2);
+            assert_eq!(value.field.get(), 2);
+        }
+        drop(region);
+        assert_eq!(drops.get(), 1);
+    }
     use crate::{alloc_slice_recycled, arena_checkpoint, arena_pin, arena_rewind, free, free_slice, P};
 
     #[test]

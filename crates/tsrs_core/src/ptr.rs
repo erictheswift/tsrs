@@ -172,10 +172,13 @@ impl<T> P<T> {
     #[inline]
     pub fn new(value: T) -> P<T> {
         with_arena(|a| {
-            let r = a.alloc_with(p_layout::<T>(), value);
-            a.track_drop(std::ptr::from_mut::<T>(r), 1);
-            // SAFETY: a fresh block of the current arena, laid out by `p_layout`.
-            unsafe { P::from_arena(r) }
+            let p = a.alloc_layout(p_layout::<T>()).cast::<T>();
+            // SAFETY: fresh storage laid out for T. Keep the allocation pointer for destruction;
+            // a sibling pointer derived from &mut T can be invalidated by later interior writes.
+            unsafe { p.as_ptr().write(value) };
+            a.track_drop(p.as_ptr(), 1);
+            // SAFETY: the allocation is initialized and lives in the current arena.
+            unsafe { P::from_arena(p.as_ref()) }
         })
     }
 
@@ -184,10 +187,12 @@ impl<T> P<T> {
     #[inline]
     pub fn new_scratch(value: T) -> P<T> {
         with_scratch_arena(|a| {
-            let r = a.alloc_with(p_layout::<T>(), value);
-            a.track_drop(std::ptr::from_mut::<T>(r), 1);
-            // SAFETY: a fresh block of the arena, laid out by `p_layout`.
-            unsafe { P::from_arena(r) }
+            let p = a.alloc_layout(p_layout::<T>()).cast::<T>();
+            // SAFETY: fresh storage laid out for T; preserve allocation provenance for destruction.
+            unsafe { p.as_ptr().write(value) };
+            a.track_drop(p.as_ptr(), 1);
+            // SAFETY: the allocation is initialized and lives in the scratch arena.
+            unsafe { P::from_arena(p.as_ref()) }
         })
     }
 

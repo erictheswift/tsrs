@@ -49,6 +49,8 @@ pub struct ExpandoAssignmentInfo {
 }
 
 pub struct Binder {
+    #[cfg(feature = "lifetime-prototype")]
+    retain_allocations: bool,
     file: P<SourceFile>,
     unreachable_flow: P<FlowNode>,
 
@@ -102,6 +104,19 @@ pub fn bind_source_file(file: P<SourceFile>) {
     }
 }
 
+/// Eager binding for publication; construction labels stay allocated until the whole region dies.
+#[cfg(feature = "lifetime-prototype")]
+pub fn bind_source_file_for_publication(file: P<SourceFile>) {
+    file.bind_once(|| {
+        let mut b = Binder::new(file);
+        b.retain_allocations = true;
+        b.bind(file.as_node());
+        b.bind_deferred_expando_assignments();
+        file.set_bind_diagnostics(&b.bind_diagnostics);
+        file.symbol_count.set(b.symbol_count);
+    });
+}
+
 fn bind_source_file_worker(file: P<SourceFile>) {
     file.bind_once(|| {
         let mut b = Binder::new(file);
@@ -149,6 +164,8 @@ impl Binder {
 
     fn new_with(file: P<SourceFile>, unreachable_flow: P<FlowNode>, bind_diagnostics: Vec<P<Diagnostic>>) -> Binder {
         Binder {
+            #[cfg(feature = "lifetime-prototype")]
+            retain_allocations: false,
             file,
             unreachable_flow,
             container: None,
@@ -709,6 +726,8 @@ impl Binder {
     /// back to the arena. Kept when it was ever used as an antecedent or a binder field still holds it.
     #[expect(clippy::needless_pass_by_ref_mut, reason = "Recycling frees binder-owned flow nodes and requires exclusive access to the binder.")]
     pub(crate) fn recycle_flow_label(&mut self, label: P<FlowNode>) {
+        #[cfg(feature = "lifetime-prototype")]
+        if self.retain_allocations { return; }
         debug_assert!(label.flags.get().intersects(FlowFlags::BranchLabel));
         let held = |t: Option<P<FlowNode>>| t == Some(label);
         if label.flags.get().intersects(FlowFlags::Referenced)

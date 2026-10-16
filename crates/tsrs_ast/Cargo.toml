@@ -19,6 +19,7 @@ bitflags.workspace = true
 memchr.workspace = true
 
 [features]
+lifetime-prototype = ["tsrs_core/lifetime-prototype"]
 # TOOL: TSRS_AST_SIZING=<file> counts the parsed program's syntax tree (src/sizing.rs, notes/mem-compact-ast-sizing.md).
 # Off by default; instrumentation is compiled out of normal builds.
 ast-sizing = []

@@ -961,3 +961,6 @@ genKindAliasGuards();
 fs.writeFileSync(outPath, out.join("\n"));
 console.log(`Widened to Option (observed nil): ${[...new Set(widenedToOption)].sort().join(", ")}`);
 console.log(`Wrote ${outPath}`);
+
+// The lifetime prototype consumes the same resolved field model as the production AST.
+export { nodes, layouts, promoted, isEmptyLayout, childMembers };

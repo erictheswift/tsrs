@@ -10,6 +10,8 @@ publish.workspace = true
 workspace = true
 
 [features]
+# Isolated front-end lifetime experiment; not enabled by production binaries.
+lifetime-prototype = []
 # Atomic borrow checking for FrozenCell in release builds (always on with debug_assertions).
 checked-cells = []
 # Opt out of Unix pointer compression (build.rs; for comparisons: `--features tsrs_core/plain-ptrs`).

@@ -782,6 +782,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tsrs_frontend_arena"
+version = "0.15.0"
+dependencies = [
+ "libc",
+ "mimalloc-safe",
+ "rustc-hash",
+ "tsrs_ast",
+ "tsrs_binder",
+ "tsrs_core",
+ "tsrs_diagnostics",
+ "tsrs_parser",
+]
+
+[[package]]
 name = "tsrs_fswatch"
 version = "0.15.0"
 dependencies = [
