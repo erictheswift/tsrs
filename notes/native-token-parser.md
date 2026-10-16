@@ -120,3 +120,6 @@ Existing parse/bind harness, before → after this stage:
 
 Instruction differences are below 0.05%; peak RSS differs by at most 32 KiB. These are effectively
 unchanged results on this macOS screening harness, not evidence of a qualifying performance gain.
+
+The next stage, [native parser checkpoints and syntax lookahead](native-parser-context.md), adds shared
+context/speculation, syntax-start decisions, individual modifiers and semicolon recovery.

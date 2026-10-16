@@ -2133,391 +2133,63 @@ impl Parser {
     }
 
     pub(crate) fn next_token_is_slash(&mut self) -> bool {
-        self.next_token() == Kind::SlashToken
+        crate::lookahead_parser::LookaheadParser::next_token_is_slash(self)
     }
 
     pub(crate) fn scan_type_member_start(&mut self) -> bool {
-        // Return true if we have the start of a signature member
-        if self.token == Kind::OpenParenToken || self.token == Kind::LessThanToken || self.token == Kind::GetKeyword || self.token == Kind::SetKeyword {
-            return true;
-        }
-        let mut id_token = false;
-        // Eat up all modifiers, but hold on to the last one in case it is actually an identifier
-        while ast::is_modifier_kind(self.token) {
-            id_token = true;
-            self.next_token();
-        }
-        // Index signatures and computed property names are type members
-        if self.token == Kind::OpenBracketToken {
-            return true;
-        }
-        // Try to get the first property-like token following all modifiers
-        if self.is_literal_property_name() {
-            id_token = true;
-            self.next_token();
-        }
-        // If we were able to get any potential identifier, check that it is
-        // the start of a member declaration
-        if id_token {
-            return self.token == Kind::OpenParenToken || self.token == Kind::LessThanToken || self.token == Kind::QuestionToken || self.token == Kind::ColonToken || self.token == Kind::CommaToken || self.can_parse_semicolon();
-        }
-        false
+        crate::lookahead_parser::LookaheadParser::scan_type_member_start(self)
     }
 
     pub(crate) fn scan_class_member_start(&mut self) -> bool {
-        let mut id_token = Kind::Unknown;
-        if self.token == Kind::AtToken {
-            return true;
-        }
-        // Eat up all modifiers, but hold on to the last one in case it is actually an identifier.
-        while ast::is_modifier_kind(self.token) {
-            id_token = self.token;
-            // If the idToken is a class modifier (protected, private, public, and static), it is
-            // certain that we are starting to parse class member. This allows better error recovery
-            // Example:
-            //      public foo() ...     // true
-            //      public @dec blah ... // true; we will then report an error later
-            //      export public ...    // true; we will then report an error later
-            if ast::is_class_member_modifier(id_token) {
-                return true;
-            }
-            self.next_token();
-        }
-        if self.token == Kind::AsteriskToken {
-            return true;
-        }
-        // Try to get the first property-like token following all modifiers.
-        // This can either be an identifier or the 'get' or 'set' keywords.
-        if self.is_literal_property_name() {
-            id_token = self.token;
-            self.next_token();
-        }
-        // Index signatures and computed properties are class members; we can parse.
-        if self.token == Kind::OpenBracketToken {
-            return true;
-        }
-        // If we were able to get any potential identifier...
-        if id_token != Kind::Unknown {
-            // If we have a non-keyword identifier, or if we have an accessor, then it's safe to parse.
-            if !ast::is_keyword(id_token) || id_token == Kind::SetKeyword || id_token == Kind::GetKeyword {
-                return true;
-            }
-            // If it *is* a keyword, but not an accessor, check a little farther along
-            // to see if it should actually be parsed as a class member.
-            match self.token {
-                Kind::OpenParenToken // Method declaration
-                | Kind::LessThanToken // Generic Method declaration
-                | Kind::ExclamationToken // Non-null assertion on property name
-                | Kind::ColonToken // Type Annotation for declaration
-                | Kind::EqualsToken // Initializer for declaration
-                | Kind::QuestionToken => {
-                    // Not valid, but permitted so that it gets caught later on.
-                    return true;
-                }
-                _ => {}
-            }
-            // Covers
-            //  - Semicolons     (declaration termination)
-            //  - Closing braces (end-of-class, must be declaration)
-            //  - End-of-files   (not valid, but permitted so that it gets caught later on)
-            //  - Line-breaks    (enabling *automatic semicolon insertion*)
-            return self.can_parse_semicolon();
-        }
-        false
+        crate::lookahead_parser::LookaheadParser::scan_class_member_start(self)
     }
 
     pub(crate) fn can_parse_semicolon(&self) -> bool {
-        // If there's a real semicolon, then we can always parse it out.
-        // We can parse out an optional semicolon in ASI cases in the following cases.
-        self.token == Kind::SemicolonToken || self.token == Kind::CloseBraceToken || self.token == Kind::EndOfFile || self.has_preceding_line_break()
+        crate::lookahead_parser::LookaheadParser::can_parse_semicolon(self)
     }
 
     pub(crate) fn try_parse_semicolon(&mut self) -> bool {
-        if !self.can_parse_semicolon() {
-            return false;
-        }
-        if self.token == Kind::SemicolonToken {
-            // consume the semicolon if it was explicitly provided.
-            self.next_token();
-        }
-        true
+        crate::lookahead_parser::LookaheadParser::try_parse_semicolon(self)
     }
 
     pub(crate) fn parse_semicolon(&mut self) -> bool {
-        self.try_parse_semicolon() || self.parse_expected(Kind::SemicolonToken)
+        crate::lookahead_parser::LookaheadParser::parse_semicolon(self)
     }
 
     pub(crate) fn is_literal_property_name(&self) -> bool {
-        token_is_identifier_or_keyword(self.token) || self.token == Kind::StringLiteral || self.token == Kind::NumericLiteral || self.token == Kind::BigIntLiteral
+        crate::lookahead_parser::LookaheadParser::is_literal_property_name(self)
     }
 
     pub(crate) fn is_start_of_statement(&mut self) -> bool {
-        match self.token {
-            // 'catch' and 'finally' do not actually indicate that the code is part of a statement,
-            // however, we say they are here so that we may gracefully parse them and error later.
-            Kind::AtToken
-            | Kind::SemicolonToken
-            | Kind::OpenBraceToken
-            | Kind::VarKeyword
-            | Kind::LetKeyword
-            | Kind::UsingKeyword
-            | Kind::FunctionKeyword
-            | Kind::ClassKeyword
-            | Kind::EnumKeyword
-            | Kind::IfKeyword
-            | Kind::DoKeyword
-            | Kind::WhileKeyword
-            | Kind::ForKeyword
-            | Kind::ContinueKeyword
-            | Kind::BreakKeyword
-            | Kind::ReturnKeyword
-            | Kind::WithKeyword
-            | Kind::SwitchKeyword
-            | Kind::ThrowKeyword
-            | Kind::TryKeyword
-            | Kind::DebuggerKeyword
-            | Kind::CatchKeyword
-            | Kind::FinallyKeyword => true,
-            Kind::ImportKeyword => self.is_start_of_declaration() || self.is_next_token_open_paren_or_less_than_or_dot(),
-            Kind::ConstKeyword | Kind::ExportKeyword => self.is_start_of_declaration(),
-            Kind::AsyncKeyword | Kind::DeclareKeyword | Kind::InterfaceKeyword | Kind::ModuleKeyword | Kind::NamespaceKeyword | Kind::TypeKeyword | Kind::GlobalKeyword | Kind::DeferKeyword => {
-                // When these don't start a declaration, they're an identifier in an expression statement
-                true
-            }
-            Kind::AccessorKeyword | Kind::PublicKeyword | Kind::PrivateKeyword | Kind::ProtectedKeyword | Kind::StaticKeyword | Kind::ReadonlyKeyword => {
-                // When these don't start a declaration, they may be the start of a class member if an identifier
-                // immediately follows. Otherwise they're an identifier in an expression statement.
-                self.is_start_of_declaration() || !self.look_ahead(Parser::next_token_is_identifier_or_keyword_on_same_line)
-            }
-            _ => self.is_start_of_expression(),
-        }
+        crate::lookahead_parser::LookaheadParser::is_start_of_statement(self)
     }
 
     pub(crate) fn is_start_of_declaration(&mut self) -> bool {
-        self.look_ahead(Parser::scan_start_of_declaration)
-    }
-
-    pub(crate) fn scan_start_of_declaration(&mut self) -> bool {
-        loop {
-            match self.token {
-                Kind::VarKeyword | Kind::LetKeyword | Kind::ConstKeyword | Kind::FunctionKeyword | Kind::ClassKeyword | Kind::EnumKeyword => {
-                    return true;
-                }
-                Kind::UsingKeyword => return self.is_using_declaration(),
-                Kind::AwaitKeyword => return self.is_await_using_declaration(),
-                // 'declare', 'module', 'namespace', 'interface'* and 'type' are all legal JavaScript identifiers;
-                // however, an identifier cannot be followed by another identifier on the same line. This is what we
-                // count on to parse out the respective declarations. For instance, we exploit this to say that
-                //
-                //    namespace n
-                //
-                // can be none other than the beginning of a namespace declaration, but need to respect that JavaScript sees
-                //
-                //    namespace
-                //    n
-                //
-                // as the identifier 'namespace' on one line followed by the identifier 'n' on another.
-                // We need to look one token ahead to see if it permissible to try parsing a declaration.
-                //
-                // *Note*: 'interface' is actually a strict mode reserved word. So while
-                //
-                //   "use strict"
-                //   interface
-                //   I {}
-                //
-                // could be legal, it would add complexity for very little gain.
-                Kind::InterfaceKeyword | Kind::TypeKeyword | Kind::DeferKeyword => return self.next_token_is_identifier_on_same_line(),
-                Kind::ModuleKeyword | Kind::NamespaceKeyword => return self.next_token_is_identifier_or_string_literal_on_same_line(),
-                Kind::AbstractKeyword | Kind::AccessorKeyword | Kind::AsyncKeyword | Kind::DeclareKeyword | Kind::PrivateKeyword | Kind::ProtectedKeyword | Kind::PublicKeyword | Kind::ReadonlyKeyword => {
-                    let previous_token = self.token;
-                    self.next_token();
-                    // ASI takes effect for this modifier.
-                    if self.has_preceding_line_break() {
-                        return false;
-                    }
-                    if previous_token == Kind::DeclareKeyword && self.token == Kind::TypeKeyword {
-                        // If we see 'declare type', then commit to parsing a type alias. parseTypeAliasDeclaration will
-                        // report Line_break_not_permitted_here if needed.
-                        return true;
-                    }
-                    continue;
-                }
-                Kind::GlobalKeyword => {
-                    self.next_token();
-                    return self.token == Kind::OpenBraceToken || self.token == Kind::Identifier || self.token == Kind::ExportKeyword;
-                }
-                Kind::ImportKeyword => {
-                    self.next_token();
-                    return self.token == Kind::DeferKeyword || self.token == Kind::StringLiteral || self.token == Kind::AsteriskToken || self.token == Kind::OpenBraceToken || token_is_identifier_or_keyword(self.token);
-                }
-                Kind::ExportKeyword => {
-                    self.next_token();
-                    if self.token == Kind::EqualsToken || self.token == Kind::AsteriskToken || self.token == Kind::OpenBraceToken || self.token == Kind::DefaultKeyword || self.token == Kind::AsKeyword || self.token == Kind::AtToken {
-                        return true;
-                    }
-                    if self.token == Kind::TypeKeyword {
-                        self.next_token();
-                        return self.token == Kind::AsteriskToken || self.token == Kind::OpenBraceToken || self.is_identifier() && !self.has_preceding_line_break();
-                    }
-                    continue;
-                }
-                Kind::StaticKeyword => {
-                    self.next_token();
-                    continue;
-                }
-                _ => {}
-            }
-            return false;
-        }
+        crate::lookahead_parser::LookaheadParser::is_start_of_declaration(self)
     }
 
     pub(crate) fn is_start_of_expression(&mut self) -> bool {
-        if self.is_start_of_left_hand_side_expression() {
-            return true;
-        }
-        match self.token {
-            Kind::PlusToken
-            | Kind::MinusToken
-            | Kind::TildeToken
-            | Kind::ExclamationToken
-            | Kind::DeleteKeyword
-            | Kind::TypeOfKeyword
-            | Kind::VoidKeyword
-            | Kind::PlusPlusToken
-            | Kind::MinusMinusToken
-            | Kind::LessThanToken
-            | Kind::AwaitKeyword
-            | Kind::YieldKeyword
-            | Kind::PrivateIdentifier
-            | Kind::AtToken => {
-                // Yield/await always starts an expression.  Either it is an identifier (in which case
-                // it is definitely an expression).  Or it's a keyword (either because we're in
-                // a generator or async function, or in strict mode (or both)) and it started a yield or await expression.
-                return true;
-            }
-            _ => {}
-        }
-        // Error tolerance.  If we see the start of some binary operator, we consider
-        // that the start of an expression.  That way we'll parse out a missing identifier,
-        // give a good message about an identifier being missing, and then consume the
-        // rest of the binary expression.
-        if self.is_binary_operator() {
-            return true;
-        }
-        self.is_identifier()
+        crate::lookahead_parser::LookaheadParser::is_start_of_expression(self)
     }
 
     pub(crate) fn is_start_of_left_hand_side_expression(&mut self) -> bool {
-        match self.token {
-            Kind::ThisKeyword
-            | Kind::SuperKeyword
-            | Kind::NullKeyword
-            | Kind::TrueKeyword
-            | Kind::FalseKeyword
-            | Kind::NumericLiteral
-            | Kind::BigIntLiteral
-            | Kind::StringLiteral
-            | Kind::NoSubstitutionTemplateLiteral
-            | Kind::TemplateHead
-            | Kind::OpenParenToken
-            | Kind::OpenBracketToken
-            | Kind::OpenBraceToken
-            | Kind::FunctionKeyword
-            | Kind::ClassKeyword
-            | Kind::NewKeyword
-            | Kind::SlashToken
-            | Kind::SlashEqualsToken
-            | Kind::Identifier => return true,
-            Kind::ImportKeyword => return self.is_next_token_open_paren_or_less_than_or_dot(),
-            _ => {}
-        }
-        self.is_identifier()
+        crate::lookahead_parser::LookaheadParser::is_start_of_left_hand_side_expression(self)
     }
 
     pub(crate) fn is_start_of_type(&mut self, in_start_of_parameter: bool) -> bool {
-        match self.token {
-            Kind::AnyKeyword
-            | Kind::UnknownKeyword
-            | Kind::StringKeyword
-            | Kind::NumberKeyword
-            | Kind::BigIntKeyword
-            | Kind::BooleanKeyword
-            | Kind::ReadonlyKeyword
-            | Kind::SymbolKeyword
-            | Kind::UniqueKeyword
-            | Kind::VoidKeyword
-            | Kind::UndefinedKeyword
-            | Kind::NullKeyword
-            | Kind::ThisKeyword
-            | Kind::TypeOfKeyword
-            | Kind::NeverKeyword
-            | Kind::OpenBraceToken
-            | Kind::OpenBracketToken
-            | Kind::LessThanToken
-            | Kind::BarToken
-            | Kind::AmpersandToken
-            | Kind::NewKeyword
-            | Kind::StringLiteral
-            | Kind::NumericLiteral
-            | Kind::BigIntLiteral
-            | Kind::TrueKeyword
-            | Kind::FalseKeyword
-            | Kind::ObjectKeyword
-            | Kind::AsteriskToken
-            | Kind::QuestionToken
-            | Kind::ExclamationToken
-            | Kind::DotDotDotToken
-            | Kind::InferKeyword
-            | Kind::ImportKeyword
-            | Kind::AssertsKeyword
-            | Kind::NoSubstitutionTemplateLiteral
-            | Kind::TemplateHead => return true,
-            Kind::FunctionKeyword => return !in_start_of_parameter,
-            Kind::MinusToken => return !in_start_of_parameter && self.look_ahead(Parser::next_token_is_numeric_or_big_int_literal),
-            Kind::OpenParenToken => {
-                // Only consider '(' the start of a type if followed by ')', '...', an identifier, a modifier,
-                // or something that starts a type. We don't want to consider things like '(1)' a type.
-                return !in_start_of_parameter && self.look_ahead(Parser::next_is_parenthesized_or_function_type);
-            }
-            _ => {}
-        }
-        self.is_identifier()
+        crate::lookahead_parser::LookaheadParser::is_start_of_type(self, in_start_of_parameter)
     }
 
     pub(crate) fn next_token_is_numeric_or_big_int_literal(&mut self) -> bool {
-        self.next_token();
-        self.token == Kind::NumericLiteral || self.token == Kind::BigIntLiteral
-    }
-
-    pub(crate) fn next_is_parenthesized_or_function_type(&mut self) -> bool {
-        self.next_token();
-        self.token == Kind::CloseParenToken || self.is_start_of_parameter(false /*isJSDocParameter*/) || self.is_start_of_type(false /*inStartOfParameter*/)
+        crate::lookahead_parser::LookaheadParser::next_token_is_numeric_or_big_int_literal(self)
     }
 
     pub(crate) fn is_start_of_parameter(&mut self, is_jsdoc_parameter: bool) -> bool {
-        self.token == Kind::DotDotDotToken || self.is_binding_identifier_or_private_identifier_or_pattern() || ast::is_modifier_kind(self.token) || self.token == Kind::AtToken || self.is_start_of_type(!is_jsdoc_parameter /*inStartOfParameter*/)
+        crate::lookahead_parser::LookaheadParser::is_start_of_parameter(self, is_jsdoc_parameter)
     }
 
     pub(crate) fn is_binding_identifier_or_private_identifier_or_pattern(&self) -> bool {
-        self.token == Kind::OpenBraceToken || self.token == Kind::OpenBracketToken || self.token == Kind::PrivateIdentifier || self.is_binding_identifier()
-    }
-
-    pub(crate) fn is_next_token_open_paren_or_less_than_or_dot(&mut self) -> bool {
-        self.look_ahead(Parser::next_token_is_open_paren_or_less_than_or_dot)
-    }
-
-    pub(crate) fn next_token_is_open_paren_or_less_than_or_dot(&mut self) -> bool {
-        matches!(self.next_token(), Kind::OpenParenToken | Kind::LessThanToken | Kind::DotToken)
-    }
-
-    pub(crate) fn next_token_is_identifier_on_same_line(&mut self) -> bool {
-        self.next_token();
-        self.is_identifier() && !self.has_preceding_line_break()
-    }
-
-    pub(crate) fn next_token_is_identifier_or_string_literal_on_same_line(&mut self) -> bool {
-        self.next_token();
-        (self.is_identifier() || self.token == Kind::StringLiteral) && !self.has_preceding_line_break()
+        crate::lookahead_parser::LookaheadParser::is_binding_identifier_or_private_identifier_or_pattern(self)
     }
 
     // Ignore strict mode flag because we will report an error in type checker instead.
@@ -2530,118 +2202,71 @@ impl Parser {
     }
 
     pub(crate) fn is_import_attribute_name(&self) -> bool {
-        token_is_identifier_or_keyword(self.token) || self.token == Kind::StringLiteral
+        crate::lookahead_parser::LookaheadParser::is_import_attribute_name(self)
     }
 
     pub(crate) fn is_binary_operator(&self) -> bool {
-        if self.in_disallow_in_context() && self.token == Kind::InKeyword {
-            return false;
-        }
-        ast::get_binary_operator_precedence(self.token) != OperatorPrecedence::Invalid
+        crate::lookahead_parser::LookaheadParser::is_binary_operator(self)
     }
 
     pub(crate) fn is_valid_heritage_clause_object_literal(&mut self) -> bool {
-        self.look_ahead(Parser::next_is_valid_heritage_clause_object_literal)
-    }
-
-    pub(crate) fn next_is_valid_heritage_clause_object_literal(&mut self) -> bool {
-        if self.next_token() == Kind::CloseBraceToken {
-            // if we see "extends {}" then only treat the {} as what we're extending (and not
-            // the class body) if we have:
-            //
-            //      extends {} {
-            //      extends {},
-            //      extends {} extends
-            //      extends {} implements
-            let next = self.next_token();
-            return next == Kind::CommaToken || next == Kind::OpenBraceToken || next == Kind::ExtendsKeyword || next == Kind::ImplementsKeyword;
-        }
-        true
+        crate::lookahead_parser::LookaheadParser::is_valid_heritage_clause_object_literal(self)
     }
 
     pub(crate) fn is_heritage_clause(&self) -> bool {
-        self.token == Kind::ExtendsKeyword || self.token == Kind::ImplementsKeyword
+        crate::lookahead_parser::LookaheadParser::is_heritage_clause(self)
     }
 
     pub(crate) fn is_heritage_clause_extends_or_implements_keyword(&mut self) -> bool {
-        self.is_heritage_clause() && self.look_ahead(Parser::next_is_start_of_expression)
-    }
-
-    pub(crate) fn next_is_start_of_expression(&mut self) -> bool {
-        self.next_token();
-        self.is_start_of_expression()
+        crate::lookahead_parser::LookaheadParser::is_heritage_clause_extends_or_implements_keyword(self)
     }
 
     pub(crate) fn is_using_declaration(&mut self) -> bool {
-        // 'using' always starts a lexical declaration if followed by an identifier. We also eagerly parse
-        // |ObjectBindingPattern| so that we can report a grammar error during check. We don't parse out
-        // |ArrayBindingPattern| since it potentially conflicts with element access (i.e., `using[x]`).
-        self.look_ahead(|p| p.next_token_is_binding_identifier_or_start_of_destructuring_on_same_line(false /*disallowOf*/))
-    }
-
-    pub(crate) fn next_token_is_equals_or_semicolon_or_colon_token(&mut self) -> bool {
-        self.next_token();
-        self.token == Kind::EqualsToken || self.token == Kind::SemicolonToken || self.token == Kind::ColonToken
-    }
-
-    pub(crate) fn next_token_is_binding_identifier_or_start_of_destructuring_on_same_line(&mut self, disallow_of: bool) -> bool {
-        self.next_token();
-        if disallow_of && self.token == Kind::OfKeyword {
-            return self.look_ahead(Parser::next_token_is_equals_or_semicolon_or_colon_token);
-        }
-        (self.is_binding_identifier() || self.token == Kind::OpenBraceToken) && !self.has_preceding_line_break()
+        crate::lookahead_parser::LookaheadParser::is_using_declaration(self)
     }
 
     pub(crate) fn next_token_is_binding_identifier_or_start_of_destructuring_on_same_line_disallow_of(&mut self) -> bool {
-        self.next_token_is_binding_identifier_or_start_of_destructuring_on_same_line(true /*disallowOf*/)
+        crate::lookahead_parser::LookaheadParser::next_token_is_binding_identifier_or_start_of_destructuring_on_same_line_disallow_of(self)
     }
 
     pub(crate) fn is_await_using_declaration(&mut self) -> bool {
-        self.look_ahead(Parser::next_is_using_keyword_then_binding_identifier_or_start_of_object_destructuring_on_same_line)
+        crate::lookahead_parser::LookaheadParser::is_await_using_declaration(self)
     }
 
     pub(crate) fn next_is_using_keyword_then_binding_identifier_or_start_of_object_destructuring_on_same_line(&mut self) -> bool {
-        self.next_token() == Kind::UsingKeyword && self.next_token_is_binding_identifier_or_start_of_destructuring_on_same_line(false /*disallowOf*/)
+        crate::lookahead_parser::LookaheadParser::next_is_using_keyword_then_binding_identifier_or_start_of_object_destructuring_on_same_line(self)
     }
 
     pub(crate) fn next_token_is_token_string_literal(&mut self) -> bool {
-        self.next_token() == Kind::StringLiteral
+        crate::lookahead_parser::LookaheadParser::next_token_is_token_string_literal(self)
     }
 
     pub(crate) fn set_context_flags(&mut self, flags: NodeFlags, value: bool) {
-        if value {
-            self.context_flags |= flags;
-        } else {
-            self.context_flags &= !flags;
-        }
+        crate::context_parser::ContextParser::set_context_flags(self, flags, value);
     }
 
     pub(crate) fn do_in_context<T>(&mut self, flags: NodeFlags, value: bool, f: impl FnOnce(&mut Parser) -> T) -> T {
-        let save_context_flags = self.context_flags;
-        self.set_context_flags(flags, value);
-        let result = f(self);
-        self.context_flags = save_context_flags;
-        result
+        crate::context_parser::ContextParser::do_in_context(self, flags, value, f)
     }
 
     pub(crate) fn in_yield_context(&self) -> bool {
-        self.context_flags.intersects(NodeFlags::YieldContext)
+        crate::context_parser::ContextParser::in_yield_context(self)
     }
 
     pub(crate) fn in_disallow_in_context(&self) -> bool {
-        self.context_flags.intersects(NodeFlags::DisallowInContext)
+        crate::context_parser::ContextParser::in_disallow_in_context(self)
     }
 
     pub(crate) fn in_disallow_conditional_types_context(&self) -> bool {
-        self.context_flags.intersects(NodeFlags::DisallowConditionalTypesContext)
+        crate::context_parser::ContextParser::in_disallow_conditional_types_context(self)
     }
 
     pub(crate) fn in_decorator_context(&self) -> bool {
-        self.context_flags.intersects(NodeFlags::DecoratorContext)
+        crate::context_parser::ContextParser::in_decorator_context(self)
     }
 
     pub(crate) fn in_await_context(&self) -> bool {
-        self.context_flags.intersects(NodeFlags::AwaitContext)
+        crate::context_parser::ContextParser::in_await_context(self)
     }
 
     pub(crate) fn skip_range_trivia(&self, text_range: TextRange) -> TextRange {

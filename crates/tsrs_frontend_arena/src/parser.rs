@@ -1,12 +1,14 @@
 //! Scoped native parser state for the grammar shared with the production frontend.
 use crate::{Diagnostic, DiagnosticPhase, FileArena, Node, NodeFactory, Text, construction};
 use std::fmt::Display;
+use std::marker::PhantomData;
 use tsrs_ast::{Kind, NodeFlags, TokenFlags};
 use tsrs_core::{LanguageVariant, ScriptKind, TextRange};
 use tsrs_diagnostics::{self as diagnostics, Message};
 use tsrs_parser::name_parser::NameParser;
 use tsrs_parser::token_parser::TokenParser;
-use tsrs_scanner::Scanner;
+use tsrs_scanner::{Scanner, ScannerState};
+use tsrs_parser::{context_parser::ContextParser, lookahead_parser::LookaheadParser};
 
 /// Parse the same complete entity-name input as `tsrs_parser::parse_isolated_entity_name`, using
 /// native references throughout. The result and its token text borrow the supplied arena.
@@ -46,8 +48,8 @@ pub fn parse_isolated_entity_name<'ast>(
 
 /// Parser state limited to one construction scope.
 ///
-/// Supports the migrated name, token, literal, literal-type and template-part routines
-/// through `NameParser` and `TokenParser`.
+/// Supports migrated names, tokens, literals and template parts, plus context/speculation,
+/// syntax lookahead, individual modifiers and semicolon handling through the shared parser traits.
 /// Full expression and source-file parsing are not provided yet.
 /// Create it with `NodeFactory::parser`.
 pub struct Parser<'build, 'ast: 'build> {
@@ -58,6 +60,72 @@ pub struct Parser<'build, 'ast: 'build> {
     statement_has_await_identifier: bool,
     has_parse_error: bool,
     diagnostics: Vec<Diagnostic>,
+}
+
+/// A checkpoint confined to one native construction scope.
+///
+/// Restoring it rewinds scanner/parser state, retaining all arena allocations. Construction
+/// references obtained after a checkpoint stay valid, as do cooked text and scanner caches.
+///
+/// ```compile_fail
+/// use tsrs_frontend_arena::{ContextParser, FileArena, ScriptKind, TokenParser};
+/// let arena = FileArena::new();
+/// let mut saved = None;
+/// arena.build(|factory| {
+///     let mut parser = factory.parser("42", ScriptKind::TS);
+///     parser.next_token();
+///     saved = Some(parser.mark());
+///     parser.parse_literal_expression()
+/// });
+/// drop(saved);
+/// ```
+#[derive(Clone, Copy)]
+pub struct ParserState<'build, 'ast: 'build> {
+    scanner_state: ScannerState<'ast, &'ast [u8]>,
+    context_flags: NodeFlags,
+    diagnostics_len: usize,
+    statement_has_await_identifier: bool,
+    has_parse_error: bool,
+    brand: PhantomData<fn(&'build ()) -> &'build ()>,
+}
+
+impl<'build, 'ast> ContextParser<'ast> for Parser<'build, 'ast> {
+    type State = ParserState<'build, 'ast>;
+
+    fn mark(&self) -> Self::State {
+        ParserState {
+            scanner_state: self.scanner.mark(),
+            context_flags: self.context_flags,
+            diagnostics_len: self.diagnostics.len(),
+            statement_has_await_identifier: self.statement_has_await_identifier,
+            has_parse_error: self.has_parse_error,
+            brand: PhantomData,
+        }
+    }
+
+    fn rewind(&mut self, state: Self::State) {
+        self.scanner.rewind(state.scanner_state);
+        self.token = self.scanner.token();
+        self.context_flags = state.context_flags;
+        self.diagnostics.truncate(state.diagnostics_len);
+        self.statement_has_await_identifier = state.statement_has_await_identifier;
+        self.has_parse_error = state.has_parse_error;
+        // Never reclaim storage here: speculative nodes and scanner values may still be borrowed.
+    }
+
+    fn context_flags(&self) -> NodeFlags {
+        self.context_flags
+    }
+    fn replace_context_flags(&mut self, flags: NodeFlags) {
+        self.context_flags = flags;
+    }
+}
+
+impl<'ast> LookaheadParser<'ast> for Parser<'_, 'ast> {
+    fn new_modifier(&self, kind: Kind) -> Self::Node {
+        // The legacy factory uses the same token constructor for modifiers.
+        self.factory.new_token(kind)
+    }
 }
 
 impl<'build, 'ast> Parser<'build, 'ast> {
@@ -117,28 +185,12 @@ impl<'build, 'ast> Parser<'build, 'ast> {
 }
 
 impl<'ast> NameParser<'ast> for Parser<'_, 'ast> {
-    fn context_flags(&self) -> NodeFlags {
-        self.context_flags
-    }
+
     fn statement_has_await_identifier(&self) -> bool {
         self.statement_has_await_identifier
     }
     fn set_statement_has_await_identifier(&mut self, value: bool) {
         self.statement_has_await_identifier = value;
-    }
-
-    fn look_ahead_next_identifier_on_same_line(&mut self) -> bool {
-        let state = self.scanner.mark();
-        let diagnostics_len = self.diagnostics.len();
-        let has_parse_error = self.has_parse_error;
-        let result =
-            self.next_token() >= Kind::Identifier && !self.scanner.has_preceding_line_break();
-        self.scanner.rewind(state);
-        self.token = self.scanner.token();
-        self.diagnostics.truncate(diagnostics_len);
-        self.has_parse_error = has_parse_error;
-        // This lookahead only scans. It cannot change node state; arena bytes stay alive for 'ast.
-        result
     }
 
     fn new_identifier(&mut self, text: &'ast str) -> Self::Node {

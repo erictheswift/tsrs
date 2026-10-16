@@ -6,7 +6,8 @@
 //! `FileArena::build` now supports direct construction and publication in the same slots; wiring the
 //! source-file parser and binder to that scoped factory remains in progress.
 //! `parse_isolated_entity_name` already parses directly into native references using shared grammar.
-//! `NodeFactory::parser` also exposes scoped name, token, literal, literal-type and template-part parsing.
+//! `NodeFactory::parser` also exposes scoped name, token, literal, literal-type and template-part parsing,
+//! parser checkpoints/context, syntax lookahead, modifier parsing and semicolon recovery.
 //!
 //! ```compile_fail
 //! use tsrs_frontend_arena::{FileArena, ParseOptions, parse_and_bind};
@@ -73,8 +74,8 @@ pub use text::Text;
 
 pub use arena::FileArena;
 pub use factory::NodeFactory;
-pub use parser::{Parser, parse_isolated_entity_name};
-pub use tsrs_parser::{name_parser::NameParser, token_parser::TokenParser};
+pub use parser::{Parser, ParserState, parse_isolated_entity_name};
+pub use tsrs_parser::{context_parser::ContextParser, lookahead_parser::LookaheadParser, name_parser::NameParser, token_parser::TokenParser};
 pub use generated::NodeData;
 pub use metadata::{FileMetadata, FileReference, PatternAmbientModule, Pragma, PragmaArgument};
 pub use model::{

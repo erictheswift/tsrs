@@ -4,7 +4,7 @@ use tsrs_diagnostics::{self as diagnostics, Message};
 use tsrs_scanner as scanner;
 
 use crate::parser_1::JsdocScannerInfo;
-use crate::utilities::{token_is_identifier_or_keyword, token_is_identifier_or_keyword_or_greater_than};
+use crate::utilities::token_is_identifier_or_keyword;
 use crate::*;
 
 impl Parser {
@@ -1783,157 +1783,36 @@ impl Parser {
         permit_const_as_modifier: bool,
         stop_on_start_of_class_static_block: bool,
     ) -> Option<P<Node>> {
-        let pos = self.node_pos();
-        let kind = self.token;
-        if self.token == Kind::ConstKeyword && permit_const_as_modifier {
-            // We need to ensure that any subsequent modifiers appear on the same line
-            // so that when 'const' is a standalone declaration, we don't issue an error.
-            if !self.look_ahead(Parser::next_token_is_on_same_line_and_can_follow_modifier) {
-                return None;
-            }
-            self.next_token();
-        } else if (stop_on_start_of_class_static_block
-            && self.token == Kind::StaticKeyword
-            && self.look_ahead(Parser::next_token_is_open_brace)) || (has_seen_static_modifier && self.token == Kind::StaticKeyword) || (!self.parse_any_contextual_modifier()) {
-            return None;
-        }
-        let node = self.factory.new_modifier(kind);
-        Some(self.finish_node(node, pos))
+        crate::lookahead_parser::LookaheadParser::try_parse_modifier(self, has_seen_static_modifier, permit_const_as_modifier, stop_on_start_of_class_static_block)
     }
 
     #[inline]
     pub(crate) fn parse_contextual_modifier(&mut self, t: Kind) -> bool {
-        // A nonmatching token would only mark and rewind unchanged parser state.
-        if self.token != t {
-            return false;
-        }
-        self.parse_contextual_modifier_worker()
-    }
-
-    #[inline(never)]
-    fn parse_contextual_modifier_worker(&mut self) -> bool {
-        let state = self.mark();
-        if self.next_token_can_follow_modifier() {
-            return true;
-        }
-        self.rewind(state);
-        false
-    }
-
-    pub(crate) fn parse_any_contextual_modifier(&mut self) -> bool {
-        // Not a modifier: Go marks and rewinds an unchanged state (a no-op) before returning false.
-        if !ast::is_modifier_kind(self.token) {
-            return false;
-        }
-        let state = self.mark();
-        if self.next_token_can_follow_modifier() {
-            return true;
-        }
-        self.rewind(state);
-        false
-    }
-
-    pub(crate) fn next_token_can_follow_modifier(&mut self) -> bool {
-        match self.token {
-            Kind::ConstKeyword => {
-                // 'const' is only a modifier if followed by 'enum'.
-                self.next_token() == Kind::EnumKeyword
-            }
-            Kind::ExportKeyword => {
-                self.next_token();
-                if self.token == Kind::DefaultKeyword {
-                    return self.look_ahead(Parser::next_token_can_follow_default_keyword);
-                }
-                if self.token == Kind::TypeKeyword {
-                    return self.look_ahead(Parser::next_token_can_follow_export_modifier);
-                }
-                self.can_follow_export_modifier()
-            }
-            Kind::DefaultKeyword => self.next_token_can_follow_default_keyword(),
-            Kind::StaticKeyword => {
-                self.next_token();
-                self.can_follow_modifier()
-            }
-            Kind::GetKeyword | Kind::SetKeyword => {
-                self.next_token();
-                self.can_follow_get_or_set_keyword()
-            }
-            _ => self.next_token_is_on_same_line_and_can_follow_modifier(),
-        }
-    }
-
-    pub(crate) fn next_token_can_follow_default_keyword(&mut self) -> bool {
-        match self.next_token() {
-            Kind::ClassKeyword | Kind::FunctionKeyword | Kind::InterfaceKeyword | Kind::AtToken => true,
-            Kind::AbstractKeyword => self.look_ahead(Parser::next_token_is_class_keyword_on_same_line),
-            Kind::AsyncKeyword => self.look_ahead(Parser::next_token_is_function_keyword_on_same_line),
-            _ => false,
-        }
+        crate::lookahead_parser::LookaheadParser::parse_contextual_modifier(self, t)
     }
 
     pub(crate) fn next_token_is_identifier_or_keyword(&mut self) -> bool {
-        token_is_identifier_or_keyword(self.next_token())
+        crate::lookahead_parser::LookaheadParser::next_token_is_identifier_or_keyword(self)
     }
 
     pub(crate) fn next_token_is_identifier_or_keyword_or_greater_than(&mut self) -> bool {
-        token_is_identifier_or_keyword_or_greater_than(self.next_token())
+        crate::lookahead_parser::LookaheadParser::next_token_is_identifier_or_keyword_or_greater_than(self)
     }
 
     pub(crate) fn next_token_is_identifier_or_keyword_on_same_line(&mut self) -> bool {
-        self.next_token_is_identifier_or_keyword() && !self.has_preceding_line_break()
+        crate::lookahead_parser::LookaheadParser::next_token_is_identifier_or_keyword_on_same_line(self)
     }
 
     pub(crate) fn next_token_is_identifier_or_keyword_or_literal_on_same_line(&mut self) -> bool {
-        (self.next_token_is_identifier_or_keyword()
-            || self.token == Kind::NumericLiteral
-            || self.token == Kind::BigIntLiteral
-            || self.token == Kind::StringLiteral)
-            && !self.has_preceding_line_break()
-    }
-
-    pub(crate) fn next_token_is_class_keyword_on_same_line(&mut self) -> bool {
-        self.next_token() == Kind::ClassKeyword && !self.has_preceding_line_break()
+        crate::lookahead_parser::LookaheadParser::next_token_is_identifier_or_keyword_or_literal_on_same_line(self)
     }
 
     pub(crate) fn next_token_is_function_keyword_on_same_line(&mut self) -> bool {
-        self.next_token() == Kind::FunctionKeyword && !self.has_preceding_line_break()
-    }
-
-    pub(crate) fn next_token_can_follow_export_modifier(&mut self) -> bool {
-        self.next_token();
-        self.can_follow_export_modifier()
-    }
-
-    pub(crate) fn can_follow_export_modifier(&self) -> bool {
-        self.token == Kind::AtToken
-            || self.token != Kind::AsteriskToken
-                && self.token != Kind::AsKeyword
-                && self.token != Kind::OpenBraceToken
-                && self.can_follow_modifier()
-    }
-
-    pub(crate) fn can_follow_modifier(&self) -> bool {
-        self.token == Kind::OpenBracketToken
-            || self.token == Kind::OpenBraceToken
-            || self.token == Kind::AsteriskToken
-            || self.token == Kind::DotDotDotToken
-            || self.is_literal_property_name()
-    }
-
-    pub(crate) fn can_follow_get_or_set_keyword(&self) -> bool {
-        self.token == Kind::OpenBracketToken || self.is_literal_property_name()
-    }
-
-    pub(crate) fn next_token_is_on_same_line_and_can_follow_modifier(&mut self) -> bool {
-        self.next_token();
-        if self.has_preceding_line_break() {
-            return false;
-        }
-        self.can_follow_modifier()
+        crate::lookahead_parser::LookaheadParser::next_token_is_function_keyword_on_same_line(self)
     }
 
     pub(crate) fn next_token_is_open_brace(&mut self) -> bool {
-        self.next_token() == Kind::OpenBraceToken
+        crate::lookahead_parser::LookaheadParser::next_token_is_open_brace(self)
     }
 
     pub(crate) fn parse_expression(&mut self) -> P<Node> {

@@ -620,13 +620,9 @@ impl Parser {
         self.has_parse_error = state.has_parse_error;
     }
 
-    // Keep speculative scanner snapshots and rollback bookkeeping out of callers' common-path frames.
-    #[inline(never)]
+    // The shared implementation keeps snapshots and rollback out of callers' common-path frames.
     pub(crate) fn look_ahead(&mut self, callback: impl FnOnce(&mut Parser) -> bool) -> bool {
-        let state = self.mark();
-        let result = callback(self);
-        self.rewind(state);
-        result
+        crate::context_parser::ContextParser::look_ahead(self, callback)
     }
 
     pub(crate) fn next_token(&mut self) -> Kind {

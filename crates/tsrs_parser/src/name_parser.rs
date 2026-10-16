@@ -1,7 +1,7 @@
 //! Shared name grammar for the legacy parser and the scoped, borrowed frontend.
 //! Implementations supply storage, parser state, and diagnostics; the grammar stays in one place.
 use crate::parser_3::is_reserved_word;
-use crate::token_parser::TokenParser;
+use crate::context_parser::ContextParser;
 use crate::utilities::token_is_identifier_or_keyword;
 use tsrs_ast::{Kind, NodeFlags};
 use tsrs_core::TextRange;
@@ -10,11 +10,14 @@ use tsrs_scanner::storage::ScannerStorage;
 
 /// Storage-dependent operations used by the parser's identifier and qualified-name routines.
 /// `Node` is either a legacy handle or an ordinary reference limited to a construction scope.
-pub trait NameParser<'text>: TokenParser<'text> {
-    fn context_flags(&self) -> NodeFlags;
+pub trait NameParser<'text>: ContextParser<'text> {
     fn statement_has_await_identifier(&self) -> bool;
     fn set_statement_has_await_identifier(&mut self, value: bool);
-    fn look_ahead_next_identifier_on_same_line(&mut self) -> bool;
+    fn look_ahead_next_identifier_on_same_line(&mut self) -> bool {
+        self.look_ahead(|p| {
+            token_is_identifier_or_keyword(p.next_token()) && !p.has_preceding_line_break()
+        })
+    }
     fn new_identifier(&mut self, text: &'text str) -> Self::Node;
     fn new_source_identifier(
         &mut self,
@@ -295,9 +298,6 @@ pub trait NameParser<'text>: TokenParser<'text> {
 }
 
 impl NameParser<'static> for crate::Parser {
-    fn context_flags(&self) -> NodeFlags {
-        self.context_flags
-    }
     fn statement_has_await_identifier(&self) -> bool {
         self.statement_has_await_identifier
     }
@@ -305,9 +305,6 @@ impl NameParser<'static> for crate::Parser {
         self.statement_has_await_identifier = value;
     }
 
-    fn look_ahead_next_identifier_on_same_line(&mut self) -> bool {
-        self.look_ahead(crate::Parser::next_token_is_identifier_or_keyword_on_same_line)
-    }
     fn new_identifier(&mut self, text: &'static str) -> Self::Node {
         crate::Parser::new_identifier(self, text)
     }

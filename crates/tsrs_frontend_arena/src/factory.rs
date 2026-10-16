@@ -250,7 +250,8 @@ impl FileArena {
 
 impl<'build, 'ast> NodeFactory<'build, 'ast> {
     /// Create parser state in this construction scope. Source and cooked values belong to this arena.
-    /// Import `TokenParser`/`NameParser` to use the migrated grammar routines.
+    /// Import `TokenParser`/`NameParser` for migrated grammar, and `ContextParser`/`LookaheadParser`
+    /// for parser checkpoints, context flags and syntax decisions.
     ///
     /// ```
     /// use tsrs_frontend_arena::{FileArena, ScriptKind, TokenParser};
