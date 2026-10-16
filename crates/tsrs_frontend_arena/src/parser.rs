@@ -1,10 +1,11 @@
-//! First native parser entry point, using the production parser's shared name grammar.
+//! Scoped native parser state for the grammar shared with the production frontend.
 use crate::{Diagnostic, DiagnosticPhase, FileArena, Node, NodeFactory, Text, construction};
 use std::fmt::Display;
-use tsrs_ast::{Kind, NodeFlags};
-use tsrs_core::{LanguageVariant, TextRange};
+use tsrs_ast::{Kind, NodeFlags, TokenFlags};
+use tsrs_core::{LanguageVariant, ScriptKind, TextRange};
 use tsrs_diagnostics::{self as diagnostics, Message};
 use tsrs_parser::name_parser::NameParser;
+use tsrs_parser::token_parser::TokenParser;
 use tsrs_scanner::Scanner;
 
 /// Parse the same complete entity-name input as `tsrs_parser::parse_isolated_entity_name`, using
@@ -29,10 +30,9 @@ pub fn parse_isolated_entity_name<'ast>(
     arena: &'ast FileArena,
     text: &str,
 ) -> Option<&'ast Node<'ast>> {
-    let scanner = arena.scanner(text);
     arena
         .try_build(|factory| {
-            let mut parser = Parser::new(scanner, factory);
+            let mut parser = factory.parser(text, ScriptKind::JS);
             parser.next_token();
             let name = parser.parse_entity_name(true, false, None);
             if parser.token == Kind::EndOfFile && parser.diagnostics.is_empty() {
@@ -44,7 +44,13 @@ pub fn parse_isolated_entity_name<'ast>(
         .ok()
 }
 
-struct Parser<'build, 'ast: 'build> {
+/// Parser state limited to one construction scope.
+///
+/// Supports the migrated name, token, literal, literal-type and template-part routines
+/// through `NameParser` and `TokenParser`.
+/// Full expression and source-file parsing are not provided yet.
+/// Create it with `NodeFactory::parser`.
+pub struct Parser<'build, 'ast: 'build> {
     scanner: Scanner<'ast, &'ast FileArena>,
     factory: NodeFactory<'build, 'ast>,
     token: Kind,
@@ -55,22 +61,45 @@ struct Parser<'build, 'ast: 'build> {
 }
 
 impl<'build, 'ast> Parser<'build, 'ast> {
-    fn new(
+    pub(crate) fn new(
         mut scanner: Scanner<'ast, &'ast FileArena>,
         factory: NodeFactory<'build, 'ast>,
+        script_kind: ScriptKind,
     ) -> Self {
-        // Isolated entity names use the JavaScript parser context, including its JSX scanner variant.
+        assert!(
+            script_kind != ScriptKind::Unknown,
+            "ScriptKind must be specified"
+        );
         scanner.set_on_error(true);
-        scanner.set_language_variant(LanguageVariant::JSX);
+        scanner.set_language_variant(match script_kind {
+            ScriptKind::TSX | ScriptKind::JSX | ScriptKind::JS | ScriptKind::JSON => {
+                LanguageVariant::JSX
+            }
+            _ => LanguageVariant::Standard,
+        });
         Self {
             scanner,
             factory,
             token: Kind::Unknown,
-            context_flags: NodeFlags::JavaScriptFile,
+            context_flags: match script_kind {
+                ScriptKind::JS | ScriptKind::JSX => NodeFlags::JavaScriptFile,
+                ScriptKind::JSON => NodeFlags::JavaScriptFile | NodeFlags::JsonFile,
+                _ => NodeFlags::None,
+            },
             statement_has_await_identifier: false,
             has_parse_error: false,
             diagnostics: Vec::new(),
         }
+    }
+
+    /// Diagnostics produced so far, in scanner/parser order.
+    pub fn diagnostics(&self) -> &[Diagnostic] {
+        &self.diagnostics
+    }
+
+    /// Detach diagnostics without retaining the parser or its construction scope.
+    pub fn into_diagnostics(self) -> Vec<Diagnostic> {
+        self.diagnostics
     }
 
     #[cold]
@@ -87,16 +116,7 @@ impl<'build, 'ast> Parser<'build, 'ast> {
     }
 }
 
-impl<'build, 'ast> NameParser<'ast> for Parser<'build, 'ast> {
-    type Node = &'build construction::Node<'build, 'ast>;
-    type Storage = &'ast FileArena;
-
-    fn scanner(&self) -> &Scanner<'ast, &'ast FileArena> {
-        &self.scanner
-    }
-    fn token(&self) -> Kind {
-        self.token
-    }
+impl<'ast> NameParser<'ast> for Parser<'_, 'ast> {
     fn context_flags(&self) -> NodeFlags {
         self.context_flags
     }
@@ -105,26 +125,6 @@ impl<'build, 'ast> NameParser<'ast> for Parser<'build, 'ast> {
     }
     fn set_statement_has_await_identifier(&mut self, value: bool) {
         self.statement_has_await_identifier = value;
-    }
-
-    fn next_token(&mut self) -> Kind {
-        if tsrs_ast::is_keyword(self.token)
-            && (self.scanner.has_unicode_escape() || self.scanner.has_extended_unicode_escape())
-        {
-            self.parse_error_at_current_token(
-                &diagnostics::Keywords_cannot_contain_escape_characters,
-                &[],
-            );
-        }
-        self.next_token_without_check()
-    }
-
-    fn next_token_without_check(&mut self) -> Kind {
-        self.token = self.scanner.scan();
-        if self.scanner.has_errors() {
-            self.report_scan_errors();
-        }
-        self.token
     }
 
     fn look_ahead_next_identifier_on_same_line(&mut self) -> bool {
@@ -162,6 +162,39 @@ impl<'build, 'ast> NameParser<'ast> for Parser<'build, 'ast> {
 
     fn new_qualified_name(&self, left: Self::Node, right: Self::Node) -> Self::Node {
         self.factory.new_qualified_name(left, right)
+    }
+}
+
+impl<'build, 'ast> TokenParser<'ast> for Parser<'build, 'ast> {
+    type Node = &'build construction::Node<'build, 'ast>;
+    type Storage = &'ast FileArena;
+
+    fn scanner(&self) -> &Scanner<'ast, &'ast FileArena> {
+        &self.scanner
+    }
+
+    fn token(&self) -> Kind {
+        self.token
+    }
+
+    fn next_token(&mut self) -> Kind {
+        if tsrs_ast::is_keyword(self.token)
+            && (self.scanner.has_unicode_escape() || self.scanner.has_extended_unicode_escape())
+        {
+            self.parse_error_at_current_token(
+                &diagnostics::Keywords_cannot_contain_escape_characters,
+                &[],
+            );
+        }
+        self.next_token_without_check()
+    }
+
+    fn next_token_without_check(&mut self) -> Kind {
+        self.token = self.scanner.scan();
+        if self.scanner.has_errors() {
+            self.report_scan_errors();
+        }
+        self.token
     }
 
     fn finish_node(&mut self, node: Self::Node, pos: u32) -> Self::Node {
@@ -201,6 +234,92 @@ impl<'build, 'ast> NameParser<'ast> for Parser<'build, 'ast> {
         }
         self.has_parse_error = true;
     }
+    fn re_scan_slash_token(&mut self) -> Kind {
+        self.token = self.scanner.re_scan_slash_token(false);
+        if self.scanner.has_errors() {
+            self.report_scan_errors();
+        }
+        self.token
+    }
+    fn re_scan_template_token(&mut self, is_tagged_template: bool) -> Kind {
+        self.token = self.scanner.re_scan_template_token(is_tagged_template);
+        if self.scanner.has_errors() {
+            self.report_scan_errors();
+        }
+        self.token
+    }
+    fn new_token(&self, kind: Kind) -> Self::Node {
+        self.factory.new_token(kind)
+    }
+    fn new_keyword_expression(&self, kind: Kind) -> Self::Node {
+        self.factory.new_keyword_expression(kind)
+    }
+    fn new_string_literal(&self, text: &'ast [u8], flags: TokenFlags) -> Self::Node {
+        self.factory
+            .new_string_literal(Text::from_bytes(text), flags)
+    }
+    fn new_numeric_literal(&self, text: &'ast [u8], flags: TokenFlags) -> Self::Node {
+        self.factory
+            .new_numeric_literal(Text::from_bytes(text), flags)
+    }
+    fn new_big_int_literal(&self, text: &'ast [u8], flags: TokenFlags) -> Self::Node {
+        self.factory
+            .new_big_int_literal(Text::from_bytes(text), flags)
+    }
+    fn new_regular_expression_literal(&self, text: &'ast [u8], flags: TokenFlags) -> Self::Node {
+        self.factory
+            .new_regular_expression_literal(Text::from_bytes(text), flags)
+    }
+    fn new_no_substitution_template_literal(
+        &self,
+        text: &'ast [u8],
+        flags: TokenFlags,
+    ) -> Self::Node {
+        self.factory
+            .new_no_substitution_template_literal(Text::from_bytes(text), flags)
+    }
+    fn new_template_head(
+        &self,
+        text: &'ast [u8],
+        raw_text: &'ast str,
+        flags: TokenFlags,
+    ) -> Self::Node {
+        self.factory.new_template_head(
+            Text::from_bytes(text),
+            Text::from_bytes(raw_text.as_bytes()),
+            flags,
+        )
+    }
+    fn new_template_middle(
+        &self,
+        text: &'ast [u8],
+        raw_text: &'ast str,
+        flags: TokenFlags,
+    ) -> Self::Node {
+        self.factory.new_template_middle(
+            Text::from_bytes(text),
+            Text::from_bytes(raw_text.as_bytes()),
+            flags,
+        )
+    }
+    fn new_template_tail(
+        &self,
+        text: &'ast [u8],
+        raw_text: &'ast str,
+        flags: TokenFlags,
+    ) -> Self::Node {
+        self.factory.new_template_tail(
+            Text::from_bytes(text),
+            Text::from_bytes(raw_text.as_bytes()),
+            flags,
+        )
+    }
+    fn new_prefix_unary_expression(&self, kind: Kind, operand: Self::Node) -> Self::Node {
+        self.factory.new_prefix_unary_expression(kind, operand)
+    }
+    fn new_literal_type_node(&self, literal: Self::Node) -> Self::Node {
+        self.factory.new_literal_type_node(literal)
+    }
 }
 
 #[cfg(test)]
@@ -213,7 +332,7 @@ mod tests {
         let scanner = arena.scanner("a.\nb c");
         let mut diagnostics = Vec::new();
         let root = arena.build(|factory| {
-            let mut parser = Parser::new(scanner, factory);
+            let mut parser = Parser::new(scanner, factory, ScriptKind::JS);
             parser.next_token();
             let node = parser.parse_entity_name(true, false, None);
             assert_eq!(parser.token, Kind::Identifier);
@@ -243,7 +362,7 @@ mod tests {
         let scanner = arena.scanner("a.\nb /* unterminated");
         let mut diagnostics = Vec::new();
         let root = arena.build(|factory| {
-            let mut parser = Parser::new(scanner, factory);
+            let mut parser = Parser::new(scanner, factory, ScriptKind::JS);
             parser.next_token();
             let node = parser.parse_entity_name(true, false, None);
             assert_eq!(parser.token, Kind::EndOfFile);
@@ -268,7 +387,7 @@ mod tests {
                 let arena = FileArena::new();
                 let scanner = arena.scanner(text);
                 let root = arena.build(|factory| {
-                    let mut parser = Parser::new(scanner, factory);
+                    let mut parser = Parser::new(scanner, factory, ScriptKind::JS);
                     parser.context_flags |= flag;
                     parser.next_token();
                     let node = if binding {
@@ -293,7 +412,7 @@ mod tests {
             let scanner = arena.scanner(text);
             let mut address = 0;
             let root = arena.build(|factory| {
-                let mut parser = Parser::new(scanner, factory);
+                let mut parser = Parser::new(scanner, factory, ScriptKind::JS);
                 parser.next_token();
                 address = parser.scanner.token_value().as_ptr().addr();
                 parser.parse_entity_name(true, false, None)
@@ -309,7 +428,7 @@ mod tests {
         let scanner = arena.scanner("a.#private");
         let diagnostics = arena
             .try_build(|factory| {
-                let mut parser = Parser::new(scanner, factory);
+                let mut parser = Parser::new(scanner, factory, ScriptKind::JS);
                 parser.next_token();
                 parser.parse_entity_name(true, false, None);
                 Err(parser.diagnostics)

@@ -1,4 +1,4 @@
-use tsrs_ast::{self as ast, DiagnosticExt, Kind, ModifierList, Node, NodeFlags, NodeList, TokenFlags};
+use tsrs_ast::{self as ast, DiagnosticExt, Kind, ModifierList, Node, NodeFlags, NodeList};
 use tsrs_core::{TextRange, P};
 use tsrs_diagnostics::{self as diagnostics, Message};
 use tsrs_scanner as scanner;
@@ -622,22 +622,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_literal_type_node(&mut self, negative: bool) -> P<Node> {
-        let pos = self.node_pos();
-        if negative {
-            self.next_token();
-        }
-        let mut expression;
-        if self.token == Kind::TrueKeyword || self.token == Kind::FalseKeyword || self.token == Kind::NullKeyword {
-            expression = self.parse_keyword_expression();
-        } else {
-            expression = self.parse_literal_expression();
-        }
-        if negative {
-            let node = self.factory.new_prefix_unary_expression(Kind::MinusToken, expression);
-            expression = self.finish_node(node, pos);
-        }
-        let node = self.factory.new_literal_type_node(expression);
-        self.finish_node(node, pos)
+        crate::token_parser::TokenParser::parse_literal_type_node(self, negative)
     }
 
     pub(crate) fn parse_type_reference(&mut self) -> P<Node> {
@@ -1551,24 +1536,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_template_head(&mut self, is_tagged_template: bool) -> P<Node> {
-        if !is_tagged_template && self.scanner.token_flags().intersects(TokenFlags::IsInvalid) {
-            self.re_scan_template_token(false /*isTaggedTemplate*/);
-        }
-        let pos = self.node_pos();
-        let text = self.scanner.token_value();
-        let raw_text = self.get_template_literal_raw_text(2 /*endLength*/);
-        let result = self.factory.new_template_head(text, raw_text, self.scanner.token_flags());
-        self.next_token();
-        self.finish_node(result, pos)
-    }
-
-    pub(crate) fn get_template_literal_raw_text(&self, end_length: usize) -> &'static str {
-        let mut end_length = end_length;
-        let token_text = self.scanner.token_text();
-        if self.scanner.token_flags().intersects(TokenFlags::Unterminated) {
-            end_length = 0;
-        }
-        &token_text[1..token_text.len() - end_length]
+        crate::token_parser::TokenParser::parse_template_head(self, is_tagged_template)
     }
 
     pub(crate) fn parse_template_type_spans(&mut self) -> P<NodeList> {
@@ -1594,30 +1562,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_literal_of_template_span(&mut self, is_tagged_template: bool) -> P<Node> {
-        if self.token == Kind::CloseBraceToken {
-            self.re_scan_template_token(is_tagged_template);
-            return self.parse_template_middle_or_tail();
-        }
-        self.parse_error_at_current_token(&diagnostics::X_0_expected, &[&scanner::token_to_string(Kind::CloseBraceToken)]);
-        let node = self.factory.new_template_tail("", "", TokenFlags::None);
-        let pos = self.node_pos();
-        self.finish_node(node, pos)
-    }
-
-    pub(crate) fn parse_template_middle_or_tail(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-
-        let result = if self.token == Kind::TemplateMiddle {
-            let text = self.scanner.token_value();
-            let raw_text = self.get_template_literal_raw_text(2 /*endLength*/);
-            self.factory.new_template_middle(text, raw_text, self.scanner.token_flags())
-        } else {
-            let text = self.scanner.token_value();
-            let raw_text = self.get_template_literal_raw_text(1 /*endLength*/);
-            self.factory.new_template_tail(text, raw_text, self.scanner.token_flags())
-        };
-        self.next_token();
-        self.finish_node(result, pos)
+        crate::token_parser::TokenParser::parse_literal_of_template_span(self, is_tagged_template)
     }
 
     pub(crate) fn parse_function_or_constructor_type_to_error(

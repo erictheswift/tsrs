@@ -1448,94 +1448,36 @@ impl Parser {
     }
 
     pub(crate) fn parse_optional(&mut self, token: Kind) -> bool {
-        if self.token == token {
-            self.next_token();
-            return true;
-        }
-        false
+        crate::token_parser::TokenParser::parse_optional(self, token)
     }
 
     pub(crate) fn parse_expected(&mut self, kind: Kind) -> bool {
-        self.parse_expected_with_diagnostic(kind, None, true)
+        crate::token_parser::TokenParser::parse_expected(self, kind)
     }
 
     pub(crate) fn parse_expected_without_advancing(&mut self, kind: Kind) -> bool {
-        self.parse_expected_with_diagnostic(kind, None, false)
+        crate::token_parser::TokenParser::parse_expected_without_advancing(self, kind)
     }
 
     #[inline]
     pub(crate) fn parse_expected_with_diagnostic(&mut self, kind: Kind, message: Option<&'static Message>, should_advance: bool) -> bool {
-        if self.token == kind {
-            if should_advance {
-                self.next_token();
-            }
-            return true;
-        }
-        self.report_expected(kind, message)
-    }
-
-    #[cold]
-    fn report_expected(&mut self, kind: Kind, message: Option<&'static Message>) -> bool {
-        // Report specific message if provided with one.  Otherwise, report generic fallback message.
-        if let Some(message) = message {
-            self.parse_error_at_current_token(message, &[]);
-        } else {
-            self.parse_error_at_current_token(&diagnostics::X_0_expected, &[&scanner::token_to_string(kind)]);
-        }
-        false
+        crate::token_parser::TokenParser::parse_expected_with_diagnostic(self, kind, message, should_advance)
     }
 
     pub(crate) fn parse_token_node(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        let kind = self.token;
-        self.next_token();
-        let token = self.factory.new_token(kind);
-        self.finish_node(token, pos)
+        crate::token_parser::TokenParser::parse_token_node(self)
     }
 
     pub(crate) fn parse_expected_token(&mut self, kind: Kind) -> P<Node> {
-        if let Some(token) = self.parse_optional_token(kind) {
-
-token
-} else {
-
-
-                self.parse_error_at_current_token(&diagnostics::X_0_expected, &[&scanner::token_to_string(kind)]);
-                let token = self.factory.new_token(kind);
-                let pos = self.node_pos();
-                self.finish_node(token, pos)
-
-}
+        crate::token_parser::TokenParser::parse_expected_token(self, kind)
     }
 
     pub(crate) fn parse_optional_token(&mut self, kind: Kind) -> Option<P<Node>> {
-        if self.token == kind {
-            return Some(self.parse_token_node());
-        }
-        None
+        crate::token_parser::TokenParser::parse_optional_token(self, kind)
     }
 
     pub(crate) fn parse_expected_token_jsdoc(&mut self, kind: Kind) -> P<Node> {
-        if let Some(optional) = self.parse_optional_token_jsdoc(kind) {
-
-optional
-} else {
-
-
-                assert!(is_keyword_or_punctuation(kind), "expected keyword or punctuation");
-                self.parse_error_at_current_token(&diagnostics::X_0_expected, &[&scanner::token_to_string(kind)]);
-                let token = self.factory.new_token(kind);
-                let pos = self.node_pos();
-                self.finish_node(token, pos)
-
-}
-    }
-
-    pub(crate) fn parse_optional_token_jsdoc(&mut self, kind: Kind) -> Option<P<Node>> {
-        if self.token == kind {
-            return Some(self.parse_token_node());
-        }
-        None
+        crate::token_parser::TokenParser::parse_expected_token_jsdoc(self, kind)
     }
 
     pub(crate) fn parse_statement(&mut self) -> P<Node> {

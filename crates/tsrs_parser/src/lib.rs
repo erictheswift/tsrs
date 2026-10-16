@@ -15,3 +15,4 @@ pub use utilities::get_jsdoc_comment_ranges;
 pub use parser_1::parse_source_file_for_publication;
 
 pub mod name_parser;
+pub mod token_parser;

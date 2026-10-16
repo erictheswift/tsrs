@@ -2059,26 +2059,11 @@ impl Parser {
     }
 
     pub(crate) fn parse_keyword_expression(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        let result = self.factory.new_keyword_expression(self.token);
-        self.next_token();
-        self.finish_node(result, pos)
+        crate::token_parser::TokenParser::parse_keyword_expression(self)
     }
 
     pub(crate) fn parse_literal_expression(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        let text = self.scanner.token_value();
-        let token_flags = self.scanner.token_flags();
-        let result = match self.token {
-            Kind::StringLiteral => self.factory.new_string_literal(text, token_flags),
-            Kind::NumericLiteral => self.factory.new_numeric_literal(text, token_flags),
-            Kind::BigIntLiteral => self.factory.new_big_int_literal(text, token_flags),
-            Kind::RegularExpressionLiteral => self.factory.new_regular_expression_literal(text, token_flags),
-            Kind::NoSubstitutionTemplateLiteral => self.factory.new_no_substitution_template_literal(text, token_flags),
-            _ => panic!("Unhandled case in parseLiteralExpression"),
-        };
-        self.next_token();
-        self.finish_node(result, pos)
+        crate::token_parser::TokenParser::parse_literal_expression(self)
     }
 
     pub(crate) fn parse_identifier_name_error_on_unicode_escape_sequence(&mut self) -> P<Node> {

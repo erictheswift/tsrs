@@ -249,6 +249,42 @@ impl FileArena {
 }
 
 impl<'build, 'ast> NodeFactory<'build, 'ast> {
+    /// Create parser state in this construction scope. Source and cooked values belong to this arena.
+    /// Import `TokenParser`/`NameParser` to use the migrated grammar routines.
+    ///
+    /// ```
+    /// use tsrs_frontend_arena::{FileArena, ScriptKind, TokenParser};
+    /// let arena = FileArena::new();
+    /// let literal = arena.build(|factory| {
+    ///     let mut parser = factory.parser("42", ScriptKind::TS);
+    ///     parser.next_token();
+    ///     parser.parse_literal_expression()
+    /// });
+    /// assert_eq!(literal.text(), "42");
+    /// ```
+    ///
+    /// ```compile_fail
+    /// use tsrs_frontend_arena::{FileArena, ScriptKind, TokenParser};
+    /// let arena = FileArena::new();
+    /// let mut saved = None;
+    /// arena.build(|factory| {
+    ///     let mut parser = factory.parser("42", ScriptKind::TS);
+    ///     parser.next_token();
+    ///     let literal = parser.parse_literal_expression();
+    ///     saved = Some(parser);
+    ///     literal
+    /// });
+    /// saved.unwrap().next_token();
+    /// ```
+    pub fn parser(
+        self,
+        text: &str,
+        script_kind: tsrs_core::ScriptKind,
+    ) -> crate::Parser<'build, 'ast> {
+        let scanner = self.arena.scanner(text);
+        crate::Parser::new(scanner, self, script_kind)
+    }
+
     pub(crate) fn alloc<T>(&self, value: T) -> &'build T {
         self.arena.alloc(value)
     }

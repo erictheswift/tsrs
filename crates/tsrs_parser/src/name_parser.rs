@@ -1,26 +1,19 @@
 //! Shared name grammar for the legacy parser and the scoped, borrowed frontend.
 //! Implementations supply storage, parser state, and diagnostics; the grammar stays in one place.
 use crate::parser_3::is_reserved_word;
+use crate::token_parser::TokenParser;
 use crate::utilities::token_is_identifier_or_keyword;
-use std::fmt::Display;
 use tsrs_ast::{Kind, NodeFlags};
 use tsrs_core::TextRange;
 use tsrs_diagnostics::{self as diagnostics, Message};
-use tsrs_scanner::{Scanner, storage::ScannerStorage};
+use tsrs_scanner::storage::ScannerStorage;
 
 /// Storage-dependent operations used by the parser's identifier and qualified-name routines.
 /// `Node` is either a legacy handle or an ordinary reference limited to a construction scope.
-pub trait NameParser<'text> {
-    type Node: Copy;
-    type Storage: ScannerStorage<'text>;
-
-    fn scanner(&self) -> &Scanner<'text, Self::Storage>;
-    fn token(&self) -> Kind;
+pub trait NameParser<'text>: TokenParser<'text> {
     fn context_flags(&self) -> NodeFlags;
     fn statement_has_await_identifier(&self) -> bool;
     fn set_statement_has_await_identifier(&mut self, value: bool);
-    fn next_token(&mut self) -> Kind;
-    fn next_token_without_check(&mut self) -> Kind;
     fn look_ahead_next_identifier_on_same_line(&mut self) -> bool;
     fn new_identifier(&mut self, text: &'text str) -> Self::Node;
     fn new_source_identifier(
@@ -33,34 +26,7 @@ pub trait NameParser<'text> {
         text: <Self::Storage as ScannerStorage<'text>>::Value,
     ) -> Self::Node;
     fn new_qualified_name(&self, left: Self::Node, right: Self::Node) -> Self::Node;
-    fn finish_node(&mut self, node: Self::Node, pos: u32) -> Self::Node;
-    fn report_error(&mut self, loc: TextRange, message: &'static Message, args: &[&dyn Display]);
 
-    fn node_pos(&self) -> u32 {
-        self.scanner().token_full_start()
-    }
-    fn has_preceding_line_break(&self) -> bool {
-        self.scanner().has_preceding_line_break()
-    }
-    fn parse_error_at(
-        &mut self,
-        pos: u32,
-        end: u32,
-        message: &'static Message,
-        args: &[&dyn Display],
-    ) {
-        self.report_error(TextRange::new(pos, end), message, args);
-    }
-    fn parse_error_at_current_token(&mut self, message: &'static Message, args: &[&dyn Display]) {
-        self.report_error(self.scanner().token_range(), message, args);
-    }
-    fn parse_optional(&mut self, token: Kind) -> bool {
-        if self.token() == token {
-            self.next_token();
-            return true;
-        }
-        false
-    }
     fn parse_entity_name(
         &mut self,
         allow_reserved_words: bool,
@@ -329,15 +295,6 @@ pub trait NameParser<'text> {
 }
 
 impl NameParser<'static> for crate::Parser {
-    type Node = tsrs_core::P<tsrs_ast::Node>;
-    type Storage = tsrs_scanner::storage::LegacyStorage;
-
-    fn scanner(&self) -> &Scanner<'static> {
-        &self.scanner
-    }
-    fn token(&self) -> Kind {
-        self.token
-    }
     fn context_flags(&self) -> NodeFlags {
         self.context_flags
     }
@@ -347,12 +304,7 @@ impl NameParser<'static> for crate::Parser {
     fn set_statement_has_await_identifier(&mut self, value: bool) {
         self.statement_has_await_identifier = value;
     }
-    fn next_token(&mut self) -> Kind {
-        crate::Parser::next_token(self)
-    }
-    fn next_token_without_check(&mut self) -> Kind {
-        crate::Parser::next_token_without_check(self)
-    }
+
     fn look_ahead_next_identifier_on_same_line(&mut self) -> bool {
         self.look_ahead(crate::Parser::next_token_is_identifier_or_keyword_on_same_line)
     }
@@ -367,11 +319,5 @@ impl NameParser<'static> for crate::Parser {
     }
     fn new_qualified_name(&self, left: Self::Node, right: Self::Node) -> Self::Node {
         self.factory.new_qualified_name(left, right)
-    }
-    fn finish_node(&mut self, node: Self::Node, pos: u32) -> Self::Node {
-        crate::Parser::finish_node(self, node, pos)
-    }
-    fn report_error(&mut self, loc: TextRange, message: &'static Message, args: &[&dyn Display]) {
-        self.parse_error_at_range(loc, message, args);
     }
 }

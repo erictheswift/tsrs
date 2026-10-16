@@ -144,3 +144,6 @@ and keeping identifier creation out of line were screened separately; none remov
 increase, so no new inlining directives are retained. This is recorded as a cost of this branch’s requested
 lifetime migration, not a speedup or a reason to change production defaults. The migration remains on its
 isolated branch; the frontend performance gate has not been cleared.
+
+The next stage, [native token and literal parsing](native-token-parser.md), shares token recovery, literal
+expressions/types and template-part parsing through the same scoped factory.
