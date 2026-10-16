@@ -7,7 +7,8 @@
 //! source-file parser and binder to that scoped factory remains in progress.
 //! `parse_isolated_entity_name` already parses directly into native references using shared grammar.
 //! `NodeFactory::parser` also exposes scoped name, token, literal, literal-type and template-part parsing,
-//! parser checkpoints/context, syntax lookahead, modifier parsing, semicolon/list recovery, import clauses JSX names/text/closing tags and `JSDoc` links/names.
+//! parser checkpoints/context, syntax lookahead, modifier parsing, semicolon/list recovery, import
+//! clauses, JSX names/text/closing tags and `JSDoc` links/names/tag comments.
 //!
 //! ```compile_fail
 //! use tsrs_frontend_arena::{FileArena, ParseOptions, parse_and_bind};

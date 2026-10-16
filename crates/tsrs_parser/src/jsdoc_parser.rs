@@ -1,14 +1,35 @@
-//! `JSDoc` names, links and whitespace grammar shared by both frontend representations.
+//! `JSDoc` names, links and tag descriptions shared by both frontend representations.
 use crate::utilities::{is_keyword_or_punctuation, token_is_identifier_or_keyword};
-use crate::{name_parser::NameParser, parser_3::is_reserved_word};
+use crate::{list_parser::ListParser, parser_3::is_reserved_word};
 use tsrs_ast::Kind;
+use tsrs_core::{TextRange, stringutil};
 use tsrs_diagnostics::{self as diagnostics, Message};
 use tsrs_scanner::{self as scanner, storage::TokenValue};
 
 /// `JSDoc` lexical grammar. Callers provide comment bounds, context flags and the current token.
-/// Complete comment/tag parsing, attachment and type expressions remain with the enclosing parser.
-pub trait JSDocParser<'text>: NameParser<'text> {
+///
+/// Tag descriptions, simple/unknown tags and `@see` are supported. Complete comment/tag dispatch,
+/// attachment and type expressions remain with the enclosing parser. Finish comment parsing before
+/// rewinding: checkpoints do not restore scratch buffers, which are cleared at the end of each call.
+pub trait JSDocParser<'text>: ListParser<'text> {
     type TextList;
+
+    fn next_jsdoc_comment_text_token(&mut self, in_backticks: bool) -> Kind;
+    fn jsdoc_tag_comments_space(&mut self) -> &mut Vec<&'text str>;
+    fn jsdoc_tag_comments_parts_space(&mut self) -> &mut Vec<Self::Node>;
+    fn copy_jsdoc_text(&self, text: &str) -> &'text str;
+    fn new_jsdoc_text(&self, text: &[&'text str]) -> Self::Node;
+    fn new_jsdoc_unknown_tag(
+        &self,
+        tag_name: Self::Node,
+        comment: Option<Self::NodeList>,
+    ) -> Self::Node;
+    fn new_jsdoc_see_tag(
+        &self,
+        tag_name: Self::Node,
+        name_expression: Option<Self::Node>,
+        comment: Option<Self::NodeList>,
+    ) -> Self::Node;
 
     fn next_token_jsdoc(&mut self) -> Kind;
     fn reset_scanner_pos(&mut self, pos: u32);
@@ -231,14 +252,328 @@ pub trait JSDocParser<'text>: NameParser<'text> {
         );
         false
     }
+
+    fn parse_trailing_tag_comments(
+        &mut self,
+        pos: u32,
+        end: u32,
+        margin: u32,
+        indent_text: &str,
+    ) -> Option<Self::NodeList> {
+        let mut margin = margin;
+        // some tags, like typedef and callback, have already parsed their comments earlier
+        if indent_text.is_empty() {
+            margin += end - pos;
+        }
+        let mut initial_margin: &'text str = "";
+        if margin < indent_text.len() as u32 {
+            initial_margin = self.copy_jsdoc_text(&indent_text[margin as usize..]);
+        }
+        self.parse_tag_comments(margin, Some(initial_margin))
+    }
+
+    fn parse_tag_comments(
+        &mut self,
+        indent: u32,
+        initial_margin: Option<&'text str>,
+    ) -> Option<Self::NodeList> {
+        let mut indent = indent;
+        let comments_pos = self.node_pos();
+        let mut comments: Vec<&'text str> = std::mem::take(self.jsdoc_tag_comments_space());
+        let mut parts: Vec<Self::Node> = std::mem::take(self.jsdoc_tag_comments_parts_space());
+        let mut link_end = None;
+        let mut state = JsdocState::BeginningOfLine;
+        let mut backtick_count = 0;
+        let mut in_fenced_code_block = false;
+        let mut margin = None;
+        macro_rules! push_comment {
+            ($text:expr_2021) => {{
+                let text: &'text str = $text;
+                if margin.is_none() {
+                    margin = Some(indent);
+                }
+                comments.push(text);
+                indent += text.len() as u32;
+            }};
+        }
+
+        if let Some(initial_margin) = initial_margin {
+            // jump straight to saving comments if there is some initial indentation
+            if !initial_margin.is_empty() {
+                push_comment!(initial_margin);
+            }
+            state = JsdocState::SawAsterisk;
+        }
+        let mut tok = self.token();
+        loop {
+            // Detect fenced code blocks by counting consecutive backtick tokens.
+            // Three or more consecutive backticks toggle the fenced code block state.
+            if tok != Kind::BacktickToken && backtick_count > 0 {
+                if backtick_count >= 3 {
+                    in_fenced_code_block = !in_fenced_code_block;
+                }
+                backtick_count = 0;
+            }
+            let mut is_default = false;
+            match tok {
+                Kind::NewLineTrivia => {
+                    state = JsdocState::BeginningOfLine;
+                    // don't use pushComment here because we want to keep the margin unchanged
+                    comments.push(self.scanner().token_text());
+                    indent = 0;
+                }
+                Kind::AtToken => {
+                    if !in_fenced_code_block && self.scanner().can_follow_jsdoc_at() {
+                        let pos = self.scanner().token_end() - 1;
+                        self.reset_scanner_pos(pos);
+                        break;
+                    }
+                    if in_fenced_code_block {
+                        state = JsdocState::SavingBackticks;
+                    } else {
+                        state = JsdocState::SavingComments;
+                    }
+                    push_comment!(self.scanner().token_text());
+                }
+                Kind::EndOfFile => {
+                    // Done
+                    break;
+                }
+                Kind::WhitespaceTrivia => {
+                    assert!(
+                        !(state == JsdocState::SavingComments
+                            || state == JsdocState::SavingBackticks),
+                        "whitespace shouldn't come from the scanner while saving comment text"
+                    );
+                    let whitespace = self.scanner().token_text();
+                    // if the whitespace crosses the margin, take only the whitespace that passes the margin
+                    let whitespace_len = whitespace.len() as u32;
+                    if let Some(margin) = margin.filter(|&margin| indent + whitespace_len > margin)
+                    {
+                        comments.push(&whitespace[margin.saturating_sub(indent) as usize..]);
+                        if in_fenced_code_block {
+                            state = JsdocState::SavingBackticks;
+                        } else {
+                            state = JsdocState::SavingComments;
+                        }
+                    }
+                    indent += whitespace_len;
+                }
+                Kind::OpenBraceToken => {
+                    if in_fenced_code_block {
+                        state = JsdocState::SavingBackticks;
+                        push_comment!(self.scanner().token_text());
+                    } else {
+                        state = JsdocState::SavingComments;
+                        let comment_end = self.scanner().token_full_start();
+                        let link_start = self.scanner().token_end() - 1;
+                        let link = self.parse_jsdoc_link(link_start);
+                        if let Some(link) = link {
+                            let comment_start = link_end.unwrap_or(comments_pos);
+                            let text = self.new_jsdoc_text(&comments);
+                            let text = self.finish_node_with_end(text, comment_start, comment_end);
+                            parts.push(text);
+                            parts.push(link);
+                            comments.clear();
+                            link_end = Some(self.scanner().token_end());
+                        } else {
+                            push_comment!(self.scanner().token_text());
+                        }
+                    }
+                }
+                Kind::BacktickToken => {
+                    backtick_count += 1;
+                    if state == JsdocState::SavingBackticks {
+                        state = JsdocState::SavingComments;
+                    } else {
+                        state = JsdocState::SavingBackticks;
+                    }
+                    push_comment!(self.scanner().token_text());
+                }
+                Kind::JSDocCommentTextToken => {
+                    if state != JsdocState::SavingBackticks {
+                        if in_fenced_code_block {
+                            state = JsdocState::SavingBackticks;
+                        } else {
+                            state = JsdocState::SavingComments;
+                        }
+                        // leading identifiers start recording as well
+                    }
+                    push_comment!(self.scanner().token_value().utf8());
+                }
+                Kind::AsteriskToken => {
+                    if state == JsdocState::BeginningOfLine {
+                        // leading asterisks start recording on the *next* (non-whitespace) token
+                        state = JsdocState::SawAsterisk;
+                        indent += 1;
+                    } else {
+                        // record the * as a comment
+                        is_default = true;
+                    }
+                }
+                _ => is_default = true,
+            }
+            if is_default {
+                if state != JsdocState::SavingBackticks {
+                    if in_fenced_code_block {
+                        state = JsdocState::SavingBackticks;
+                    } else {
+                        state = JsdocState::SavingComments;
+                    }
+                    // leading identifiers start recording as well
+                }
+                push_comment!(self.scanner().token_text());
+            }
+            if state == JsdocState::SavingComments || state == JsdocState::SavingBackticks {
+                tok = self.next_jsdoc_comment_text_token(state == JsdocState::SavingBackticks);
+            } else {
+                tok = self.next_token_jsdoc();
+            }
+        }
+
+        remove_leading_newlines(&mut comments);
+        remove_trailing_whitespace(&mut comments);
+        if !comments.is_empty() {
+            let comment_start = link_end.unwrap_or(comments_pos);
+            let text = self.new_jsdoc_text(&comments);
+            let text = self.finish_node(text, comment_start);
+            parts.push(text);
+        }
+        comments.clear();
+        *self.jsdoc_tag_comments_space() = comments;
+
+        let result = if !parts.is_empty() {
+            let end = self.scanner().token_end();
+            Some(self.new_node_list(TextRange::new(comments_pos, end), &parts))
+        } else {
+            None
+        };
+        parts.clear();
+        *self.jsdoc_tag_comments_parts_space() = parts;
+        result
+    }
+
+    fn parse_unknown_tag(
+        &mut self,
+        start: u32,
+        tag_name: Self::Node,
+        indent: u32,
+        indent_text: &str,
+    ) -> Self::Node {
+        let pos = self.node_pos();
+        let comments = self.parse_trailing_tag_comments(start, pos, indent, indent_text);
+        let node = self.new_jsdoc_unknown_tag(tag_name, comments);
+        self.finish_node(node, start)
+    }
+
+    fn parse_see_tag(
+        &mut self,
+        start: u32,
+        tag_name: Self::Node,
+        indent: u32,
+        indent_text: &str,
+    ) -> Self::Node {
+        let has_name_reference = self.is_identifier()
+            && !self.scanner().text()[self.scanner().token_end() as usize..].starts_with("://")
+            || self.token() == Kind::OpenBraceToken
+                && self.look_ahead(Self::next_token_is_identifier_or_keyword);
+        let mut name_expression = None;
+        if has_name_reference {
+            name_expression = Some(self.parse_jsdoc_name_reference());
+        }
+        let pos = self.node_pos();
+        let comments = self.parse_trailing_tag_comments(start, pos, indent, indent_text);
+        let node = self.new_jsdoc_see_tag(tag_name, name_expression, comments);
+        self.finish_node(node, start)
+    }
+
+    fn parse_simple_tag(
+        &mut self,
+        start: u32,
+        create_tag: impl FnOnce(&mut Self, Self::Node, Option<Self::NodeList>) -> Self::Node,
+        tag_name: Self::Node,
+        margin: u32,
+        indent_text: &str,
+    ) -> Self::Node {
+        let pos = self.node_pos();
+        let comments = self.parse_trailing_tag_comments(start, pos, margin, indent_text);
+        let node = create_tag(self, tag_name, comments);
+        self.finish_node(node, start)
+    }
 }
 
 fn is_jsdoc_link_tag(kind: &str) -> bool {
     kind == "link" || kind == "linkcode" || kind == "linkplain"
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum JsdocState {
+    BeginningOfLine,
+    SawAsterisk,
+    SavingComments,
+    SavingBackticks,
+}
+
+pub(crate) fn remove_leading_newlines(comments: &mut Vec<&str>) {
+    let mut i = 0;
+    i += (i..comments.len())
+        .take_while(|&i| comments[i].trim_start_matches(['\r', '\n']).is_empty())
+        .count();
+    comments.drain(..i);
+}
+
+fn trim_end(s: &str) -> &str {
+    s.trim_end_matches(|c: char| stringutil::is_white_space_like(c as u32))
+}
+
+pub(crate) fn remove_trailing_whitespace(comments: &mut Vec<&str>) {
+    let mut end = comments.len();
+    for (i, element) in comments.iter_mut().enumerate().rev() {
+        let trimmed = trim_end(element);
+        if trimmed.is_empty() {
+            end = i;
+        } else {
+            (*element) = trimmed;
+            break;
+        }
+    }
+    comments.truncate(end);
+}
+
 impl JSDocParser<'static> for crate::Parser {
     type TextList = &'static [&'static str];
+
+    fn next_jsdoc_comment_text_token(&mut self, in_backticks: bool) -> Kind {
+        crate::Parser::next_jsdoc_comment_text_token(self, in_backticks)
+    }
+    fn jsdoc_tag_comments_space(&mut self) -> &mut Vec<&'static str> {
+        &mut self.jsdoc_tag_comments_space
+    }
+    fn jsdoc_tag_comments_parts_space(&mut self) -> &mut Vec<Self::Node> {
+        &mut self.jsdoc_tag_comments_parts_space
+    }
+    fn copy_jsdoc_text(&self, text: &str) -> &'static str {
+        tsrs_core::alloc_str(text)
+    }
+    fn new_jsdoc_text(&self, text: &[&'static str]) -> Self::Node {
+        self.factory.new_jsdoc_text(tsrs_core::alloc_slice(text))
+    }
+    fn new_jsdoc_unknown_tag(
+        &self,
+        tag_name: Self::Node,
+        comment: Option<Self::NodeList>,
+    ) -> Self::Node {
+        self.factory.new_jsdoc_unknown_tag(tag_name, comment)
+    }
+    fn new_jsdoc_see_tag(
+        &self,
+        tag_name: Self::Node,
+        name_expression: Option<Self::Node>,
+        comment: Option<Self::NodeList>,
+    ) -> Self::Node {
+        self.factory
+            .new_jsdoc_see_tag(tag_name, name_expression, comment)
+    }
 
     fn next_token_jsdoc(&mut self) -> Kind {
         crate::Parser::next_token_jsdoc(self)

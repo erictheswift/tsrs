@@ -104,3 +104,5 @@ Median peak RSS is identical in all six comparisons. Instruction medians change 
 to -0.0002%, below 0.04% in magnitude, with matching checksums and diagnostic totals. This does
 not establish a qualifying performance gain. These incremental results do not measure the cumulative branch
 against main or remove the previously measured native representation and graph-copying costs.
+
+Continued in [native JSDoc tag descriptions](native-parser-jsdoc-comments.md).

@@ -53,7 +53,8 @@ pub fn parse_isolated_entity_name<'ast>(
 /// Parser state limited to one construction scope.
 ///
 /// Supports migrated names, tokens, literals and template parts, plus context/speculation,
-/// syntax lookahead, individual modifiers, semicolons, lists, import clauses, JSX names/text/closing tags and `JSDoc` links/names through shared traits.
+/// syntax lookahead, individual modifiers, semicolons, lists, import clauses, JSX names/text/closing
+/// tags and `JSDoc` links/names/tag comments through shared traits.
 /// Full expression and source-file parsing are not provided yet.
 /// Create it with `NodeFactory::parser`.
 ///
@@ -84,6 +85,8 @@ pub struct Parser<'build, 'ast: 'build> {
     parsing_contexts: ParsingContexts,
     node_stack: Vec<&'build construction::Node<'build, 'ast>>,
     reparse_list: Vec<&'build construction::Node<'build, 'ast>>,
+    jsdoc_tag_comments_space: Vec<&'ast str>,
+    jsdoc_tag_comments_parts_space: Vec<&'build construction::Node<'build, 'ast>>,
 }
 
 /// A checkpoint confined to one native construction scope.
@@ -256,6 +259,8 @@ impl<'build, 'ast> Parser<'build, 'ast> {
             parsing_contexts: 0,
             node_stack: Vec::new(),
             reparse_list: Vec::new(),
+            jsdoc_tag_comments_space: Vec::new(),
+            jsdoc_tag_comments_parts_space: Vec::new(),
         }
     }
 
@@ -581,6 +586,44 @@ impl<'ast> JsxParser<'ast> for Parser<'_, 'ast> {
 
 impl<'ast> JSDocParser<'ast> for Parser<'_, 'ast> {
     type TextList = &'ast [Text<'ast>];
+
+    fn next_jsdoc_comment_text_token(&mut self, in_backticks: bool) -> Kind {
+        self.token = self.scanner.scan_jsdoc_comment_text_token(in_backticks);
+        self.report_scan_errors();
+        self.token
+    }
+    fn jsdoc_tag_comments_space(&mut self) -> &mut Vec<&'ast str> {
+        &mut self.jsdoc_tag_comments_space
+    }
+    fn jsdoc_tag_comments_parts_space(&mut self) -> &mut Vec<Self::Node> {
+        &mut self.jsdoc_tag_comments_parts_space
+    }
+    fn copy_jsdoc_text(&self, text: &str) -> &'ast str {
+        self.factory.source(text)
+    }
+    fn new_jsdoc_text(&self, text: &[&'ast str]) -> Self::Node {
+        let text: Vec<_> = text
+            .iter()
+            .map(|s| Text::from_bytes(s.as_bytes()))
+            .collect();
+        self.factory.new_jsdoc_text(self.factory.values(&text))
+    }
+    fn new_jsdoc_unknown_tag(
+        &self,
+        tag_name: Self::Node,
+        comment: Option<Self::NodeList>,
+    ) -> Self::Node {
+        self.factory.new_jsdoc_unknown_tag(tag_name, comment)
+    }
+    fn new_jsdoc_see_tag(
+        &self,
+        tag_name: Self::Node,
+        name_expression: Option<Self::Node>,
+        comment: Option<Self::NodeList>,
+    ) -> Self::Node {
+        self.factory
+            .new_jsdoc_see_tag(tag_name, name_expression, comment)
+    }
 
     fn next_token_jsdoc(&mut self) -> Kind {
         self.token = self.scanner.scan_jsdoc_token();
