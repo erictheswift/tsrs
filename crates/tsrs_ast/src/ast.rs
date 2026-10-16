@@ -1,7 +1,7 @@
 use std::cell::Cell;
 use std::collections::hash_map::Entry;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Once, OnceLock, RwLock};
 
 use rustc_hash::FxHashMap;
@@ -123,7 +123,6 @@ fn node_header(kind: Kind, data_tag: NodeDataTag) -> Node {
     Node {
         header: OwnedCell::new(NodeHeaderWord::new(kind, data_tag)),
         flags: OwnedCell::new(NodeFlags::None),
-        id: AtomicU32::new(0),
         loc: OwnedCell::new(undefined_text_range()),
     }
 }
@@ -502,12 +501,11 @@ impl ModifierList {
 /// `KeywordTypeNode`, ...) allocate only the header.
 ///
 /// The header is 24 bytes: the kind, the data tag and the parent pointer share one word (`NodeHeaderWord`),
-/// and the id is stored in 32 bits (ids still come from a 64-bit counter and are returned as `NodeId`; more
-/// than `u32::MAX` node ids panic, like symbol ids). 23M nodes on the private monorepo.
+/// followed by the flags and source range. Node identity comes from the allocation's address; the remaining
+/// four bytes are alignment padding.
 pub struct Node {
     header: OwnedCell<NodeHeaderWord>,
     pub flags: OwnedCell<NodeFlags>,
-    pub(crate) id: AtomicU32,
     pub(crate) loc: OwnedCell<TextRange>, // set_loc() (compact identifiers derive their text from the end)
 }
 
@@ -3045,6 +3043,27 @@ mod tests {
         assert!(SymbolFlags::Value.contains(SymbolFlags::Function));
         assert!(!SymbolFlags::FunctionScopedVariableExcludes.intersects(SymbolFlags::FunctionScopedVariable));
         assert_eq!(std::mem::size_of::<Node>(), 24);
+    }
+
+    #[test]
+    fn node_identity_is_stable_across_threads_and_distinct_for_clones() {
+        let f = NodeFactory::default();
+        let node = f.new_identifier("x");
+        let other = f.new_identifier("x");
+        let cloned = node.clone_node(&f);
+        let id = get_node_id(node);
+        assert_ne!(id, NodeId(0));
+        assert_ne!(id, get_node_id(other));
+        assert_ne!(id, get_node_id(cloned));
+        assert_eq!(id.0, node.addr() as u64);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                scope.spawn(move || assert_eq!(get_node_id(node), id));
+            }
+        });
+        node.set_parent(Some(other));
+        node.flags.set(NodeFlags::Synthesized);
+        assert_eq!(get_node_id(node), id);
     }
 
     #[test]
