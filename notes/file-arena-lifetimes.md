@@ -197,3 +197,6 @@ the copy and temporary overlap, plus a smaller native header/list layout and bet
 actual checker retention and caches before choosing a production migration. Removing `P` from the legacy
 builders, checker and emit phases is still future work. The public graph and its borrowing rules provide a
 concrete target for that work.
+
+The next committed step is [scanner source lifetimes](scanner-lifetimes.md), which removes the scanner's
+requirement for static input text before migrating native token and node allocation.

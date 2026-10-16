@@ -1,16 +1,19 @@
 //! Scanner API notes for consumers (parser, checker):
 //!
-//! Text and positions. The scanner scans a `&'static str` (for the parser, the file's source text: leaked,
-//! embedded, or copied into the current arena or region; other callers pass their own static or `alloc_str` text).
+//! Text and positions. `Scanner<'text>` borrows its source text. Tokens, snapshots, and numeric caches
+//! cannot outlive that borrow. Legacy parser/checker fields use `Scanner<'static>` until their AST
+//! storage migrates; standalone callers can pass ordinary borrowed strings.
 //! Positions are unsigned byte offsets. Scanner EOF is represented separately from rune values.
 //!
-//! Token values. `token_value()` returns `&'static str`. When the Go scanner would produce a
+//! Token values. `token_value()` returns `&'text str`. When the Go scanner would produce a
 //! substring of the source text (the overwhelmingly common case: identifiers, keywords, simple
 //! strings, numbers that are already canonical) this is a slice of the source text and costs
 //! nothing. When the value is computed (escape sequences, numeric separators, normalized numbers,
 //! template literals containing `\r`) it is allocated with `alloc_str` in the current allocation
 //! target (the thread arena, or the entered region), where the parser also allocates nodes, so the
-//! parser can store token values in nodes directly without copying.
+//! parser can store token values in nodes directly without copying. These computed values and comment
+//! directive slices still use the legacy allocation scope; borrowing source text does not migrate their
+//! allocator or make manually freeing that scope safe while a scanner/snapshot/value remains live.
 //!
 //! Errors (Go `ErrorCallback` / `SetOnError`). Go's scanner calls a callback synchronously. In
 //! Rust the parser owns the scanner and is itself a `&mut self` state machine, so the scanner
@@ -300,82 +303,122 @@ fn text_to_token() -> &'static FxHashMap<&'static str, Kind> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ScannerState {
+pub struct ScannerState<'text> {
     pub(crate) pos: u32, // Current position in text (and ending position of current token)
     pub(crate) full_start_pos: u32, // Starting position of current token including preceding whitespace
     pub(crate) token_start: u32,    // Starting position of non-whitespace part of current token
     pub(crate) token: Kind,         // Kind of current token
-    pub(crate) token_value: &'static str, // Parsed value of current token
+    pub(crate) token_value: &'text str, // Parsed value of current token
     pub(crate) token_flags: TokenFlags, // Flags for current token
-    pub(crate) comment_directives: &'static [CommentDirective], // a snapshot, like Go's slice header: Rewind restores it
+    pub(crate) comment_directives: &'text [CommentDirective], // a snapshot, like Go's slice header: Rewind restores it
     pub(crate) skip_jsdoc_leading_asterisks: u32, // Leading asterisks to skip when scanning types inside JSDoc. Should be 0 outside JSDoc
 }
 
+/// Scans borrowed source text. Values and saved states may survive the scanner, but not its source.
+/// Computed token values still use the current legacy arena allocation scope (see the module docs).
+///
+/// ```
+/// use tsrs_scanner::Scanner;
+/// let source = String::from("identifier");
+/// let token = {
+///     let mut scanner = Scanner::new();
+///     scanner.set_text(&source);
+///     scanner.scan();
+///     scanner.token_value()
+/// };
+/// assert_eq!(token, "identifier");
+/// ```
+///
+/// ```compile_fail
+/// use tsrs_scanner::Scanner;
+/// let token = {
+///     let source = String::from("identifier");
+///     let mut scanner = Scanner::new();
+///     scanner.set_text(&source);
+///     scanner.scan();
+///     scanner.token_value()
+/// };
+/// println!("{token}");
+/// ```
+///
+/// ```compile_fail
+/// use tsrs_scanner::Scanner;
+/// let state = {
+///     let source = String::from("identifier");
+///     let mut scanner = Scanner::new();
+///     scanner.set_text(&source);
+///     scanner.scan();
+///     scanner.mark()
+/// };
+/// Scanner::new().rewind(state);
+/// ```
 #[derive(Default)]
-pub struct Scanner {
-    pub(crate) text: &'static str,
+pub struct Scanner<'text> {
+    pub(crate) text: &'text str,
     pub(crate) end: u32,
     language_variant: LanguageVariant,
     script_target: ScriptTarget,
     on_error: bool,
     errors: Vec<ScanError>,
     skip_trivia: bool,
-    pub(crate) state: ScannerState,
+    pub(crate) state: ScannerState<'text>,
 
-    number_cache: FxHashMap<&'static str, &'static str>,
-    hex_number_cache: FxHashMap<&'static str, &'static str>,
-    hex_digit_cache: FxHashMap<&'static str, &'static str>,
+    number_cache: FxHashMap<&'text str, &'text str>,
+    hex_number_cache: FxHashMap<&'text str, &'text str>,
+    hex_digit_cache: FxHashMap<&'text str, &'text str>,
 }
 
 // Like Oxc's byte handlers, dispatch out of the token loop so simple tokens do not
 // pay for the stack frame of numeric, comment, and Unicode scanning. None is the
 // old `continue 'scan` for skipped trivia; Some returns the token kind directly.
-type ByteHandler = fn(&mut Scanner) -> Option<Kind>;
+type ByteHandler<'text> = fn(&mut Scanner<'text>) -> Option<Kind>;
 
-static BYTE_HANDLERS: [ByteHandler; 256] = {
-    let mut table = [Scanner::scan_byte_default as ByteHandler; 256];
-    let mut byte = 0;
-    while byte < table.len() {
-        table[byte] = match byte as u8 {
-            0x09 | 0x0B | 0x0C | 0x20 => Scanner::scan_byte_whitespace,
-            0x0A | 0x0D => Scanner::scan_byte_line_break,
-            0x21 /* ! */ => Scanner::scan_byte_exclamation,
-            0x22 | 0x27 /* " ' */ => Scanner::scan_byte_string,
-            0x60 /* ` */ => Scanner::scan_byte_template,
-            0x25 /* % */ => Scanner::scan_byte_percent,
-            0x26 /* & */ => Scanner::scan_byte_ampersand,
-            0x28 /* ( */ => Scanner::scan_byte_open_paren,
-            0x29 /* ) */ => Scanner::scan_byte_close_paren,
-            0x2A /* * */ => Scanner::scan_byte_asterisk,
-            0x2B /* + */ => Scanner::scan_byte_plus,
-            0x2C /* , */ => Scanner::scan_byte_comma,
-            0x2D /* - */ => Scanner::scan_byte_minus,
-            0x2E /* . */ => Scanner::scan_byte_dot,
-            0x2F /* / */ => Scanner::scan_byte_slash,
-            0x30..=0x39 /* 0-9 */ => Scanner::scan_byte_number,
-            0x3A /* : */ => Scanner::scan_byte_colon,
-            0x3B /* ; */ => Scanner::scan_byte_semicolon,
-            0x3C /* < */ => Scanner::scan_byte_less_than,
-            0x3D /* = */ => Scanner::scan_byte_equals,
-            0x3E /* > */ => Scanner::scan_byte_greater_than,
-            0x3F /* ? */ => Scanner::scan_byte_question,
-            0x5B /* [ */ => Scanner::scan_byte_open_bracket,
-            0x5D /* ] */ => Scanner::scan_byte_close_bracket,
-            0x5E /* ^ */ => Scanner::scan_byte_caret,
-            0x7B /* { */ => Scanner::scan_byte_open_brace,
-            0x7C /* | */ => Scanner::scan_byte_bar,
-            0x7D /* } */ => Scanner::scan_byte_close_brace,
-            0x7E /* ~ */ => Scanner::scan_byte_tilde,
-            0x40 /* @ */ => Scanner::scan_byte_at,
-            0x5C /* \ */ => Scanner::scan_byte_identifier_slow,
-            0x23 /* # */ => Scanner::scan_byte_hash,
-            b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => Scanner::scan_byte_identifier,
-            _ => Scanner::scan_byte_default,
-        };
-        byte += 1;
-    }
-    table
-};
+impl<'text> Scanner<'text> {
+    const BYTE_HANDLERS: [ByteHandler<'text>; 256] = {
+        let mut table = [Scanner::scan_byte_default as ByteHandler<'text>; 256];
+        let mut byte = 0;
+        while byte < table.len() {
+            table[byte] = match byte as u8 {
+                0x09 | 0x0B | 0x0C | 0x20 => Scanner::scan_byte_whitespace,
+                0x0A | 0x0D => Scanner::scan_byte_line_break,
+                0x21 /* ! */ => Scanner::scan_byte_exclamation,
+                0x22 | 0x27 /* " ' */ => Scanner::scan_byte_string,
+                0x60 /* ` */ => Scanner::scan_byte_template,
+                0x25 /* % */ => Scanner::scan_byte_percent,
+                0x26 /* & */ => Scanner::scan_byte_ampersand,
+                0x28 /* ( */ => Scanner::scan_byte_open_paren,
+                0x29 /* ) */ => Scanner::scan_byte_close_paren,
+                0x2A /* * */ => Scanner::scan_byte_asterisk,
+                0x2B /* + */ => Scanner::scan_byte_plus,
+                0x2C /* , */ => Scanner::scan_byte_comma,
+                0x2D /* - */ => Scanner::scan_byte_minus,
+                0x2E /* . */ => Scanner::scan_byte_dot,
+                0x2F /* / */ => Scanner::scan_byte_slash,
+                0x30..=0x39 /* 0-9 */ => Scanner::scan_byte_number,
+                0x3A /* : */ => Scanner::scan_byte_colon,
+                0x3B /* ; */ => Scanner::scan_byte_semicolon,
+                0x3C /* < */ => Scanner::scan_byte_less_than,
+                0x3D /* = */ => Scanner::scan_byte_equals,
+                0x3E /* > */ => Scanner::scan_byte_greater_than,
+                0x3F /* ? */ => Scanner::scan_byte_question,
+                0x5B /* [ */ => Scanner::scan_byte_open_bracket,
+                0x5D /* ] */ => Scanner::scan_byte_close_bracket,
+                0x5E /* ^ */ => Scanner::scan_byte_caret,
+                0x7B /* { */ => Scanner::scan_byte_open_brace,
+                0x7C /* | */ => Scanner::scan_byte_bar,
+                0x7D /* } */ => Scanner::scan_byte_close_brace,
+                0x7E /* ~ */ => Scanner::scan_byte_tilde,
+                0x40 /* @ */ => Scanner::scan_byte_at,
+                0x5C /* \ */ => Scanner::scan_byte_identifier_slow,
+                0x23 /* # */ => Scanner::scan_byte_hash,
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => Scanner::scan_byte_identifier,
+                _ => Scanner::scan_byte_default,
+            };
+            byte += 1;
+        }
+        table
+    };
+}
 
 pub(crate) const RUNE_SELF: Rune = 0x80;
 
@@ -509,12 +552,12 @@ pub(crate) fn rune_string(r: Rune) -> String {
     rune_to_char(r).to_string()
 }
 
-impl Scanner {
-    fn default_scanner() -> Scanner {
+impl<'text> Scanner<'text> {
+    fn default_scanner() -> Scanner<'text> {
         Scanner { skip_trivia: true, ..Default::default() }
     }
 
-    pub fn new() -> Scanner {
+    pub fn new() -> Scanner<'text> {
         Scanner::default_scanner()
     }
 
@@ -531,7 +574,7 @@ impl Scanner {
         self.hex_digit_cache = hex_digit_cache;
     }
 
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'text str {
         self.text
     }
 
@@ -568,11 +611,11 @@ impl Scanner {
         self.state.pos
     }
 
-    pub fn token_text(&self) -> &'static str {
+    pub fn token_text(&self) -> &'text str {
         &self.text[self.state.token_start as usize..self.state.pos as usize]
     }
 
-    pub fn token_value(&self) -> &'static str {
+    pub fn token_value(&self) -> &'text str {
         self.state.token_value
     }
 
@@ -580,15 +623,15 @@ impl Scanner {
         TextRange::new(self.state.token_start, self.state.pos)
     }
 
-    pub fn comment_directives(&self) -> &'static [CommentDirective] {
+    pub fn comment_directives(&self) -> &'text [CommentDirective] {
         self.state.comment_directives
     }
 
-    pub fn mark(&self) -> ScannerState {
+    pub fn mark(&self) -> ScannerState<'text> {
         self.state
     }
 
-    pub fn rewind(&mut self, state: ScannerState) {
+    pub fn rewind(&mut self, state: ScannerState<'text>) {
         self.state = state;
     }
 
@@ -683,7 +726,7 @@ impl Scanner {
         }
     }
 
-    pub fn set_text(&mut self, text: &'static str) {
+    pub fn set_text(&mut self, text: &'text str) {
         self.text = text;
         self.end = text.len() as u32;
         self.state = ScannerState::default();
@@ -816,13 +859,13 @@ impl Scanner {
     }
 
     #[inline]
-    fn slice(&self, start: u32, end: u32) -> &'static str {
+    fn slice(&self, start: u32, end: u32) -> &'text str {
         &self.text[start as usize..end as usize]
     }
 
     /// Go `a + b` for two token-value fragments: when `b` directly follows `a` in the source
     /// text the result is the covering text slice, otherwise it is arena-allocated.
-    fn concat_value(&self, a: &'static str, b: &str) -> &'static str {
+    fn concat_value(&self, a: &'text str, b: &str) -> &'text str {
         if b.is_empty() {
             return a;
         }
@@ -843,8 +886,8 @@ impl Scanner {
         s.into_str()
     }
 
-    /// Returns `s` as a `'static` value without copying if it already is a slice of the text.
-    fn intern_value(&self, s: &str) -> &'static str {
+    /// Returns `s` for the source lifetime without copying if it already is a slice of the text.
+    fn intern_value(&self, s: &str) -> &'text str {
         let base = self.text.as_ptr() as usize;
         let p = s.as_ptr() as usize;
         if p >= base && p + s.len() <= base + self.text.len() {
@@ -883,7 +926,7 @@ impl Scanner {
             };
             self.state.pos = pos;
             self.state.token_start = pos;
-            if let Some(token) = BYTE_HANDLERS[byte as usize](self) {
+            if let Some(token) = Self::BYTE_HANDLERS[byte as usize](self) {
                 self.state.token = token;
                 return token;
             }
@@ -2105,7 +2148,7 @@ impl Scanner {
         false
     }
 
-    fn scan_identifier_parts(&mut self, variant: IdentifierVariant) -> &'static str {
+    fn scan_identifier_parts(&mut self, variant: IdentifierVariant) -> &'text str {
         let mut sb: Option<ArenaStringBuilder> = None;
         let mut start = self.state.pos;
         let language_variant = if variant == IdentifierVariant::JSX { LanguageVariant::JSX } else { LanguageVariant::Standard };
@@ -2174,7 +2217,7 @@ impl Scanner {
         None
     }
 
-    fn scan_string(&mut self, jsx_attribute_string: bool) -> &'static str {
+    fn scan_string(&mut self, jsx_attribute_string: bool) -> &'text str {
         let quote = self.char().expect("scan_string starts at a quote");
         if quote == b'\'' {
             self.state.token_flags |= TokenFlags::SingleQuote;
@@ -2225,7 +2268,7 @@ impl Scanner {
 
     #[cold]
     #[inline(never)]
-    fn scan_string_slow(&mut self, quote: u8, mut start: u32, table: &[bool; 256]) -> &'static str {
+    fn scan_string_slow(&mut self, quote: u8, mut start: u32, table: &[bool; 256]) -> &'text str {
         // Keep the original first-quote capacity estimate on the allocating path.
         let rest = &self.text.as_bytes()[self.state.pos as usize..];
         let capacity = memchr::memchr(quote, rest).map_or(16, |offset| (self.state.pos - start) as usize + offset);
@@ -2328,7 +2371,7 @@ impl Scanner {
         };
     }
 
-    pub(crate) fn scan_escape_sequence(&mut self, flags: EscapeSequenceScanningFlags) -> Cow<'static, str> {
+    pub(crate) fn scan_escape_sequence(&mut self, flags: EscapeSequenceScanningFlags) -> Cow<'text, str> {
         let start = self.state.pos;
         self.state.pos += 1;
         let Some(ch) = self.char() else {
@@ -2622,7 +2665,7 @@ impl Scanner {
 
     fn scan_number(&mut self) -> Kind {
         let mut start = self.state.pos;
-        let fixed_part: Cow<'static, str>;
+        let fixed_part: Cow<'text, str>;
         if self.char() == Some(b'0') {
             self.state.pos += 1;
             if self.char() == Some(b'_') {
@@ -2662,9 +2705,9 @@ impl Scanner {
             fixed_part = self.scan_number_fragment();
         }
         let fixed_part_end = self.state.pos;
-        let mut fractional_part: Cow<'static, str> = Cow::Borrowed("");
+        let mut fractional_part: Cow<'text, str> = Cow::Borrowed("");
         let mut exponent_preamble = "";
-        let mut exponent_part: Cow<'static, str> = Cow::Borrowed("");
+        let mut exponent_part: Cow<'text, str> = Cow::Borrowed("");
         if self.char() == Some(b'.') {
             self.state.pos += 1;
             fractional_part = self.scan_number_fragment();
@@ -2743,7 +2786,7 @@ impl Scanner {
     }
 
     /// Go `jsnum.FromString(v).String()`, reusing `v` when it is already canonical.
-    fn canonical_number(v: &'static str) -> &'static str {
+    fn canonical_number(v: &'text str) -> &'text str {
         // Every decimal integer with at most 15 digits is a safe integer. Its scanner spelling is canonical when it
         // has no leading zero, so neither conversion nor a temporary formatting String is needed. Longer integers,
         // fractions and exponents still go through Number::string for ECMAScript rounding and formatting.
@@ -2758,7 +2801,7 @@ impl Scanner {
         alloc_str(&s)
     }
 
-    fn scan_number_fragment(&mut self) -> Cow<'static, str> {
+    fn scan_number_fragment(&mut self) -> Cow<'text, str> {
         let mut start = self.state.pos;
         let mut allow_separator = false;
         let mut is_previous_token_separator = false;
@@ -2802,7 +2845,7 @@ impl Scanner {
         Cow::Owned(result)
     }
 
-    fn scan_digits(&mut self) -> (&'static str, bool) {
+    fn scan_digits(&mut self) -> (&'text str, bool) {
         let start = self.state.pos;
         let mut is_octal = true;
         while self.char().is_some_and(|ch| stringutil::is_digit(u32::from(ch))) {
@@ -2819,7 +2862,7 @@ impl Scanner {
         min_count: u32,
         scan_as_many_as_possible: bool,
         can_have_separators: bool,
-    ) -> &'static str {
+    ) -> &'text str {
         let mut digit_count = 0;
         let start = self.state.pos;
         let mut allow_separator = false;
@@ -2880,7 +2923,7 @@ impl Scanner {
         }
     }
 
-    fn scan_binary_or_octal_digits(&mut self, base: u8, prefix: &str) -> (&'static str, bool) {
+    fn scan_binary_or_octal_digits(&mut self, base: u8, prefix: &str) -> (&'text str, bool) {
         let mut sb = ArenaStringBuilder::with_capacity(16);
         sb.push_str(prefix);
         let mut has_digits = false;
@@ -3271,7 +3314,7 @@ pub fn get_shebang(text: &str) -> &str {
     &text[..end as usize]
 }
 
-pub fn get_scanner_for_source_file(source_file: P<SourceFile>, pos: u32) -> Scanner {
+pub fn get_scanner_for_source_file(source_file: P<SourceFile>, pos: u32) -> Scanner<'static> {
     let mut s = Scanner::new();
     s.text = source_file.text();
     s.state.pos = pos;
@@ -3711,11 +3754,11 @@ fn new_comment_range(kind: Kind, pos: u32, end: u32, has_trailing_new_line: bool
     }
 }
 
-pub fn get_leading_comment_ranges(text: &'static str, pos: u32) -> CommentRangeIter {
+pub fn get_leading_comment_ranges(text: &str, pos: u32) -> CommentRangeIter<'_> {
     iterate_comment_ranges(text, pos, false)
 }
 
-pub fn get_trailing_comment_ranges(text: &'static str, pos: u32) -> CommentRangeIter {
+pub fn get_trailing_comment_ranges(text: &str, pos: u32) -> CommentRangeIter<'_> {
     iterate_comment_ranges(text, pos, true)
 }
 
@@ -3725,7 +3768,7 @@ Single-line comment ranges include the leading double-slash characters but not t
 line break. Multi-line comment ranges include the leading slash-asterisk and trailing
 asterisk-slash characters.
 */
-fn iterate_comment_ranges(text: &'static str, pos: u32, trailing: bool) -> CommentRangeIter {
+fn iterate_comment_ranges(text: &str, pos: u32, trailing: bool) -> CommentRangeIter<'_> {
     let mut pos = pos;
     let mut collecting = trailing;
     if pos == 0 {
@@ -3750,8 +3793,17 @@ fn iterate_comment_ranges(text: &'static str, pos: u32, trailing: bool) -> Comme
 
 /// The Go `iter.Seq[ast.CommentRange]` returned by `GetLeadingCommentRanges` /
 /// `GetTrailingCommentRanges`, as an explicit state machine.
-pub struct CommentRangeIter {
-    text: &'static str,
+///
+/// ```compile_fail
+/// use tsrs_scanner::get_leading_comment_ranges;
+/// let comments = {
+///     let source = String::from("// comment\nvalue");
+///     get_leading_comment_ranges(&source, 0)
+/// };
+/// println!("{}", comments.count());
+/// ```
+pub struct CommentRangeIter<'text> {
+    text: &'text str,
     pos: u32,
     trailing: bool,
     collecting: bool,
@@ -3763,7 +3815,7 @@ pub struct CommentRangeIter {
     done: bool,
 }
 
-impl Iterator for CommentRangeIter {
+impl Iterator for CommentRangeIter<'_> {
     type Item = CommentRange;
 
     fn next(&mut self) -> Option<CommentRange> {

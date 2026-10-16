@@ -35,7 +35,8 @@ fn test_normalize_jsdoc_type_source_text() {
 #[test]
 fn test_mark_rewind_restores_token_and_comment_directives() {
     let mut s = Scanner::new();
-    s.set_text("a // @ts-ignore\nb /* @ts-expect-error */ c");
+    let source = String::from("a // @ts-ignore\nb /* @ts-expect-error */ c");
+    s.set_text(&source);
     assert_eq!(s.scan(), Kind::Identifier);
     let state = s.mark();
     assert_eq!(s.scan(), Kind::Identifier);
@@ -49,6 +50,72 @@ fn test_mark_rewind_restores_token_and_comment_directives() {
     assert_eq!(s.scan(), Kind::Identifier);
     assert_eq!(s.token_value(), "b");
     assert_eq!(s.comment_directives().len(), 1);
+}
+
+#[test]
+fn borrowed_values_and_snapshots_survive_the_scanner() {
+    let source = String::from("name 1_000 0xFF");
+    let (name, number, state) = {
+        let mut scanner = Scanner::new();
+        scanner.set_text(&source);
+        assert_eq!(scanner.scan(), Kind::Identifier);
+        let name = scanner.token_value();
+        assert!(std::ptr::eq(name.as_ptr(), source.as_ptr()));
+        let state = scanner.mark();
+        assert_eq!(scanner.scan(), Kind::NumericLiteral);
+        (name, scanner.token_value(), state)
+    };
+    assert_eq!((name, number), ("name", "1000"));
+    let mut scanner = Scanner::new();
+    scanner.set_text(&source);
+    scanner.rewind(state);
+    assert_eq!(scanner.token_value(), "name");
+    assert_eq!(scanner.scan(), Kind::NumericLiteral);
+    assert_eq!(scanner.token_value(), "1000");
+    assert_eq!(scanner.scan(), Kind::NumericLiteral);
+    assert_eq!(scanner.token_value(), "255");
+    scanner.reset();
+    assert_eq!(scanner.text(), "");
+    assert_eq!(scanner.scan(), Kind::EndOfFile);
+}
+
+#[test]
+fn regular_expressions_borrow_source_and_preserve_errors() {
+    let source = String::from(r"/(?<name>a)\k<name>/u /\k<missing>/u");
+    let mut scanner = Scanner::new();
+    scanner.set_text(&source);
+    scanner.set_on_error(true);
+    scanner.set_script_target(tsrs_core::ScriptTarget::ESNext);
+    assert_eq!(scanner.scan(), Kind::SlashToken);
+    assert_eq!(scanner.re_scan_slash_token(true), Kind::RegularExpressionLiteral);
+    assert!(!scanner.has_errors());
+    assert_eq!(scanner.token_text(), r"/(?<name>a)\k<name>/u");
+    let state = scanner.mark();
+    assert_eq!(scanner.scan(), Kind::SlashToken);
+    assert_eq!(scanner.re_scan_slash_token(true), Kind::RegularExpressionLiteral);
+    let errors = scanner.take_errors();
+    assert!(!errors.is_empty());
+    scanner.rewind(state);
+    assert_eq!(scanner.scan(), Kind::SlashToken);
+    scanner.re_scan_slash_token(true);
+    let repeated = scanner.take_errors();
+    let details = |errors: Vec<crate::ScanError>| {
+        errors.into_iter().map(|e| (e.message.code(), e.start, e.length, e.args)).collect::<Vec<_>>()
+    };
+    assert_eq!(details(errors), details(repeated));
+}
+
+#[test]
+fn comment_ranges_borrow_source() {
+    let source = String::from("// first\n/* second */ value // last\n");
+    let leading: Vec<_> = crate::get_leading_comment_ranges(&source, 0).collect();
+    assert_eq!(leading.len(), 2);
+    assert_eq!(leading[0].kind, Kind::SingleLineCommentTrivia);
+    assert_eq!(leading[1].kind, Kind::MultiLineCommentTrivia);
+    let trailing = crate::get_trailing_comment_ranges(&source, source.find(" // last").unwrap() as u32)
+        .next().unwrap();
+    assert_eq!(trailing.kind, Kind::SingleLineCommentTrivia);
+    assert!(trailing.has_trailing_new_line);
 }
 
 #[test]

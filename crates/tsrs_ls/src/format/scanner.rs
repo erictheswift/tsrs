@@ -29,7 +29,7 @@ pub(crate) struct TokenInfo {
 
 // scanner.go:30
 pub(crate) struct FormattingScanner {
-    s: Scanner,
+    s: Scanner<'static>,
     start_pos: u32,
     end_pos: u32,
     saved_pos: u32,

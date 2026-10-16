@@ -64,7 +64,7 @@ fn flush_errors(sb: &mut String, s: &mut Scanner) {
     }
 }
 
-fn pass(sb: &mut String, text: &'static str, variant: LanguageVariant, mode: i32) {
+fn pass(sb: &mut String, text: &str, variant: LanguageVariant, mode: i32) {
     let _ = writeln!(sb, "P {mode}");
     let mut s = Scanner::new();
     s.set_text(text);
@@ -135,12 +135,11 @@ fn pass(sb: &mut String, text: &'static str, variant: LanguageVariant, mode: i32
 fn dump(path: &str) -> Result<String, String> {
     let data = std::fs::read(path).map_err(|e| e.to_string())?;
     let text = String::from_utf8(data).map_err(|_| format!("{path}: not UTF-8"))?;
-    let text: &'static str = Box::leak(text.into_boxed_str());
     #[expect(clippy::case_sensitive_file_extension_comparisons, reason = "The oracle follows Go's case-sensitive fixture suffix selection for JSX scanning.")]
     let variant = if path.ends_with(".tsx") || path.ends_with(".jsx") { LanguageVariant::JSX } else { LanguageVariant::Standard };
     let mut sb = String::new();
     for mode in 1..=4 {
-        pass(&mut sb, text, variant, mode);
+        pass(&mut sb, &text, variant, mode);
     }
     Ok(sb)
 }

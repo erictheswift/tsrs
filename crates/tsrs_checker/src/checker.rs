@@ -1161,7 +1161,7 @@ pub struct Checker {
     pub marked_assignment_symbol_links: LinkStore<Symbol, MarkedAssignmentSymbolLinks>,
     pub symbol_container_links: LinkStore<Symbol, ContainingSymbolLinks>,
     pub source_file_links: LinkStore<SourceFile, SourceFileLinks>,
-    pub reg_exp_scanner: Option<Box<Scanner>>,
+    pub reg_exp_scanner: Option<Box<Scanner<'static>>>,
     pub pattern_for_type: FxHashMap<P<Type>, P<Node>>,
     pub(crate) lazy_member_tables: crate::basedmap::Based<FxHashMap<P<Type>, P<LazyMemberTable>>, P<Type>>,
     /// Per generic target, what `prepare_lazy_members` learned about its declared members for good

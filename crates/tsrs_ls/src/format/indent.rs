@@ -182,7 +182,7 @@ fn get_comment_indent(
 }
 
 // indent.go:137
-fn get_leading_comment_ranges_of_node(node: P<Node>, file: P<SourceFile>) -> Option<scanner::CommentRangeIter> {
+fn get_leading_comment_ranges_of_node(node: P<Node>, file: P<SourceFile>) -> Option<scanner::CommentRangeIter<'static>> {
     if node.kind() == Kind::JsxText {
         return None;
     }

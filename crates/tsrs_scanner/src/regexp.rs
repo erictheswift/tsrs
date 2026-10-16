@@ -58,7 +58,7 @@ fn reg_exp_flag_to_first_available_language_version(flag: RegularExpressionFlags
     }
 }
 
-impl Scanner {
+impl Scanner<'_> {
     pub(crate) fn check_regular_expression_flag_availability(
         &mut self,
         flag: RegularExpressionFlags,
@@ -80,10 +80,10 @@ enum ClassSetExpressionType {
     ClassSubtraction,
 }
 
-struct GroupNameReference {
+struct GroupNameReference<'text> {
     pos: u32,
     end: u32,
-    name: &'static str,
+    name: &'text str,
 }
 
 struct DecimalEscapeValue {
@@ -94,8 +94,8 @@ struct DecimalEscapeValue {
 
 /// Go `regExpParser`. Go holds a `*Scanner`; to avoid a borrowing struct this one owns the
 /// scanner for the duration of the parse (see `Scanner::re_scan_slash_token`).
-pub(crate) struct RegExpParser {
-    scanner: Scanner,
+pub(crate) struct RegExpParser<'text> {
+    scanner: Scanner<'text>,
     end: u32,
     any_unicode_mode: bool,
     unicode_sets_mode: bool,
@@ -109,15 +109,15 @@ pub(crate) struct RegExpParser {
     // The number of all (named and unnamed) capturing groups defined in the regex.
     number_of_capturing_groups: u32,
     // All named capturing groups defined in the regex.
-    group_specifiers: FxHashSet<&'static str>,
+    group_specifiers: FxHashSet<&'text str>,
     // Go map insertion order, for deterministic spelling suggestions.
-    group_specifiers_order: Vec<&'static str>,
+    group_specifiers_order: Vec<&'text str>,
     // All references to named capturing groups in the regex.
-    group_name_references: Vec<GroupNameReference>,
+    group_name_references: Vec<GroupNameReference<'text>>,
     // All numeric backreferences within the regex.
     decimal_escapes: Vec<DecimalEscapeValue>,
     // A stack of scopes for named capturing groups. See scanGroupName.
-    named_capturing_groups: Vec<Vec<&'static str>>,
+    named_capturing_groups: Vec<Vec<&'text str>>,
 
     // pendingLowSurrogate holds the low surrogate to emit on the next
     // scanSourceCharacter call when Corsa has to split a non-BMP rune into
@@ -144,22 +144,22 @@ fn compare_decimal_strings(a: &str, b: &str) -> Ordering {
     a.cmp(b)
 }
 
-fn add_unique(set: &mut Vec<&'static str>, name: &'static str) {
+fn add_unique<'text>(set: &mut Vec<&'text str>, name: &'text str) {
     if !set.contains(&name) {
         set.push(name);
     }
 }
 
-impl RegExpParser {
+impl<'text> RegExpParser<'text> {
     #[expect(clippy::fn_params_excessive_bools, reason = "The boolean parameters preserve the upstream Go function signature.")]
     pub(crate) fn new(
-        scanner: Scanner,
+        scanner: Scanner<'text>,
         end: u32,
         any_unicode_mode: bool,
         unicode_sets_mode: bool,
         annex_b: bool,
         named_capture_groups: bool,
-    ) -> RegExpParser {
+    ) -> RegExpParser<'text> {
         RegExpParser {
             scanner,
             end,
@@ -179,7 +179,7 @@ impl RegExpParser {
         }
     }
 
-    pub(crate) fn into_scanner(self) -> Scanner {
+    pub(crate) fn into_scanner(self) -> Scanner<'text> {
         self.scanner
     }
 
@@ -213,7 +213,7 @@ impl RegExpParser {
     }
 
     #[inline]
-    fn text(&self) -> &'static str {
+    fn text(&self) -> &'text str {
         self.scanner.text
     }
 
@@ -231,7 +231,7 @@ impl RegExpParser {
         // This ensures a name defined inside a nested group (e.g. `(?:(?<a>x))`) is
         // still visible to a duplicate check for a sibling group later in the same
         // enclosing alternative (e.g. `(?:(?<a>x))(?<a>z)`).
-        let mut disjunction_names: Vec<&'static str> = Vec::new();
+        let mut disjunction_names: Vec<&'text str> = Vec::new();
         loop {
             self.named_capturing_groups.push(Vec::new());
             self.scan_alternative(is_in_group);
@@ -560,7 +560,7 @@ impl RegExpParser {
     //
     //	| '^' | '$' | '/' | '\' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
     //	| [~AnyUnicodeMode] (any other non-identifier characters)
-    fn scan_character_escape(&mut self, atom_escape: bool) -> Cow<'static, str> {
+    fn scan_character_escape(&mut self, atom_escape: bool) -> Cow<'text, str> {
         assert!(self.pos() > 0 && self.text_byte(self.pos() - 1) == b'\\');
         let ch = self.char();
         match ch {
@@ -734,7 +734,7 @@ impl RegExpParser {
             return;
         }
         let mut start = self.pos();
-        let mut operand: Cow<'static, str> = Cow::Borrowed("");
+        let mut operand: Cow<'text, str> = Cow::Borrowed("");
         let mut two_chars: &[u8] = b"";
         if self.pos() + 1 < self.end {
             two_chars = &self.text().as_bytes()[self.pos() as usize..(self.pos() + 2) as usize];
@@ -986,7 +986,7 @@ impl RegExpParser {
     //	| '\' CharacterClassEscape
     //	| '\q{' ClassStringDisjunctionContents '}'
     //	| ClassSetCharacter
-    fn scan_class_set_operand(&mut self) -> Cow<'static, str> {
+    fn scan_class_set_operand(&mut self) -> Cow<'text, str> {
         self.may_contain_strings = false;
         match self.char() {
             Some(0x5B) /* [ */ => {
@@ -1049,7 +1049,7 @@ impl RegExpParser {
     //
     //	| SourceCharacter -- ClassSetSyntaxCharacter -- ClassSetReservedDoublePunctuator
     //	| '\' (CharacterEscape | ClassSetReservedPunctuator | 'b')
-    fn scan_class_set_character(&mut self) -> Cow<'static, str> {
+    fn scan_class_set_character(&mut self) -> Cow<'text, str> {
         let ch = self.char();
         if ch == Some(b'\\') {
             self.inc_pos(1);
@@ -1100,7 +1100,7 @@ impl RegExpParser {
     //	| '-'
     //	| CharacterClassEscape
     //	| CharacterEscape
-    fn scan_class_atom(&mut self) -> Cow<'static, str> {
+    fn scan_class_atom(&mut self) -> Cow<'text, str> {
         if self.char() == Some(b'\\') {
             self.inc_pos(1);
             let ch = self.char().expect("position is before regexp end");
@@ -1279,7 +1279,7 @@ impl RegExpParser {
         .unwrap_or_default()
     }
 
-    fn scan_word_characters(&mut self) -> &'static str {
+    fn scan_word_characters(&mut self) -> &'text str {
         let start = self.pos();
         while self.pos() < self.end {
             let ch = self.char().expect("position is before regexp end");
@@ -1291,7 +1291,7 @@ impl RegExpParser {
         &self.text()[start as usize..self.pos() as usize]
     }
 
-    fn scan_source_character(&mut self) -> Cow<'static, str> {
+    fn scan_source_character(&mut self) -> Cow<'text, str> {
         if self.pos() >= self.end {
             return Cow::Borrowed("");
         }

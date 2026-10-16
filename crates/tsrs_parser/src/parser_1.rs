@@ -96,7 +96,7 @@ bitflags! {
 pub struct Parser {
     #[cfg(feature = "lifetime-prototype")]
     retain_allocations: bool,
-    pub(crate) scanner: Scanner,
+    pub(crate) scanner: Scanner<'static>,
     pub(crate) factory: NodeFactory,
 
     pub(crate) opts: SourceFileParseOptions,
@@ -567,7 +567,7 @@ impl Parser {
 
 #[derive(Clone, Copy)]
 pub struct ParserState {
-    pub(crate) scanner_state: ScannerState,
+    pub(crate) scanner_state: ScannerState<'static>,
     pub(crate) context_flags: NodeFlags,
     pub(crate) diagnostics_len: usize,
     pub(crate) js_diagnostics_len: usize,
