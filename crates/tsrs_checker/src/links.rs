@@ -581,188 +581,20 @@ impl<V: Default + LinkCopy + 'static> IdLinkStore<V> {
     }
 }
 
-/// Links keyed by a node or symbol id whose value is small (a 4-byte handle), stored in the table itself: no
-/// slot, no offset, no separate value chunk.
-///
-/// Ids map through two levels that follow the per-thread id blocks of 1,024 (`ast::use_id_blocks`):
-/// `blocks[id >> 10]` points at an arena table of 32 group pointers, and a group is an arena array of 32
-/// values (`[V; 32]`, 128 bytes for a 4-byte `V`), allocated on the first access to one of its ids and
-/// default (unset) until written. A checker's own id blocks fill their groups; the blocks other checkers
-/// numbered get a 128-byte table and only the groups they touch (notes/mem-dense-link-tables.md: 0.98 / 0.67
-/// of a group's ids have links at 1 / 32 checkers on vscode, against 0.98 / 0.41 for 128-id groups).
-///
-/// Stable addresses: groups and tables are arena objects that are never freed, moved or recycled (like
-/// `IdLinkStore`'s groups and chunks), so a value handed out stays where it is for the store's lifetime.
-/// Callers keep the reference across later accesses that create other links (`get_resolved_symbol` holds it
-/// across `resolve_name`). Values are handed out as `&'static V`, not `P<V>`: a cell of a 4-byte value is
-/// 4-aligned, and a `P` handle names 8-byte units.
-///
-/// Unlike `IdLinkStore`, the store cannot tell an id whose links were never created from one whose links are
-/// unset: both read as `V::default()`. That is the same answer for every reader of a value whose fields are
-/// all unset by default (`SymbolNodeLinks`).
-pub struct InlineIdStore<V: 'static> {
-    blocks: Vec<Option<P<InlineBlock<V>>>>,
-    wide: FxHashMap<u64, P<V>>, // ids >= 2^32 (long-running processes such as the test runner)
-    /// Shared graph: the frozen seed's store; a new group starts as a copy of the parent's group.
-    parent: Option<&'static InlineIdStore<V>>,
-}
-
-const INLINE_GROUP_SHIFT: u32 = 5;
-const INLINE_GROUP: usize = 1 << INLINE_GROUP_SHIFT;
-/// One second-level table per id block (`ast::use_id_blocks` takes 1,024 ids at a time).
-const INLINE_BLOCK_SHIFT: u32 = 10;
-const INLINE_BLOCK_GROUPS: usize = 1 << (INLINE_BLOCK_SHIFT - INLINE_GROUP_SHIFT);
-
-type InlineGroup<V> = [V; INLINE_GROUP];
-type InlineBlock<V> = [Cell<Option<P<InlineGroup<V>>>>; INLINE_BLOCK_GROUPS];
-
-impl<V: 'static> Default for InlineIdStore<V> {
-    fn default() -> Self {
-        InlineIdStore { blocks: Vec::new(), wide: FxHashMap::default(), parent: None }
-    }
-}
-
-impl<V: 'static> InlineIdStore<V> {
-    #[inline]
-    fn narrow(&self, id: u32) -> Option<&'static V> {
-        let block = (*self.blocks.get((id >> INLINE_BLOCK_SHIFT) as usize)?)?;
-        let group = block.get()[(id >> INLINE_GROUP_SHIFT) as usize & (INLINE_BLOCK_GROUPS - 1)].get()?;
-        Some(&group.get()[id as usize & (INLINE_GROUP - 1)])
-    }
-
-    #[inline]
-    pub fn try_get(&self, id: u64) -> Option<&'static V> {
-        let own = match u32::try_from(id) {
-            Ok(id) => self.narrow(id),
-            Err(_) => self.wide_get(id),
-        };
-        match own {
-            Some(v) => Some(v),
-            None => self.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN)?.try_get(id),
-        }
-    }
-
-    /// Shared graph: an empty store that reads through to `self` (frozen).
-    #[must_use]
-    pub fn fork(&'static self) -> Self {
-        InlineIdStore { blocks: Vec::new(), wide: FxHashMap::default(), parent: Some(self) }
-    }
-
-    // Out of line: keeps the hash lookup out of every inlined `try_get`.
-    #[cold]
-    #[inline(never)]
-    fn wide_get(&self, id: u64) -> Option<&'static V> {
-        self.wide.get(&id).map(|v| v.get())
-    }
-
-    /// Heap census: the block index (the tables and groups are in the arena; reported with their arena bytes so that
-    /// the id-to-value cost stays visible).
-    pub fn heap_parts(&self) -> Vec<(&'static str, crate::heapcensus::HeapStat)> {
-        use crate::heapcensus::{HeapSize, HeapStat};
-        let mut tables = HeapStat { slot: 4, ..HeapStat::default() };
-        let mut groups = HeapStat { slot: std::mem::size_of::<V>() as u64, ..HeapStat::default() };
-        for block in self.blocks.iter().flatten() {
-            tables.containers += 1;
-            tables.cap += INLINE_BLOCK_GROUPS as u64;
-            tables.bytes += std::mem::size_of::<InlineBlock<V>>() as u64;
-            for group in block.get().iter().filter_map(std::cell::Cell::get) {
-                tables.len += 1;
-                groups.containers += 1;
-                groups.len += INLINE_GROUP as u64;
-                groups.cap += INLINE_GROUP as u64;
-                groups.bytes += std::mem::size_of_val(group.get()) as u64;
-            }
-        }
-        vec![
-            ("block index", self.blocks.heap_stat()),
-            ("block tables (arena)", tables),
-            ("value groups (arena)", groups),
-            ("wide ids", self.wide.heap_stat()),
-        ]
-    }
-}
-
-impl<V: Default + LinkCopy + 'static> InlineIdStore<V> {
-    #[inline]
-    #[cfg_attr(feature = "site-counts", track_caller)]
-    pub fn get(&mut self, id: u64) -> &'static V {
-        if let Ok(narrow) = u32::try_from(id) {
-            if let Some(value) = self.narrow(narrow) {
-                return value;
-            }
-        }
-        self.create(id)
-    }
-
-    /// The value of an id whose group does not exist yet (or a wide id): allocates the block table and the group.
-    #[inline(never)]
-    #[cfg_attr(feature = "site-counts", track_caller)]
-    fn create(&mut self, id: u64) -> &'static V {
-        crate::sitecount::hit("links", std::any::type_name::<V>());
-        let Ok(id) = u32::try_from(id) else {
-            let parent = self.parent;
-            return self
-                .wide
-                .entry(id)
-                .or_insert_with(|| {
-                    let v = P::new(V::default());
-                    if let Some(frozen) = parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN).and_then(|p| p.wide_get(id)) {
-                        v.copy_link_from(frozen);
-                    }
-                    v
-                })
-                .get();
-        };
-        let b = (id >> INLINE_BLOCK_SHIFT) as usize;
-        if b >= self.blocks.len() {
-            // Grow by a quarter, not double: ids keep arriving in every checker's blocks for the whole run, so the
-            // index ends near the top of the id space in every checker (4 bytes per 1,024 ids).
-            let need = b + 1;
-            if need > self.blocks.capacity() {
-                self.blocks.reserve_exact((need - self.blocks.len()).max(self.blocks.len() / 4));
-            }
-            self.blocks.resize(need, None);
-        }
-        let block = *self.blocks[b].get_or_insert_with(|| P::new(std::array::from_fn(|_| Cell::new(None))));
-        let cell = &block.get()[(id >> INLINE_GROUP_SHIFT) as usize & (INLINE_BLOCK_GROUPS - 1)];
-        let group = if let Some(group) = cell.get() { group } else {
-            let group: P<InlineGroup<V>> = P::new(std::array::from_fn(|_| V::default()));
-            if let Some(p) = self.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN) {
-                let first = id & !(INLINE_GROUP as u32 - 1);
-                if let Some(frozen) = p.narrow(first) {
-                    let frozen_group: &'static [V] = std::slice::from_ref(frozen);
-                    // SAFETY: `frozen` is the first value of the parent's group array of INLINE_GROUP values.
-                    let frozen_group = unsafe { std::slice::from_raw_parts(frozen_group.as_ptr(), INLINE_GROUP) };
-                    for (dst, src) in group.get().iter().zip(frozen_group) {
-                        dst.copy_link_from(src);
-                    }
-                }
-            }
-            cell.set(Some(group));
-            group
-        };
-        &group.get()[id as usize & (INLINE_GROUP - 1)]
-    }
-}
-
-/// Go `nodeLinkStore`: keyed by the node id, so every access assigns the node its id (`ast.GetNodeId`) the
-/// way Go does.
-///
-/// Ids are observable (e.g. in cache keys and internal names), so the assignment order must match. The values
-/// are stored inline (`InlineIdStore`): its one user, `symbol_node_links`, holds a 4-byte symbol handle per
-/// node.
+/// Go `nodeLinkStore`, keyed by node identity. Address-based node ids are sparse, so use the same
+/// handle-keyed storage as the other node links instead of indexing an array by id.
 pub struct NodeLinkStore<V: 'static> {
-    store: InlineIdStore<V>,
+    store: LinkStore<Node, V>,
 }
 
 impl<V: 'static> Default for NodeLinkStore<V> {
     fn default() -> Self {
-        NodeLinkStore { store: InlineIdStore::default() }
+        NodeLinkStore { store: LinkStore::default() }
     }
 }
 
 impl<V: 'static> NodeLinkStore<V> {
-    /// Shared graph: see `InlineIdStore::fork`.
+    /// Shared graph: see `LinkStore::fork`.
     #[must_use]
     pub fn fork(&'static self) -> Self {
         NodeLinkStore { store: self.store.fork() }
@@ -770,11 +602,11 @@ impl<V: 'static> NodeLinkStore<V> {
 }
 
 impl<V: Default + LinkCopy + 'static> NodeLinkStore<V> {
-    /// The node's links, created on first use. The reference stays valid for the store's lifetime (`InlineIdStore`).
+    /// The node's links, created on first use. The reference stays valid for the store's lifetime (`LinkStore`).
     #[inline]
     #[cfg_attr(feature = "site-counts", track_caller)]
     pub fn get(&mut self, node: P<Node>) -> &'static V {
-        self.store.get(ast::get_node_id(node).0)
+        self.store.get(node).get()
     }
 }
 
@@ -783,21 +615,10 @@ impl<V: 'static> NodeLinkStore<V> {
         self.store.heap_parts()
     }
 
-    /// `None` if no id of the node's group of 32 has links yet; otherwise the node's value, unset if the node itself
-    /// never had links (`InlineIdStore`). Assigns the node an id, as Go's `TryGet` does.
+    /// Reads existing links without allocating or changing the node.
     #[inline]
     pub fn try_get(&self, node: P<Node>) -> Option<&'static V> {
-        self.store.try_get(ast::get_node_id(node).0)
-    }
-
-    /// `try_get` that returns `None` for a node without an id instead of assigning one (no side effect).
-    #[inline]
-    pub fn try_get_if_id_assigned(&self, node: P<Node>) -> Option<&'static V> {
-        let id = ast::get_assigned_node_id(node)?;
-        match self.store.narrow(id) {
-            Some(v) => Some(v),
-            None => self.store.parent.filter(|_| tsrs_core::sharedgraph::COMPILED_IN)?.narrow(id),
-        }
+        self.store.try_get(node).map(P::get)
     }
 }
 
@@ -893,50 +714,23 @@ mod tests {
         ids
     }
 
-    // Inline values: an id must reach its own cell through both levels wherever it falls in its group and block, and a
-    // cell must stay where it is while later ids allocate tables and groups and grow the block index (callers keep
-    // the reference across other accesses). An id outside every allocated group reads as absent.
     #[test]
-    fn inline_ids_reach_their_own_stable_cells() {
-        let mut store: InlineIdStore<Cell<u32>> = InlineIdStore::default();
-        let mut ids: Vec<u64> = (0..4000u64).map(|i| (i * 7919) % 300_000).collect();
-        ids.extend([0, 1, 31, 32, 33, 1023, 1024, 1025, 65_535, 65_536, 65_537, (1 << 20) - 1, 1 << 20, (1 << 24) + 5]);
-        let ids = scrambled(ids, 12345);
-        let mut expected: FxHashMap<u64, u32> = FxHashMap::default();
-        let mut held: Vec<(u64, *const Cell<u32>)> = Vec::new();
-        for (n, &id) in ids.iter().enumerate() {
-            let value = store.get(id);
-            if value.get() == 0 {
-                value.set(n as u32 + 1);
-                expected.insert(id, n as u32 + 1);
-            }
-            held.push((id, std::ptr::from_ref(value)));
+    fn node_links_keep_values_and_references_through_growth() {
+        let factory = ast::NodeFactory::default();
+        let nodes: Vec<_> = std::iter::repeat_with(|| factory.new_token(Kind::PlusToken)).take(4000).collect();
+        let mut store: NodeLinkStore<Cell<u32>> = NodeLinkStore::default();
+        let held: Vec<_> = nodes.iter().enumerate().map(|(i, &node)| {
+            assert!(store.try_get(node).is_none());
+            let value = store.get(node);
+            value.set(i as u32 + 1);
+            value
+        }).collect();
+        for (i, (&node, &value)) in nodes.iter().zip(&held).enumerate() {
+            assert!(std::ptr::eq(store.get(node), value));
+            assert!(std::ptr::eq(store.try_get(node).unwrap(), value));
+            assert_eq!(value.get(), i as u32 + 1);
         }
-        for &(id, address) in &held {
-            assert!(std::ptr::eq(store.get(id), address), "id {id} moved");
-        }
-        for id in (0..300_000u64).chain([(1 << 20) - 1, 1 << 20, (1 << 24) + 5]) {
-            assert_eq!(store.try_get(id).map_or(0, std::cell::Cell::get), expected.get(&id).copied().unwrap_or(0), "id {id}");
-        }
-        assert!(store.try_get(5_000_000).is_none());
-        assert!(store.try_get((1 << 24) + 64).is_none()); // same block as (1 << 24) + 5, another group
-        assert!(store.try_get(1 << 40).is_none());
-        store.get(1 << 40).set(7);
-        assert_eq!(store.try_get(1 << 40).map(std::cell::Cell::get), Some(7));
-    }
-
-    // The block index grows by a quarter, once per new top block: values written before every growth must still be
-    // found after it, through the new index.
-    #[test]
-    fn inline_index_growth_keeps_every_value() {
-        let mut store: InlineIdStore<Cell<u32>> = InlineIdStore::default();
-        for b in 0..3000u64 {
-            store.get(b * 1024 + b % 1024).set(b as u32 + 1);
-        }
-        for b in 0..3000u64 {
-            assert_eq!(store.try_get(b * 1024 + b % 1024).map(std::cell::Cell::get), Some(b as u32 + 1), "block {b}");
-            assert_eq!(store.try_get(b * 1024 + (b + 32) % 1024).map(std::cell::Cell::get), None, "block {b}");
-        }
+        assert!(store.try_get(factory.new_token(Kind::PlusToken)).is_none());
     }
 
     #[derive(Default)]
