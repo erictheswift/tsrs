@@ -50,6 +50,10 @@ impl<'ast> Publisher<'ast> {
                 Work::List(a, b) => {
                     let b = b.as_ref();
                     assert_eq!((a.loc(), a.has_trailing_comma()), (b.loc, b.has_trailing_comma));
+                    assert_eq!(
+                        <tsrs_parser::Parser as tsrs_parser::list_parser::ListParser>::is_missing_node_list(Some(a)),
+                        b.is_missing,
+                    );
                     self.verify_nodes(a.nodes(), b.nodes);
                 }
                 Work::Modifiers(a, b) => {

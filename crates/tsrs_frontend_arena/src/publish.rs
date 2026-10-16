@@ -131,6 +131,7 @@ impl<'ast> Publisher<'ast> {
                         loc: source.loc(),
                         nodes: self.nodes(source.nodes()),
                         has_trailing_comma: source.has_trailing_comma(),
+                        is_missing: <tsrs_parser::Parser as tsrs_parser::list_parser::ListParser>::is_missing_node_list(Some(source)),
                     };
                     write_record(slot, raw);
                 }

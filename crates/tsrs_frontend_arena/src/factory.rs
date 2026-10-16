@@ -343,7 +343,7 @@ impl<'build, 'ast> NodeFactory<'build, 'ast> {
         &self,
         nodes: &[&'build build::Node<'build, 'ast>],
     ) -> &'build build::NodeList<'build, 'ast> {
-        self.alloc_node_list(tsrs_core::undefined_text_range(), self.nodes(nodes), false)
+        self.alloc_node_list(tsrs_core::undefined_text_range(), self.nodes(nodes), false, false)
     }
 
     pub fn new_source_file(

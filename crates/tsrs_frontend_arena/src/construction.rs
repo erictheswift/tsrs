@@ -18,6 +18,7 @@ construction_record!(NodeList, crate::model::NodeList<'static>, alloc_node_list 
     loc, set_loc: TextRange,
     nodes, set_nodes: &'build [&'build Node<'build, 'ast>],
     has_trailing_comma, set_has_trailing_comma: bool,
+    is_missing, set_is_missing: bool,
 });
 construction_record!(ModifierList, crate::model::ModifierList<'static>, alloc_modifier_list {
     loc, set_loc: TextRange,

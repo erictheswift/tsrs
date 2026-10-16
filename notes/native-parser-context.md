@@ -137,3 +137,6 @@ not repeated. The retained implementation has no new inlining directives beyond 
 The stage remains on the isolated migration branch. It does not clear the project performance gate or
 justify switching the default frontend; complete native source parsing/binding and its retention costs
 still need to be measured before that decision.
+
+The next stage, [native list parsing and recovery](native-parser-lists.md), shares list construction,
+enclosing-context recovery and JSDoc declaration propagation with construction-scoped references.

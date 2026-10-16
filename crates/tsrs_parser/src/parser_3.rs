@@ -2132,18 +2132,6 @@ impl Parser {
         self.current_parent = None;
     }
 
-    pub(crate) fn next_token_is_slash(&mut self) -> bool {
-        crate::lookahead_parser::LookaheadParser::next_token_is_slash(self)
-    }
-
-    pub(crate) fn scan_type_member_start(&mut self) -> bool {
-        crate::lookahead_parser::LookaheadParser::scan_type_member_start(self)
-    }
-
-    pub(crate) fn scan_class_member_start(&mut self) -> bool {
-        crate::lookahead_parser::LookaheadParser::scan_class_member_start(self)
-    }
-
     pub(crate) fn can_parse_semicolon(&self) -> bool {
         crate::lookahead_parser::LookaheadParser::can_parse_semicolon(self)
     }
@@ -2154,10 +2142,6 @@ impl Parser {
 
     pub(crate) fn parse_semicolon(&mut self) -> bool {
         crate::lookahead_parser::LookaheadParser::parse_semicolon(self)
-    }
-
-    pub(crate) fn is_literal_property_name(&self) -> bool {
-        crate::lookahead_parser::LookaheadParser::is_literal_property_name(self)
     }
 
     pub(crate) fn is_start_of_statement(&mut self) -> bool {
@@ -2172,24 +2156,12 @@ impl Parser {
         crate::lookahead_parser::LookaheadParser::is_start_of_expression(self)
     }
 
-    pub(crate) fn is_start_of_left_hand_side_expression(&mut self) -> bool {
-        crate::lookahead_parser::LookaheadParser::is_start_of_left_hand_side_expression(self)
-    }
-
     pub(crate) fn is_start_of_type(&mut self, in_start_of_parameter: bool) -> bool {
         crate::lookahead_parser::LookaheadParser::is_start_of_type(self, in_start_of_parameter)
     }
 
     pub(crate) fn next_token_is_numeric_or_big_int_literal(&mut self) -> bool {
         crate::lookahead_parser::LookaheadParser::next_token_is_numeric_or_big_int_literal(self)
-    }
-
-    pub(crate) fn is_start_of_parameter(&mut self, is_jsdoc_parameter: bool) -> bool {
-        crate::lookahead_parser::LookaheadParser::is_start_of_parameter(self, is_jsdoc_parameter)
-    }
-
-    pub(crate) fn is_binding_identifier_or_private_identifier_or_pattern(&self) -> bool {
-        crate::lookahead_parser::LookaheadParser::is_binding_identifier_or_private_identifier_or_pattern(self)
     }
 
     // Ignore strict mode flag because we will report an error in type checker instead.
@@ -2201,24 +2173,12 @@ impl Parser {
         crate::name_parser::NameParser::is_binding_identifier(self)
     }
 
-    pub(crate) fn is_import_attribute_name(&self) -> bool {
-        crate::lookahead_parser::LookaheadParser::is_import_attribute_name(self)
-    }
-
     pub(crate) fn is_binary_operator(&self) -> bool {
         crate::lookahead_parser::LookaheadParser::is_binary_operator(self)
     }
 
-    pub(crate) fn is_valid_heritage_clause_object_literal(&mut self) -> bool {
-        crate::lookahead_parser::LookaheadParser::is_valid_heritage_clause_object_literal(self)
-    }
-
     pub(crate) fn is_heritage_clause(&self) -> bool {
         crate::lookahead_parser::LookaheadParser::is_heritage_clause(self)
-    }
-
-    pub(crate) fn is_heritage_clause_extends_or_implements_keyword(&mut self) -> bool {
-        crate::lookahead_parser::LookaheadParser::is_heritage_clause_extends_or_implements_keyword(self)
     }
 
     pub(crate) fn is_using_declaration(&mut self) -> bool {

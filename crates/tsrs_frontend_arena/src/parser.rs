@@ -9,6 +9,7 @@ use tsrs_parser::name_parser::NameParser;
 use tsrs_parser::token_parser::TokenParser;
 use tsrs_scanner::{Scanner, ScannerState};
 use tsrs_parser::{context_parser::ContextParser, lookahead_parser::LookaheadParser};
+use tsrs_parser::{ParsingContexts, list_parser::ListParser};
 
 /// Parse the same complete entity-name input as `tsrs_parser::parse_isolated_entity_name`, using
 /// native references throughout. The result and its token text borrow the supplied arena.
@@ -49,9 +50,25 @@ pub fn parse_isolated_entity_name<'ast>(
 /// Parser state limited to one construction scope.
 ///
 /// Supports migrated names, tokens, literals and template parts, plus context/speculation,
-/// syntax lookahead, individual modifiers and semicolon handling through the shared parser traits.
+/// syntax lookahead, individual modifiers, semicolons and list recovery through the shared traits.
 /// Full expression and source-file parsing are not provided yet.
 /// Create it with `NodeFactory::parser`.
+///
+/// Parsed lists carry the same construction lifetime as their elements.
+///
+/// ```compile_fail
+/// use tsrs_frontend_arena::{FileArena, ListParser, NameParser, ParsingContext, ScriptKind, TokenParser};
+/// let arena = FileArena::new();
+/// let mut saved = None;
+/// arena.build(|factory| {
+///     let mut parser = factory.parser("a, b", ScriptKind::TS);
+///     parser.next_token();
+///     let list = parser.parse_delimited_list(ParsingContext::Parameters, |p| p.parse_identifier()).unwrap();
+///     saved = Some(list);
+///     parser.factory().new_block(list, false)
+/// });
+/// saved.unwrap().set_nodes(&[]);
+/// ```
 pub struct Parser<'build, 'ast: 'build> {
     scanner: Scanner<'ast, &'ast FileArena>,
     factory: NodeFactory<'build, 'ast>,
@@ -60,6 +77,9 @@ pub struct Parser<'build, 'ast: 'build> {
     statement_has_await_identifier: bool,
     has_parse_error: bool,
     diagnostics: Vec<Diagnostic>,
+    parsing_contexts: ParsingContexts,
+    node_stack: Vec<&'build construction::Node<'build, 'ast>>,
+    reparse_list: Vec<&'build construction::Node<'build, 'ast>>,
 }
 
 /// A checkpoint confined to one native construction scope.
@@ -128,6 +148,42 @@ impl<'ast> LookaheadParser<'ast> for Parser<'_, 'ast> {
     }
 }
 
+impl<'build, 'ast> ListParser<'ast> for Parser<'build, 'ast> {
+    type NodeList = &'build construction::NodeList<'build, 'ast>;
+
+    fn parsing_contexts(&self) -> ParsingContexts {
+        self.parsing_contexts
+    }
+    fn replace_parsing_contexts(&mut self, contexts: ParsingContexts) {
+        self.parsing_contexts = contexts;
+    }
+    fn node_stack(&self) -> &[Self::Node] {
+        &self.node_stack
+    }
+    fn node_stack_mut(&mut self) -> &mut Vec<Self::Node> {
+        &mut self.node_stack
+    }
+    fn reparse_list(&mut self) -> &mut Vec<Self::Node> {
+        &mut self.reparse_list
+    }
+    fn node_kind(node: Self::Node) -> Kind {
+        node.kind()
+    }
+    fn new_node_list(&self, loc: TextRange, nodes: &[Self::Node]) -> Self::NodeList {
+        // Parsed lists derive trailing commas from their last child's end, just like NodeList.
+        // The legacy clone-only marker is not needed when constructing source syntax directly.
+        let has_trailing_comma = nodes.last().is_some_and(|last| last.loc().end() < loc.end());
+        self.factory.alloc_node_list(loc, self.factory.nodes(nodes), has_trailing_comma, false)
+    }
+    fn new_missing_node_list(&self, loc: TextRange) -> Self::NodeList {
+        // An explicit bit preserves the empty/missing distinction without a raw-pointer sentinel.
+        self.factory.alloc_node_list(loc, &[], false, true)
+    }
+    fn is_missing_node_list(list: Option<Self::NodeList>) -> bool {
+        list.is_some_and(construction::NodeList::is_missing)
+    }
+}
+
 impl<'build, 'ast> Parser<'build, 'ast> {
     pub(crate) fn new(
         mut scanner: Scanner<'ast, &'ast FileArena>,
@@ -157,12 +213,20 @@ impl<'build, 'ast> Parser<'build, 'ast> {
             statement_has_await_identifier: false,
             has_parse_error: false,
             diagnostics: Vec::new(),
+            parsing_contexts: 0,
+            node_stack: Vec::new(),
+            reparse_list: Vec::new(),
         }
     }
 
     /// Diagnostics produced so far, in scanner/parser order.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// Construct nodes for list-element callbacks in this parser's existing construction scope.
+    pub fn factory(&self) -> &NodeFactory<'build, 'ast> {
+        &self.factory
     }
 
     /// Detach diagnostics without retaining the parser or its construction scope.

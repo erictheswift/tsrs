@@ -38,6 +38,7 @@ record!(NodeList, RawNodeList {
     loc: TextRange => TextRange,
     nodes: &'ast [&'ast Node<'ast>] => &'ast [NonNull<Node<'ast>>],
     has_trailing_comma: bool => bool,
+    is_missing: bool => bool,
 });
 record!(ModifierList, RawModifierList {
     loc: TextRange => TextRange,
