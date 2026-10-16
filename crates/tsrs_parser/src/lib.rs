@@ -25,3 +25,5 @@ pub mod list_parser;
 pub mod import_parser;
 
 pub mod jsx_parser;
+
+pub mod jsdoc_parser;

@@ -19,6 +19,7 @@ pub trait TokenParser<'text> {
     fn re_scan_slash_token(&mut self) -> Kind;
     fn re_scan_template_token(&mut self, is_tagged_template: bool) -> Kind;
     fn finish_node(&mut self, node: Self::Node, pos: u32) -> Self::Node;
+    fn finish_node_with_end(&mut self, node: Self::Node, pos: u32, end: u32) -> Self::Node;
     fn report_error(&mut self, loc: TextRange, message: &'static Message, args: &[&dyn Display]);
     fn new_token(&self, kind: Kind) -> Self::Node;
     fn new_keyword_expression(&self, kind: Kind) -> Self::Node;
@@ -331,6 +332,10 @@ impl TokenParser<'static> for crate::Parser {
 
     fn finish_node(&mut self, node: Self::Node, pos: u32) -> Self::Node {
         crate::Parser::finish_node(self, node, pos)
+    }
+
+    fn finish_node_with_end(&mut self, node: Self::Node, pos: u32, end: u32) -> Self::Node {
+        crate::Parser::finish_node_with_end(self, node, pos, end)
     }
 
     fn report_error(&mut self, loc: TextRange, message: &'static Message, args: &[&dyn Display]) {

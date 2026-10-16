@@ -104,3 +104,5 @@ that this screening does not establish a consistent speed change: for example, D
 range from 2.636558B to 2.651815B before and 2.634760B to 2.651576B after. There is no qualifying
 performance gain. These results do not measure the cumulative branch against main or remove the previously
 measured native representation and copying costs.
+
+The next stage shares [JSDoc link and name grammar](native-parser-jsdoc.md).

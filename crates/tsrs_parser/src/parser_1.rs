@@ -11,7 +11,7 @@ use tsrs_scanner::{self as scanner, Scanner, ScannerState};
 use crate::parser_3::{attach_file_to_diagnostics, get_comment_pragmas};
 use crate::references::collect_external_module_references;
 use crate::types::ParseFlags;
-use crate::utilities::{get_language_variant, is_keyword_or_punctuation, token_is_identifier_or_keyword};
+use crate::utilities::{get_language_variant, token_is_identifier_or_keyword};
 
 #[repr(u8)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Debug)]
@@ -1018,13 +1018,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_expected_jsdoc(&mut self, kind: Kind) -> bool {
-        if self.token == kind {
-            self.next_token_jsdoc();
-            return true;
-        }
-        assert!(is_keyword_or_punctuation(kind), "Invalid JSDoc kind: expected keyword or punctuation");
-        self.parse_error_at_current_token(&diagnostics::X_0_expected, &[&scanner::token_to_string(kind)]);
-        false
+        crate::jsdoc_parser::JSDocParser::parse_expected_jsdoc(self, kind)
     }
 
     #[inline]

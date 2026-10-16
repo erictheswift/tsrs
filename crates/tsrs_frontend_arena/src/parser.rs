@@ -12,6 +12,7 @@ use tsrs_parser::{context_parser::ContextParser, lookahead_parser::LookaheadPars
 use tsrs_parser::{ParsingContexts, list_parser::ListParser};
 use tsrs_parser::import_parser::ImportParser;
 use tsrs_parser::jsx_parser::JsxParser;
+use tsrs_parser::jsdoc_parser::JSDocParser;
 
 /// Parse the same complete entity-name input as `tsrs_parser::parse_isolated_entity_name`, using
 /// native references throughout. The result and its token text borrow the supplied arena.
@@ -52,7 +53,7 @@ pub fn parse_isolated_entity_name<'ast>(
 /// Parser state limited to one construction scope.
 ///
 /// Supports migrated names, tokens, literals and template parts, plus context/speculation,
-/// syntax lookahead, individual modifiers, semicolons, lists, import clauses and JSX names/text/closing tags through shared traits.
+/// syntax lookahead, individual modifiers, semicolons, lists, import clauses, JSX names/text/closing tags and `JSDoc` links/names through shared traits.
 /// Full expression and source-file parsing are not provided yet.
 /// Create it with `NodeFactory::parser`.
 ///
@@ -384,7 +385,11 @@ impl<'build, 'ast> TokenParser<'ast> for Parser<'build, 'ast> {
     }
 
     fn finish_node(&mut self, node: Self::Node, pos: u32) -> Self::Node {
-        node.set_loc(TextRange::new(pos, self.node_pos()));
+        self.finish_node_with_end(node, pos, self.node_pos())
+    }
+
+    fn finish_node_with_end(&mut self, node: Self::Node, pos: u32, end: u32) -> Self::Node {
+        node.set_loc(TextRange::new(pos, end));
         node.set_flags(node.flags() | self.context_flags);
         if self.has_parse_error {
             node.set_flags(node.flags() | NodeFlags::ThisNodeHasError);
@@ -571,6 +576,47 @@ impl<'ast> JsxParser<'ast> for Parser<'_, 'ast> {
     }
     fn new_jsx_closing_fragment(&self) -> Self::Node {
         self.factory.new_jsx_closing_fragment()
+    }
+}
+
+impl<'ast> JSDocParser<'ast> for Parser<'_, 'ast> {
+    type TextList = &'ast [Text<'ast>];
+
+    fn next_token_jsdoc(&mut self) -> Kind {
+        self.token = self.scanner.scan_jsdoc_token();
+        self.report_scan_errors();
+        self.token
+    }
+    fn reset_scanner_pos(&mut self, pos: u32) {
+        self.scanner.reset_pos(pos);
+    }
+    fn re_scan_hash_token(&mut self) {
+        self.scanner.re_scan_hash_token();
+        self.report_scan_errors();
+    }
+    fn jsdoc_name_pos(node: Self::Node) -> u32 {
+        node.loc()
+            .pos()
+            .expect_source("parsed nodes have source positions")
+    }
+    fn alloc_jsdoc_text(&self, text: Vec<&'ast str>) -> Self::TextList {
+        let text: Vec<_> = text
+            .into_iter()
+            .map(|s| Text::from_bytes(s.as_bytes()))
+            .collect();
+        self.factory.values(&text)
+    }
+    fn new_jsdoc_name_reference(&self, name: Self::Node) -> Self::Node {
+        self.factory.new_jsdoc_name_reference(name)
+    }
+    fn new_jsdoc_link(&self, name: Option<Self::Node>, text: Self::TextList) -> Self::Node {
+        self.factory.new_jsdoc_link(name, text)
+    }
+    fn new_jsdoc_link_code(&self, name: Option<Self::Node>, text: Self::TextList) -> Self::Node {
+        self.factory.new_jsdoc_link_code(name, text)
+    }
+    fn new_jsdoc_link_plain(&self, name: Option<Self::Node>, text: Self::TextList) -> Self::Node {
+        self.factory.new_jsdoc_link_plain(name, text)
     }
 }
 
