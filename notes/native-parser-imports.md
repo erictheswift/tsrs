@@ -116,3 +116,5 @@ Median peak RSS is unchanged in all six comparisons. Instruction changes are wit
 matching checksums and diagnostic counts. This does not establish a qualifying performance gain. The
 stage remains isolated on the migration branch; native source-file parsing/binding and their retained
 speculative allocations still need measurement before a production-default switch.
+
+The next stage shares [JSX names, text and closing-tag grammar](native-parser-jsx.md).

@@ -23,3 +23,5 @@ pub mod lookahead_parser;
 pub mod list_parser;
 
 pub mod import_parser;
+
+pub mod jsx_parser;

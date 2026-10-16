@@ -11,6 +11,7 @@ use tsrs_scanner::{Scanner, ScannerState};
 use tsrs_parser::{context_parser::ContextParser, lookahead_parser::LookaheadParser};
 use tsrs_parser::{ParsingContexts, list_parser::ListParser};
 use tsrs_parser::import_parser::ImportParser;
+use tsrs_parser::jsx_parser::JsxParser;
 
 /// Parse the same complete entity-name input as `tsrs_parser::parse_isolated_entity_name`, using
 /// native references throughout. The result and its token text borrow the supplied arena.
@@ -51,7 +52,7 @@ pub fn parse_isolated_entity_name<'ast>(
 /// Parser state limited to one construction scope.
 ///
 /// Supports migrated names, tokens, literals and template parts, plus context/speculation,
-/// syntax lookahead, individual modifiers, semicolons, lists and import clauses through shared traits.
+/// syntax lookahead, individual modifiers, semicolons, lists, import clauses and JSX names/text/closing tags through shared traits.
 /// Full expression and source-file parsing are not provided yet.
 /// Create it with `NodeFactory::parser`.
 ///
@@ -492,6 +493,84 @@ impl<'build, 'ast> TokenParser<'ast> for Parser<'build, 'ast> {
     }
     fn new_literal_type_node(&self, literal: Self::Node) -> Self::Node {
         self.factory.new_literal_type_node(literal)
+    }
+}
+
+impl<'ast> JsxParser<'ast> for Parser<'_, 'ast> {
+    fn re_scan_jsx_token(&mut self, allow_multiline_jsx_text: bool) -> Kind {
+        let token = self.scanner.re_scan_jsx_token(allow_multiline_jsx_text);
+        self.report_scan_errors();
+        token
+    }
+    fn scan_jsx_text(&mut self) -> Kind {
+        self.token = self.scanner.scan_jsx_token();
+        self.report_scan_errors();
+        self.token
+    }
+    fn scan_jsx_identifier(&mut self) -> Kind {
+        self.token = self.scanner.scan_jsx_identifier();
+        self.report_scan_errors();
+        self.token
+    }
+    fn scan_jsx_attribute_value(&mut self) -> Kind {
+        self.token = self.scanner.scan_jsx_attribute_value();
+        self.report_scan_errors();
+        self.token
+    }
+    fn is_jsx_namespaced_name(node: Self::Node) -> bool {
+        node.kind() == Kind::JsxNamespacedName
+    }
+    fn jsx_tag_name(node: Self::Node) -> Self::Node {
+        match node.data() {
+            construction::NodeData::JsxOpeningElement(data) => data.tag_name(),
+            construction::NodeData::JsxClosingElement(data) => data.tag_name(),
+            construction::NodeData::JsxSelfClosingElement(data) => data.tag_name(),
+            _ => panic!("JSX element expected"),
+        }
+    }
+    fn tag_names_are_equivalent(lhs: Self::Node, rhs: Self::Node) -> bool {
+        // The same cases as ast::tag_names_are_equivalent, using borrowed construction payloads.
+        if lhs.kind() != rhs.kind() {
+            return false;
+        }
+        match lhs.kind() {
+            Kind::Identifier => lhs.text() == rhs.text(),
+            Kind::ThisKeyword => true,
+            Kind::JsxNamespacedName => {
+                let left = lhs.as_jsx_namespaced_name();
+                let right = rhs.as_jsx_namespaced_name();
+                left.namespace().text() == right.namespace().text()
+                    && left.name().text() == right.name().text()
+            }
+            Kind::PropertyAccessExpression => {
+                let left = lhs.as_property_access_expression();
+                let right = rhs.as_property_access_expression();
+                left.name().text() == right.name().text()
+                    && Self::tag_names_are_equivalent(left.expression(), right.expression())
+            }
+            _ => panic!("Unhandled case in TagNamesAreEquivalent"),
+        }
+    }
+    fn new_jsx_text(
+        &self,
+        text: &'ast [u8],
+        contains_only_trivia_white_spaces: bool,
+    ) -> Self::Node {
+        self.factory
+            .new_jsx_text(Text::from_bytes(text), contains_only_trivia_white_spaces)
+    }
+    fn new_jsx_namespaced_name(&self, namespace: Self::Node, name: Self::Node) -> Self::Node {
+        self.factory.new_jsx_namespaced_name(namespace, name)
+    }
+    fn new_jsx_property_access(&self, expression: Self::Node, name: Self::Node) -> Self::Node {
+        self.factory
+            .new_property_access_expression(expression, None, name, NodeFlags::None)
+    }
+    fn new_jsx_closing_element(&self, tag_name: Self::Node) -> Self::Node {
+        self.factory.new_jsx_closing_element(tag_name)
+    }
+    fn new_jsx_closing_fragment(&self) -> Self::Node {
+        self.factory.new_jsx_closing_fragment()
     }
 }
 

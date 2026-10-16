@@ -913,8 +913,7 @@ impl Parser {
         self.parsing_contexts |= 1 << (ParsingContext::JsxChildren as u32);
         let start = self.node_stack.len();
         loop {
-            let current_token = self.scanner.re_scan_jsx_token(true /*allowMultilineJsxText*/);
-            self.report_scan_errors();
+            let current_token = crate::jsx_parser::JsxParser::re_scan_jsx_token(self, true /*allowMultilineJsxText*/);
             let Some(child) = self.parse_jsx_child(opening_tag, current_token) else {
                 break;
             };
@@ -985,11 +984,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_jsx_text(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        let text = self.scanner.token_value();
-        let result = self.factory.new_jsx_text(text, self.token == Kind::JsxTextAllWhiteSpaces);
-        self.scan_jsx_text();
-        self.finish_node(result, pos)
+        crate::jsx_parser::JsxParser::parse_jsx_text(self)
     }
 
     pub(crate) fn parse_jsx_expression(&mut self, in_expression_context: bool) -> Option<P<Node>> {
@@ -1036,19 +1031,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_jsx_closing_element(&mut self, open: P<Node>, in_expression_context: bool) -> P<Node> {
-        let pos = self.node_pos();
-        self.parse_expected(Kind::LessThanSlashToken);
-        let tag_name = self.parse_jsx_element_name();
-        if self.parse_expected_with_diagnostic(Kind::GreaterThanToken, None /*diagnosticMessage*/, false /*shouldAdvance*/) {
-            // manually advance the scanner in order to look for jsx text inside jsx
-            if in_expression_context || !ast::tag_names_are_equivalent(open.tag_name(), tag_name) {
-                self.next_token();
-            } else {
-                self.scan_jsx_text();
-            }
-        }
-        let node = self.factory.new_jsx_closing_element(tag_name);
-        self.finish_node(node, pos)
+        crate::jsx_parser::JsxParser::parse_jsx_closing_element(self, open, in_expression_context)
     }
 
     pub(crate) fn parse_jsx_opening_or_self_closing_element_or_opening_fragment(&mut self, in_expression_context: bool) -> P<Node> {
@@ -1088,41 +1071,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_jsx_element_name(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        // JsxElement can have name in the form of
-        //      propertyAccessExpression
-        //      primaryExpression in the form of an identifier and "this" keyword
-        // We can't just simply use parseLeftHandSideExpressionOrHigher because then we will start consider class,function etc as a keyword
-        // We only want to consider "this" as a primaryExpression
-        let initial_expression = self.parse_jsx_tag_name();
-        if ast::is_jsx_namespaced_name(initial_expression) {
-            return initial_expression; // `a:b.c` is invalid syntax, don't even look for the `.` if we parse `a:b`, and let `parseAttribute` report "unexpected :" instead.
-        }
-        let mut expression = initial_expression;
-        while self.parse_optional(Kind::DotToken) {
-            let name = self.parse_right_side_of_dot(true /*allowIdentifierNames*/, false /*allowPrivateIdentifiers*/, false /*allowUnicodeEscapeSequenceInIdentifierName*/);
-            let node = self.factory.new_property_access_expression(expression, None, name, NodeFlags::None);
-            expression = self.finish_node(node, pos);
-        }
-        expression
-    }
-
-    pub(crate) fn parse_jsx_tag_name(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        self.scan_jsx_identifier();
-        let is_this = self.token == Kind::ThisKeyword;
-        let tag_name = self.parse_identifier_name_error_on_unicode_escape_sequence();
-        if self.parse_optional(Kind::ColonToken) {
-            self.scan_jsx_identifier();
-            let name = self.parse_identifier_name_error_on_unicode_escape_sequence();
-            let node = self.factory.new_jsx_namespaced_name(tag_name, name);
-            return self.finish_node(node, pos);
-        }
-        if is_this {
-            let result = self.factory.new_keyword_expression(Kind::ThisKeyword);
-            return self.finish_node(result, pos);
-        }
-        tag_name
+        crate::jsx_parser::JsxParser::parse_jsx_element_name(self)
     }
 
     pub(crate) fn parse_jsx_attributes(&mut self) -> P<Node> {
@@ -1154,16 +1103,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_jsx_attribute_name(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        self.scan_jsx_identifier();
-        let attr_name = self.parse_identifier_name_error_on_unicode_escape_sequence();
-        if self.parse_optional(Kind::ColonToken) {
-            self.scan_jsx_identifier();
-            let name = self.parse_identifier_name_error_on_unicode_escape_sequence();
-            let node = self.factory.new_jsx_namespaced_name(attr_name, name);
-            return self.finish_node(node, pos);
-        }
-        attr_name
+        crate::jsx_parser::JsxParser::parse_jsx_attribute_name(self)
     }
 
     pub(crate) fn parse_jsx_attribute_value(&mut self) -> Option<P<Node>> {
@@ -1187,18 +1127,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_jsx_closing_fragment(&mut self, in_expression_context: bool) -> P<Node> {
-        let pos = self.node_pos();
-        self.parse_expected(Kind::LessThanSlashToken);
-        if self.parse_expected_with_diagnostic(Kind::GreaterThanToken, Some(&diagnostics::Expected_corresponding_closing_tag_for_JSX_fragment), false /*shouldAdvance*/) {
-            // manually advance the scanner in order to look for jsx text inside jsx
-            if in_expression_context {
-                self.next_token();
-            } else {
-                self.scan_jsx_text();
-            }
-        }
-        let node = self.factory.new_jsx_closing_fragment();
-        self.finish_node(node, pos)
+        crate::jsx_parser::JsxParser::parse_jsx_closing_fragment(self, in_expression_context)
     }
 
     pub(crate) fn parse_simple_unary_expression(&mut self) -> P<Node> {
@@ -2064,10 +1993,6 @@ impl Parser {
 
     pub(crate) fn parse_literal_expression(&mut self) -> P<Node> {
         crate::token_parser::TokenParser::parse_literal_expression(self)
-    }
-
-    pub(crate) fn parse_identifier_name_error_on_unicode_escape_sequence(&mut self) -> P<Node> {
-        crate::name_parser::NameParser::parse_identifier_name_error_on_unicode_escape_sequence(self)
     }
 
     pub(crate) fn parse_binding_identifier(&mut self) -> P<Node> {
