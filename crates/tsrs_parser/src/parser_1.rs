@@ -634,7 +634,7 @@ impl Parser {
         if ast::is_keyword(self.token) && (self.scanner.has_unicode_escape() || self.scanner.has_extended_unicode_escape()) {
             self.report_keyword_with_escape();
         }
-        self.token = self.scanner.scan();
+        self.token = self.scanner.scan_legacy();
         self.report_scan_errors();
         self.token
     }
@@ -647,7 +647,7 @@ impl Parser {
     }
 
     pub(crate) fn next_token_without_check(&mut self) -> Kind {
-        self.token = self.scanner.scan();
+        self.token = self.scanner.scan_legacy();
         self.report_scan_errors();
         self.token
     }

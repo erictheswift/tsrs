@@ -1,5 +1,6 @@
 //! Front-end comparison only; this does not run the checker or resolve project dependencies.
 use std::hint::black_box;
+use std::hash::Hasher;
 use std::time::Instant;
 use tsrs_core::{P, arena::Region};
 use tsrs_frontend_arena::{FileArena, ParseOptions, parse_and_bind};
@@ -42,7 +43,7 @@ fn peak_rss() -> u64 {
 
 fn legacy_checksum(file: P<tsrs_ast::SourceFile>) -> u64 {
     let mut stack = vec![file.as_node()];
-    let mut checksum = 0;
+    let mut checksum = 0u64;
     while let Some(node) = stack.pop() {
         black_box(node.jsdoc(Some(file.get())));
         checksum += u64::from(node.kind() as u16) + u64::from(node.loc().len().unwrap_or(0));
@@ -54,9 +55,33 @@ fn legacy_checksum(file: P<tsrs_ast::SourceFile>) -> u64 {
     checksum
 }
 
+fn scanner_checksum<'text, S: tsrs_scanner::storage::ScannerStorage<'text>>(
+    mut scanner: tsrs_scanner::Scanner<'text, S>,
+) -> (u64, usize) {
+    use tsrs_scanner::storage::TokenValue as _;
+    let mut hash = rustc_hash::FxHasher::default();
+    let mut diagnostics = 0;
+    scanner.set_on_error(true);
+    loop {
+        let kind = scanner.scan();
+        hash.write_u16(kind as u16);
+        hash.write_u32(scanner.token_start());
+        hash.write_u32(scanner.token_end());
+        hash.write_u32(scanner.token_flags().bits());
+        hash.write(scanner.token_value().as_bytes());
+        diagnostics += scanner.take_errors().len();
+        if kind == tsrs_ast::Kind::EndOfFile { break; }
+    }
+    for directive in scanner.comment_directives() {
+        hash.write_u32(directive.loc.pos().expect_source("directive position"));
+        hash.write_u32(directive.loc.end().expect_source("directive end"));
+    }
+    (hash.finish(), diagnostics)
+}
+
 fn main() {
     let mut args = std::env::args().skip(1);
-    let mode = args.next().expect("mode: tls, region, retained, direct, published-tls, published, region-drop, published-drop");
+    let mode = args.next().expect("mode: tls, region, retained, direct, published-tls, published, region-drop, published-drop, scan-tls, scan-native");
     if mode == "layout" {
         println!(
             "legacy_node={} native_node={} legacy_link={} native_link={} legacy_list={} native_list={}",
@@ -70,7 +95,7 @@ fn main() {
         return;
     }
     assert!(
-        ["tls", "region", "retained", "direct", "published-tls", "published", "region-drop", "published-drop"].contains(&mode.as_str())
+        ["tls", "region", "retained", "direct", "published-tls", "published", "region-drop", "published-drop", "scan-tls", "scan-native"].contains(&mode.as_str())
     );
     let manifest = std::fs::read_to_string(args.next().expect("newline-separated absolute file paths")).unwrap();
     let sources: Vec<_> = manifest
@@ -82,7 +107,7 @@ fn main() {
         .collect();
     let arenas: Vec<_> = sources.iter().map(|_| FileArena::new()).collect();
     let mut regions = Vec::new();
-    let mut checksum = 0;
+    let mut checksum = 0u64;
     let mut used = 0;
     let mut reserved = 0;
     let mut construction = 0;
@@ -90,7 +115,20 @@ fn main() {
     let begin = instructions();
     let start = Instant::now();
     for ((name, source, kind), arena) in sources.iter().zip(&arenas) {
-        if mode.starts_with("published") {
+        if mode.starts_with("scan-") {
+            let (hash, errors) = if mode == "scan-native" {
+                let result = scanner_checksum(arena.scanner(source));
+                used += arena.used_bytes();
+                reserved += arena.allocated_bytes();
+                result
+            } else {
+                let mut scanner = tsrs_scanner::Scanner::new();
+                scanner.set_text(tsrs_core::alloc_str(source));
+                scanner_checksum(scanner)
+            };
+            checksum = checksum.wrapping_add(hash);
+            diagnostics += errors;
+        } else if mode.starts_with("published") {
             let temporary = FileArena::new();
             let arena = if mode.ends_with("-drop") { &temporary } else { arena };
             let file = parse_and_bind(

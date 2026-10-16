@@ -59,7 +59,9 @@ pub mod generated;
 mod metadata;
 mod model;
 mod publish;
+mod scanner;
 mod text;
+pub use scanner::FileTokenBuffer;
 pub use text::Text;
 
 pub use arena::FileArena;

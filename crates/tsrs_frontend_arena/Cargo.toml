@@ -15,6 +15,7 @@ tsrs_ast.workspace = true
 tsrs_parser = { workspace = true, features = ["lifetime-prototype"] }
 tsrs_binder = { workspace = true, features = ["lifetime-prototype"] }
 tsrs_diagnostics.workspace = true
+tsrs_scanner.workspace = true
 rustc-hash.workspace = true
 
 [dev-dependencies]

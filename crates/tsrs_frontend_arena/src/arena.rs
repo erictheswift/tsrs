@@ -36,7 +36,7 @@ impl FileArena {
         self.used.get()
     }
 
-    fn reserve(&self, layout: Layout) -> NonNull<u8> {
+    pub(crate) fn reserve(&self, layout: Layout) -> NonNull<u8> {
         assert!(layout.align() <= 16, "front-end arena alignment exceeds 16");
         if layout.size() == 0 {
             // No zero-sized allocation is dereferenced; its aligned address is used for empty slices.

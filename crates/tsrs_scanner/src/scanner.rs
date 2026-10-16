@@ -5,15 +5,15 @@
 //! storage migrates; standalone callers can pass ordinary borrowed strings.
 //! Positions are unsigned byte offsets. Scanner EOF is represented separately from rune values.
 //!
-//! Token values. `token_value()` returns `&'text str`. When the Go scanner would produce a
+//! Token values. `token_value()` returns the storage policy's borrowed value: `&'text str` for the
+//! legacy parser, bytes for native per-file storage. When the Go scanner would produce a
 //! substring of the source text (the overwhelmingly common case: identifiers, keywords, simple
 //! strings, numbers that are already canonical) this is a slice of the source text and costs
 //! nothing. When the value is computed (escape sequences, numeric separators, normalized numbers,
-//! template literals containing `\r`) it is allocated with `alloc_str` in the current allocation
-//! target (the thread arena, or the entered region), where the parser also allocates nodes, so the
-//! parser can store token values in nodes directly without copying. These computed values and comment
-//! directive slices still use the legacy allocation scope; borrowing source text does not migrate their
-//! allocator or make manually freeing that scope safe while a scanner/snapshot/value remains live.
+//! template literals containing `\r`) the storage policy allocates it. The default policy uses the
+//! current legacy arena/region and still requires that allocation scope to outlive all values and
+//! snapshots. `with_storage` accepts a policy borrowing an explicit arena and does not use thread-local
+//! allocation itself. Comment-directive snapshots and numeric caches follow the same policy.
 //!
 //! Errors (Go `ErrorCallback` / `SetOnError`). Go's scanner calls a callback synchronously. In
 //! Rust the parser owns the scanner and is itself a `&mut self` state machine, so the scanner
@@ -45,12 +45,13 @@ use tsrs_ast::{
     SourceFileLike, TokenFlags,
 };
 use tsrs_core::{
-    ArenaStringBuilder, LanguageVariant, P, ScriptTarget, TextRange, UTF16Offset, alloc_str, jsnum,
+    LanguageVariant, P, ScriptTarget, TextRange, UTF16Offset, jsnum,
     stringutil::{self, Rune},
 };
 use tsrs_diagnostics as diagnostics;
 use tsrs_diagnostics::Message;
 
+use crate::storage::{Cooked, LegacyStorage, ScannerStorage, TokenBuffer, TokenValue};
 use crate::regexp::{char_code_to_reg_exp_flag, RegExpParser, RegularExpressionFlags};
 use crate::utilities::token_is_identifier_or_keyword;
 
@@ -303,19 +304,19 @@ fn text_to_token() -> &'static FxHashMap<&'static str, Kind> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ScannerState<'text> {
+pub struct ScannerState<'text, V = &'text str> {
     pub(crate) pos: u32, // Current position in text (and ending position of current token)
     pub(crate) full_start_pos: u32, // Starting position of current token including preceding whitespace
     pub(crate) token_start: u32,    // Starting position of non-whitespace part of current token
     pub(crate) token: Kind,         // Kind of current token
-    pub(crate) token_value: &'text str, // Parsed value of current token
+    pub(crate) token_value: V, // Parsed value of current token
     pub(crate) token_flags: TokenFlags, // Flags for current token
     pub(crate) comment_directives: &'text [CommentDirective], // a snapshot, like Go's slice header: Rewind restores it
     pub(crate) skip_jsdoc_leading_asterisks: u32, // Leading asterisks to skip when scanning types inside JSDoc. Should be 0 outside JSDoc
 }
 
 /// Scans borrowed source text. Values and saved states may survive the scanner, but not its source.
-/// Computed token values still use the current legacy arena allocation scope (see the module docs).
+/// The default policy uses the current legacy arena allocation scope (see the module docs).
 ///
 /// ```
 /// use tsrs_scanner::Scanner;
@@ -353,7 +354,8 @@ pub struct ScannerState<'text> {
 /// Scanner::new().rewind(state);
 /// ```
 #[derive(Default)]
-pub struct Scanner<'text> {
+pub struct Scanner<'text, S: ScannerStorage<'text> = LegacyStorage> {
+    pub(crate) storage: S,
     pub(crate) text: &'text str,
     pub(crate) end: u32,
     language_variant: LanguageVariant,
@@ -361,7 +363,7 @@ pub struct Scanner<'text> {
     on_error: bool,
     errors: Vec<ScanError>,
     skip_trivia: bool,
-    pub(crate) state: ScannerState<'text>,
+    pub(crate) state: ScannerState<'text, S::Value>,
 
     number_cache: FxHashMap<&'text str, &'text str>,
     hex_number_cache: FxHashMap<&'text str, &'text str>,
@@ -371,48 +373,48 @@ pub struct Scanner<'text> {
 // Like Oxc's byte handlers, dispatch out of the token loop so simple tokens do not
 // pay for the stack frame of numeric, comment, and Unicode scanning. None is the
 // old `continue 'scan` for skipped trivia; Some returns the token kind directly.
-type ByteHandler<'text> = fn(&mut Scanner<'text>) -> Option<Kind>;
+type ByteHandler<'text, S> = fn(&mut Scanner<'text, S>) -> Option<Kind>;
 
-impl<'text> Scanner<'text> {
-    const BYTE_HANDLERS: [ByteHandler<'text>; 256] = {
-        let mut table = [Scanner::scan_byte_default as ByteHandler<'text>; 256];
+impl<'text, S: ScannerStorage<'text>> Scanner<'text, S> {
+    const BYTE_HANDLERS: [ByteHandler<'text, S>; 256] = {
+        let mut table = [Self::scan_byte_default as ByteHandler<'text, S>; 256];
         let mut byte = 0;
         while byte < table.len() {
             table[byte] = match byte as u8 {
-                0x09 | 0x0B | 0x0C | 0x20 => Scanner::scan_byte_whitespace,
-                0x0A | 0x0D => Scanner::scan_byte_line_break,
-                0x21 /* ! */ => Scanner::scan_byte_exclamation,
-                0x22 | 0x27 /* " ' */ => Scanner::scan_byte_string,
-                0x60 /* ` */ => Scanner::scan_byte_template,
-                0x25 /* % */ => Scanner::scan_byte_percent,
-                0x26 /* & */ => Scanner::scan_byte_ampersand,
-                0x28 /* ( */ => Scanner::scan_byte_open_paren,
-                0x29 /* ) */ => Scanner::scan_byte_close_paren,
-                0x2A /* * */ => Scanner::scan_byte_asterisk,
-                0x2B /* + */ => Scanner::scan_byte_plus,
-                0x2C /* , */ => Scanner::scan_byte_comma,
-                0x2D /* - */ => Scanner::scan_byte_minus,
-                0x2E /* . */ => Scanner::scan_byte_dot,
-                0x2F /* / */ => Scanner::scan_byte_slash,
-                0x30..=0x39 /* 0-9 */ => Scanner::scan_byte_number,
-                0x3A /* : */ => Scanner::scan_byte_colon,
-                0x3B /* ; */ => Scanner::scan_byte_semicolon,
-                0x3C /* < */ => Scanner::scan_byte_less_than,
-                0x3D /* = */ => Scanner::scan_byte_equals,
-                0x3E /* > */ => Scanner::scan_byte_greater_than,
-                0x3F /* ? */ => Scanner::scan_byte_question,
-                0x5B /* [ */ => Scanner::scan_byte_open_bracket,
-                0x5D /* ] */ => Scanner::scan_byte_close_bracket,
-                0x5E /* ^ */ => Scanner::scan_byte_caret,
-                0x7B /* { */ => Scanner::scan_byte_open_brace,
-                0x7C /* | */ => Scanner::scan_byte_bar,
-                0x7D /* } */ => Scanner::scan_byte_close_brace,
-                0x7E /* ~ */ => Scanner::scan_byte_tilde,
-                0x40 /* @ */ => Scanner::scan_byte_at,
-                0x5C /* \ */ => Scanner::scan_byte_identifier_slow,
-                0x23 /* # */ => Scanner::scan_byte_hash,
-                b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => Scanner::scan_byte_identifier,
-                _ => Scanner::scan_byte_default,
+                0x09 | 0x0B | 0x0C | 0x20 => Self::scan_byte_whitespace,
+                0x0A | 0x0D => Self::scan_byte_line_break,
+                0x21 /* ! */ => Self::scan_byte_exclamation,
+                0x22 | 0x27 /* " ' */ => Self::scan_byte_string,
+                0x60 /* ` */ => Self::scan_byte_template,
+                0x25 /* % */ => Self::scan_byte_percent,
+                0x26 /* & */ => Self::scan_byte_ampersand,
+                0x28 /* ( */ => Self::scan_byte_open_paren,
+                0x29 /* ) */ => Self::scan_byte_close_paren,
+                0x2A /* * */ => Self::scan_byte_asterisk,
+                0x2B /* + */ => Self::scan_byte_plus,
+                0x2C /* , */ => Self::scan_byte_comma,
+                0x2D /* - */ => Self::scan_byte_minus,
+                0x2E /* . */ => Self::scan_byte_dot,
+                0x2F /* / */ => Self::scan_byte_slash,
+                0x30..=0x39 /* 0-9 */ => Self::scan_byte_number,
+                0x3A /* : */ => Self::scan_byte_colon,
+                0x3B /* ; */ => Self::scan_byte_semicolon,
+                0x3C /* < */ => Self::scan_byte_less_than,
+                0x3D /* = */ => Self::scan_byte_equals,
+                0x3E /* > */ => Self::scan_byte_greater_than,
+                0x3F /* ? */ => Self::scan_byte_question,
+                0x5B /* [ */ => Self::scan_byte_open_bracket,
+                0x5D /* ] */ => Self::scan_byte_close_bracket,
+                0x5E /* ^ */ => Self::scan_byte_caret,
+                0x7B /* { */ => Self::scan_byte_open_brace,
+                0x7C /* | */ => Self::scan_byte_bar,
+                0x7D /* } */ => Self::scan_byte_close_brace,
+                0x7E /* ~ */ => Self::scan_byte_tilde,
+                0x40 /* @ */ => Self::scan_byte_at,
+                0x5C /* \ */ => Self::scan_byte_identifier_slow,
+                0x23 /* # */ => Self::scan_byte_hash,
+                b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => Self::scan_byte_identifier,
+                _ => Self::scan_byte_default,
             };
             byte += 1;
         }
@@ -552,13 +554,23 @@ pub(crate) fn rune_string(r: Rune) -> String {
     rune_to_char(r).to_string()
 }
 
-impl<'text> Scanner<'text> {
-    fn default_scanner() -> Scanner<'text> {
-        Scanner { skip_trivia: true, ..Default::default() }
-    }
+impl Scanner<'_> {
+    pub fn new() -> Self { Self::with_storage(LegacyStorage) }
 
-    pub fn new() -> Scanner<'text> {
-        Scanner::default_scanner()
+    /// The legacy parser's non-generic entry point. Keeping the loop in this crate preserves its
+    /// inlining boundary before LTO; expanding it in the parser inhibits caller inlining (see
+    /// notes/scanner-file-arena.md). Native callers use `scan` directly.
+    pub fn scan_legacy(&mut self) -> Kind { self.scan() }
+}
+
+impl<'text, S: ScannerStorage<'text>> Scanner<'text, S> {
+    pub fn with_storage(storage: S) -> Self {
+        Self {
+            storage, text: "", end: 0, language_variant: LanguageVariant::default(),
+            script_target: ScriptTarget::default(), on_error: false, errors: Vec::new(),
+            skip_trivia: true, state: ScannerState::default(), number_cache: FxHashMap::default(),
+            hex_number_cache: FxHashMap::default(), hex_digit_cache: FxHashMap::default(),
+        }
     }
 
     pub fn reset(&mut self) {
@@ -568,7 +580,7 @@ impl<'text> Scanner<'text> {
         number_cache.clear();
         hex_number_cache.clear();
         hex_digit_cache.clear();
-        *self = Scanner::default_scanner();
+        *self = Self::with_storage(self.storage);
         self.number_cache = number_cache;
         self.hex_number_cache = hex_number_cache;
         self.hex_digit_cache = hex_digit_cache;
@@ -587,7 +599,7 @@ impl<'text> Scanner<'text> {
             s.is_empty() || (p >= t && p + s.len() <= t + self.text.len())
         };
         if !in_text(key) || !in_text(value) {
-            tsrs_core::arena_pin();
+            self.storage.pin();
         }
     }
 
@@ -615,7 +627,7 @@ impl<'text> Scanner<'text> {
         &self.text[self.state.token_start as usize..self.state.pos as usize]
     }
 
-    pub fn token_value(&self) -> &'text str {
+    pub fn token_value(&self) -> S::Value {
         self.state.token_value
     }
 
@@ -627,11 +639,11 @@ impl<'text> Scanner<'text> {
         self.state.comment_directives
     }
 
-    pub fn mark(&self) -> ScannerState<'text> {
+    pub fn mark(&self) -> ScannerState<'text, S::Value> {
         self.state
     }
 
-    pub fn rewind(&mut self, state: ScannerState<'text>) {
+    pub fn rewind(&mut self, state: ScannerState<'text, S::Value>) {
         self.state = state;
     }
 
@@ -659,7 +671,7 @@ impl<'text> Scanner<'text> {
     pub fn reset_token_state(&mut self, pos: u32) {
         self.reset_pos(pos);
         self.state.token = Kind::Unknown;
-        self.state.token_value = "";
+        self.state.token_value = self.storage.source("");
         self.state.token_flags = TokenFlags::None;
     }
 
@@ -880,10 +892,10 @@ impl<'text> Scanner<'text> {
             let start = a_start - base;
             return &self.text[start..start + a.len() + b.len()];
         }
-        let mut s = ArenaStringBuilder::with_capacity(a.len() + b.len());
+        let mut s = self.storage.buffer(a.len() + b.len());
         s.push_str(a);
         s.push_str(b);
-        s.into_str()
+        s.finish_str()
     }
 
     /// Returns `s` for the source lifetime without copying if it already is a slice of the text.
@@ -894,7 +906,7 @@ impl<'text> Scanner<'text> {
             let start = p - base;
             return &self.text[start..start + s.len()];
         }
-        alloc_str(s)
+        self.storage.text(s)
     }
 
     pub fn scan(&mut self) -> Kind {
@@ -1250,16 +1262,16 @@ impl<'text> Scanner<'text> {
                     }
                     let raw_text = self.slice(start, self.state.pos);
                     if raw_text.starts_with("0x") && &raw_text[2..] == digits {
-                        self.state.token_value = raw_text;
+                        self.state.token_value = self.storage.source(raw_text);
                     } else if let Some(&cached_value) = self.hex_number_cache.get(digits) {
-                        self.state.token_value = cached_value;
+                        self.state.token_value = self.storage.source(cached_value);
                     } else {
-                        let mut value = ArenaStringBuilder::with_capacity(2 + digits.len());
+                        let mut value = self.storage.buffer(2 + digits.len());
                         value.push_str("0x");
                         value.push_str(digits);
-                        self.state.token_value = value.into_str();
-                        self.pin_unless_source(digits, self.state.token_value);
-                        self.hex_number_cache.insert(digits, self.state.token_value);
+                        self.state.token_value = value.finish();
+                        self.pin_unless_source(digits, self.state.token_value.utf8());
+                        self.hex_number_cache.insert(digits, self.state.token_value.utf8());
                     }
                     self.state.token_flags |= TokenFlags::HexSpecifier;
                     break 'digit self.scan_big_int_suffix();
@@ -1269,9 +1281,9 @@ impl<'text> Scanner<'text> {
                     let (value, has_digits) = self.scan_binary_or_octal_digits(2, "0b");
                     if !has_digits {
                         self.error(&diagnostics::Binary_digit_expected);
-                        self.state.token_value = "0b0";
+                        self.state.token_value = self.storage.source("0b0");
                     } else {
-                        self.state.token_value = value;
+                        self.state.token_value = self.storage.source(value);
                     }
                     self.state.token_flags |= TokenFlags::BinarySpecifier;
                     break 'digit self.scan_big_int_suffix();
@@ -1281,9 +1293,9 @@ impl<'text> Scanner<'text> {
                     let (value, has_digits) = self.scan_binary_or_octal_digits(8, "0o");
                     if !has_digits {
                         self.error(&diagnostics::Octal_digit_expected);
-                        self.state.token_value = "0o0";
+                        self.state.token_value = self.storage.source("0o0");
                     } else {
-                        self.state.token_value = value;
+                        self.state.token_value = self.storage.source(value);
                     }
                     self.state.token_flags |= TokenFlags::OctalSpecifier;
                     break 'digit self.scan_big_int_suffix();
@@ -1477,8 +1489,9 @@ impl<'text> Scanner<'text> {
         self.scan_ascii_identifier_parts();
         let ch = self.char();
         if ch.is_none_or(|ch| ch < RUNE_SELF as u8 && ch != b'\\') {
-            self.state.token_value = self.slice(start, self.state.pos);
-            return Some(get_identifier_token(self.state.token_value));
+            let value = self.slice(start, self.state.pos);
+            self.state.token_value = self.storage.source(value);
+            return Some(get_identifier_token(value));
         }
         // The generic scanner handles a Unicode continuation or escape from the
         // original start, including malformed escapes and diagnostic positions.
@@ -1490,7 +1503,7 @@ impl<'text> Scanner<'text> {
     #[expect(clippy::unnecessary_wraps, reason = "BYTE_HANDLERS requires Option<Kind>; other byte handlers return None to continue scanning trivia.")]
     fn scan_byte_identifier_slow(&mut self) -> Option<Kind> {
         let token = if self.scan_identifier(0, IdentifierVariant::Standard) {
-            get_identifier_token(self.state.token_value)
+            get_identifier_token(self.state.token_value.utf8())
         } else {
             self.scan_invalid_character();
             Kind::Unknown
@@ -1521,7 +1534,7 @@ impl<'text> Scanner<'text> {
             }
             if !self.scan_identifier(1, IdentifierVariant::Standard) {
                 self.error_at(&diagnostics::Invalid_character, self.state.pos - 1, 1, &[]);
-                self.state.token_value = "#";
+                self.state.token_value = self.storage.source("#");
             }
             Kind::PrivateIdentifier
         };
@@ -1531,7 +1544,7 @@ impl<'text> Scanner<'text> {
     fn scan_byte_default(&mut self) -> Option<Kind> {
         let token = 'default: {
             if self.scan_identifier(0, IdentifierVariant::Standard) {
-                break 'default get_identifier_token(self.state.token_value);
+                break 'default get_identifier_token(self.state.token_value.utf8());
             }
             let (mut ch, mut size) = self.char_and_size();
             if ch == RUNE_ERROR {
@@ -1616,7 +1629,7 @@ impl<'text> Scanner<'text> {
         // but never rewrites elements below a saved length).
         let mut directives = self.state.comment_directives.to_vec();
         directives.push(CommentDirective { loc: TextRange::new(start, end), kind });
-        self.state.comment_directives = tsrs_core::alloc_vec(directives);
+        self.state.comment_directives = self.storage.directives(directives);
     }
 
     pub fn re_scan_less_than_token(&mut self) -> Kind {
@@ -1815,7 +1828,7 @@ impl<'text> Scanner<'text> {
                     let save_token_pos = self.state.token_start;
                     let save_token_flags = self.state.token_flags;
                     self.end = end_of_reg_exp_body;
-                    let scanner = std::mem::take(self);
+                    let scanner = std::mem::replace(self, Self::with_storage(self.storage));
                     let mut parser = RegExpParser::new(
                         scanner,
                         end_of_reg_exp_body,
@@ -1836,7 +1849,7 @@ impl<'text> Scanner<'text> {
             }
 
             self.state.pos = p;
-            self.state.token_value = self.slice(self.state.token_start, self.state.pos);
+            self.state.token_value = self.storage.source(self.slice(self.state.token_start, self.state.pos));
             self.state.token = Kind::RegularExpressionLiteral;
         }
         self.state.token
@@ -1930,7 +1943,7 @@ impl<'text> Scanner<'text> {
                 }
                 self.state.pos += size;
             }
-            self.state.token_value = self.slice(self.state.full_start_pos, self.state.pos);
+            self.state.token_value = self.storage.source(self.slice(self.state.full_start_pos, self.state.pos));
             self.state.token = Kind::JsxText;
             if whitespace_state == JsxWhitespaceState::AllWhitespace {
                 self.state.token = Kind::JsxTextAllWhiteSpaces;
@@ -1948,8 +1961,8 @@ impl<'text> Scanner<'text> {
             // Any caller should be expecting this behavior and should only read the pos or token value after calling it.
             // Here scanIdentifierParts is reused to ensure Unicode escapes are handled.
             let parts = self.scan_identifier_parts(IdentifierVariant::JSX);
-            self.state.token_value = self.concat_value(self.state.token_value, parts);
-            self.state.token = get_identifier_token(self.state.token_value);
+            self.state.token_value = self.storage.source(self.concat_value(self.state.token_value.utf8(), parts));
+            self.state.token = get_identifier_token(self.state.token_value.utf8());
         }
         self.state.token
     }
@@ -2019,7 +2032,7 @@ impl<'text> Scanner<'text> {
         if self.state.pos == self.state.token_start {
             return self.scan_jsdoc_token();
         }
-        self.state.token_value = self.slice(self.state.token_start, self.state.pos);
+        self.state.token_value = self.storage.source(self.slice(self.state.token_start, self.state.pos));
         self.state.token = Kind::JSDocCommentTextToken;
         self.state.token
     }
@@ -2086,7 +2099,7 @@ impl<'text> Scanner<'text> {
 
         self.state.pos = self.state.token_start;
         if self.scan_identifier(0, IdentifierVariant::JSX) {
-            self.state.token = get_identifier_token(self.state.token_value);
+            self.state.token = get_identifier_token(self.state.token_value.utf8());
             return self.state.token;
         }
         self.state.pos = self.state.token_start + size;
@@ -2111,7 +2124,7 @@ impl<'text> Scanner<'text> {
             self.scan_ascii_identifier_parts();
             let ch = self.char();
             if ch.is_none_or(|ch| ch < RUNE_SELF as u8 && ch != b'\\') {
-                self.state.token_value = self.slice(start, self.state.pos);
+                self.state.token_value = self.storage.source(self.slice(start, self.state.pos));
                 return true;
             }
             self.state.pos = identifier_start;
@@ -2126,10 +2139,10 @@ impl<'text> Scanner<'text> {
                     break;
                 }
             }
-            self.state.token_value = self.slice(start, self.state.pos);
+            self.state.token_value = self.storage.source(self.slice(start, self.state.pos));
             if ch == '\\' as Rune {
                 let parts = self.scan_identifier_parts(variant);
-                self.state.token_value = self.concat_value(self.state.token_value, parts);
+                self.state.token_value = self.storage.source(self.concat_value(self.state.token_value.utf8(), parts));
             }
             return true;
         }
@@ -2137,11 +2150,11 @@ impl<'text> Scanner<'text> {
             if let Some(escaped) =
                 self.scan_identifier_escape(is_identifier_start, variant == IdentifierVariant::RegExpGroupName)
             {
-                let mut value = ArenaStringBuilder::with_capacity((self.state.pos - start) as usize * 2);
+                let mut value = self.storage.buffer((self.state.pos - start) as usize * 2);
                 value.push_str(self.slice(start, identifier_start));
                 value.push(rune_to_char(escaped));
                 value.push_str(self.scan_identifier_parts(variant));
-                self.state.token_value = value.into_str();
+                self.state.token_value = value.finish();
                 return true;
             }
         }
@@ -2149,7 +2162,7 @@ impl<'text> Scanner<'text> {
     }
 
     fn scan_identifier_parts(&mut self, variant: IdentifierVariant) -> &'text str {
-        let mut sb: Option<ArenaStringBuilder> = None;
+        let mut sb: Option<S::Buffer> = None;
         let mut start = self.state.pos;
         let language_variant = if variant == IdentifierVariant::JSX { LanguageVariant::JSX } else { LanguageVariant::Standard };
         loop {
@@ -2165,7 +2178,7 @@ impl<'text> Scanner<'text> {
                     variant == IdentifierVariant::RegExpGroupName,
                 ) {
                     let so_far = (escape_start - start) as usize;
-                    let sb = sb.get_or_insert_with(|| ArenaStringBuilder::with_capacity((so_far * 2).max(16)));
+                    let sb = sb.get_or_insert_with(|| self.storage.buffer((so_far * 2).max(16)));
                     sb.push_str(self.slice(start, escape_start));
                     sb.push(rune_to_char(escaped));
                     start = self.state.pos;
@@ -2178,7 +2191,7 @@ impl<'text> Scanner<'text> {
             None => self.slice(start, self.state.pos),
             Some(mut sb) => {
                 sb.push_str(self.slice(start, self.state.pos));
-                sb.into_str()
+                sb.finish_str()
             }
         }
     }
@@ -2217,7 +2230,7 @@ impl<'text> Scanner<'text> {
         None
     }
 
-    fn scan_string(&mut self, jsx_attribute_string: bool) -> &'text str {
+    fn scan_string(&mut self, jsx_attribute_string: bool) -> S::Value {
         let quote = self.char().expect("scan_string starts at a quote");
         if quote == b'\'' {
             self.state.token_flags |= TokenFlags::SingleQuote;
@@ -2238,7 +2251,7 @@ impl<'text> Scanner<'text> {
         if self.char() == Some(quote) {
             let end = self.state.pos;
             self.state.pos += 1;
-            return if start == end { "" } else { self.slice(start, end) };
+            return self.storage.source(if start == end { "" } else { self.slice(start, end) });
         }
         self.scan_string_slow(quote, start, table)
     }
@@ -2268,11 +2281,11 @@ impl<'text> Scanner<'text> {
 
     #[cold]
     #[inline(never)]
-    fn scan_string_slow(&mut self, quote: u8, mut start: u32, table: &[bool; 256]) -> &'text str {
+    fn scan_string_slow(&mut self, quote: u8, mut start: u32, table: &[bool; 256]) -> S::Value {
         // Keep the original first-quote capacity estimate on the allocating path.
         let rest = &self.text.as_bytes()[self.state.pos as usize..];
         let capacity = memchr::memchr(quote, rest).map_or(16, |offset| (self.state.pos - start) as usize + offset);
-        let mut sb = ArenaStringBuilder::with_capacity(capacity);
+        let mut sb = self.storage.buffer(capacity);
         loop {
             sb.push_str(self.slice(start, self.state.pos));
             let Some(ch) = self.char() else {
@@ -2286,7 +2299,7 @@ impl<'text> Scanner<'text> {
             }
             if ch == b'\\' {
                 let escaped = self.scan_escape_sequence(EscapeSequenceScanningFlags::String | EscapeSequenceScanningFlags::ReportErrors);
-                sb.push_str(&escaped);
+                escaped.append(&mut sb);
                 start = self.state.pos;
                 self.scan_string_text(table);
                 continue;
@@ -2296,7 +2309,7 @@ impl<'text> Scanner<'text> {
             self.error(&diagnostics::Unterminated_string_literal);
             break;
         }
-        sb.into_str()
+        sb.finish()
     }
 
     fn scan_template_and_set_token_value(
@@ -2307,7 +2320,7 @@ impl<'text> Scanner<'text> {
         self.state.pos += 1;
         let mut start = self.state.pos;
         // Go collects the parts in a slice and joins them; a single untouched part is a text slice.
-        let mut parts: Option<ArenaStringBuilder> = None;
+        let mut parts: Option<S::Buffer> = None;
         let token;
         loop {
             self.scan_ascii_while(|b| b != b'`' && b != b'$' && b != b'\\' && b != b'\r');
@@ -2333,12 +2346,12 @@ impl<'text> Scanner<'text> {
             }
             if ch == Some(b'\\') {
                 let so_far = (self.state.pos - start) as usize;
-                let buf = parts.get_or_insert_with(|| ArenaStringBuilder::with_capacity((so_far * 2).max(16)));
+                let buf = parts.get_or_insert_with(|| self.storage.buffer((so_far * 2).max(16)));
                 buf.push_str(self.slice(start, self.state.pos));
                 let flags = EscapeSequenceScanningFlags::String
                     | if should_emit_invalid_escape_error { EscapeSequenceScanningFlags::ReportErrors } else { EscapeSequenceScanningFlags::empty() };
                 let escaped = self.scan_escape_sequence(flags);
-                parts.as_mut().unwrap().push_str(&escaped);
+                escaped.append(parts.as_mut().unwrap());
                 start = self.state.pos;
                 continue;
             }
@@ -2346,7 +2359,7 @@ impl<'text> Scanner<'text> {
             // <CR><LF> and <CR> LineTerminatorSequences are normalized to <LF> for Template Values
             if ch == Some(b'\r') {
                 let so_far = (self.state.pos - start) as usize;
-                let buf = parts.get_or_insert_with(|| ArenaStringBuilder::with_capacity((so_far * 2).max(16)));
+                let buf = parts.get_or_insert_with(|| self.storage.buffer((so_far * 2).max(16)));
                 buf.push_str(self.slice(start, self.state.pos));
                 self.state.pos += 1;
                 if self.char() == Some(b'\n') {
@@ -2361,22 +2374,22 @@ impl<'text> Scanner<'text> {
         token
     }
 
-    fn finish_template_parts(&mut self, parts: &mut Option<ArenaStringBuilder>, start: u32, end: u32) {
+    fn finish_template_parts(&mut self, parts: &mut Option<S::Buffer>, start: u32, end: u32) {
         self.state.token_value = match parts.take() {
-            None => self.slice(start, end),
+            None => self.storage.source(self.slice(start, end)),
             Some(mut buf) => {
                 buf.push_str(self.slice(start, end));
-                buf.into_str()
+                buf.finish()
             }
         };
     }
 
-    pub(crate) fn scan_escape_sequence(&mut self, flags: EscapeSequenceScanningFlags) -> Cow<'text, str> {
+    pub(crate) fn scan_escape_sequence(&mut self, flags: EscapeSequenceScanningFlags) -> Cooked<'text> {
         let start = self.state.pos;
         self.state.pos += 1;
         let Some(ch) = self.char() else {
             self.error(&diagnostics::Unexpected_end_of_text);
-            return Cow::Borrowed("");
+            return Cooked::Borrowed("");
         };
         self.state.pos += 1;
         match ch {
@@ -2385,7 +2398,7 @@ impl<'text> Scanner<'text> {
                     // Although '0' preceding any digit is treated as LegacyOctalEscapeSequence,
                     // '\08' should separately be interpreted as '\0' + '8'.
                     if !self.char().is_some_and(|ch| stringutil::is_digit(u32::from(ch))) {
-                        return Cow::Borrowed("\x00");
+                        return Cooked::Borrowed("\x00");
                     }
                 }
                 if ch <= b'3' {
@@ -2418,9 +2431,9 @@ impl<'text> Scanner<'text> {
                     } else {
                         self.error_at(&diagnostics::Octal_escape_sequences_are_not_allowed_Use_the_syntax_0, start, self.state.pos - start, &[&arg]);
                     }
-                    return Cow::Owned(rune_string(code));
+                    return Cooked::rune(code);
                 }
-                Cow::Borrowed(self.slice(start, self.state.pos))
+                Cooked::Borrowed(self.slice(start, self.state.pos))
             }
             0x38 | 0x39 /* 8 9 */ => {
                 // the invalid '\8' and '\9'
@@ -2437,18 +2450,18 @@ impl<'text> Scanner<'text> {
                         let text = self.slice(start, self.state.pos);
                         self.error_at(&diagnostics::Escape_sequence_0_is_not_allowed, start, self.state.pos - start, &[&text]);
                     }
-                    return Cow::Owned(rune_string(u32::from(ch)));
+                    return Cooked::rune(u32::from(ch));
                 }
-                Cow::Borrowed(self.slice(start, self.state.pos))
+                Cooked::Borrowed(self.slice(start, self.state.pos))
             }
-            0x62 /* b */ => Cow::Borrowed("\u{8}"),
-            0x74 /* t */ => Cow::Borrowed("\t"),
-            0x6E /* n */ => Cow::Borrowed("\n"),
-            0x76 /* v */ => Cow::Borrowed("\u{b}"),
-            0x66 /* f */ => Cow::Borrowed("\u{c}"),
-            0x72 /* r */ => Cow::Borrowed("\r"),
-            0x27 /* ' */ => Cow::Borrowed("'"),
-            0x22 /* " */ => Cow::Borrowed("\""),
+            0x62 /* b */ => Cooked::Borrowed("\u{8}"),
+            0x74 /* t */ => Cooked::Borrowed("\t"),
+            0x6E /* n */ => Cooked::Borrowed("\n"),
+            0x76 /* v */ => Cooked::Borrowed("\u{b}"),
+            0x66 /* f */ => Cooked::Borrowed("\u{c}"),
+            0x72 /* r */ => Cooked::Borrowed("\r"),
+            0x27 /* ' */ => Cooked::Borrowed("'"),
+            0x22 /* " */ => Cooked::Borrowed("\""),
             0x75 /* u */ => {
                 // '\uDDDD' and '\u{DDDDDD}'
                 let extended = self.char() == Some(b'{');
@@ -2467,20 +2480,20 @@ impl<'text> Scanner<'text> {
                         }
                     }
                     let Some(code_point) = code_point else {
-                        return Cow::Borrowed(self.slice(start, self.state.pos));
+                        return Cooked::Borrowed(self.slice(start, self.state.pos));
                     };
                     // In string literals, a high surrogate \u{...} followed by a low
                     // surrogate escape forms a single code point, exactly as adjacent
                     // UTF-16 code units would in a JavaScript string.
                     if !flags.intersects(EscapeSequenceScanningFlags::RegularExpression) && stringutil::is_high_surrogate(code_point) {
                         if let Some(combined) = self.scan_low_surrogate_escape(code_point) {
-                            return Cow::Owned(rune_string(combined));
+                            return Cooked::rune(combined);
                         }
                     }
-                    return Cow::Owned(stringutil::encode_js_string_rune(code_point));
+                    return Cooked::rune(code_point);
                 }
                 let Some(code_point) = code_point else {
-                    return Cow::Borrowed(self.slice(start, self.state.pos));
+                    return Cooked::Borrowed(self.slice(start, self.state.pos));
                 };
                 if stringutil::is_high_surrogate(code_point) {
                     if !flags.intersects(EscapeSequenceScanningFlags::RegularExpression) {
@@ -2488,7 +2501,7 @@ impl<'text> Scanner<'text> {
                         // \u{Low}) into a single code point in string literals, matching
                         // how adjacent UTF-16 code units pair in a JavaScript string.
                         if let Some(combined) = self.scan_low_surrogate_escape(code_point) {
-                            return Cow::Owned(rune_string(combined));
+                            return Cooked::rune(combined);
                         }
                     } else if flags.intersects(EscapeSequenceScanningFlags::AnyUnicodeMode)
                         && self.char() == Some(b'\\')
@@ -2501,14 +2514,14 @@ impl<'text> Scanner<'text> {
                         let saved_pos = self.state.pos;
                         let next_code_point = self.scan_unicode_escape(flags.intersects(EscapeSequenceScanningFlags::ReportInvalidEscapeErrors));
                         if let Some(next_code_point) = next_code_point.filter(|&ch| stringutil::is_low_surrogate(ch)) {
-                            return Cow::Owned(rune_string(stringutil::surrogate_pair_to_code_point(code_point, next_code_point)));
+                            return Cooked::rune(stringutil::surrogate_pair_to_code_point(code_point, next_code_point));
                         }
                         self.state.pos = saved_pos;
                     }
                 }
                 // Lone surrogate: encode as CESU-8 so it survives losslessly. In a
                 // non-unicode regex this also lets scanClassRanges compare it numerically.
-                Cow::Owned(stringutil::encode_js_string_rune(code_point))
+                Cooked::rune(code_point)
             }
             0x78 /* x */ => {
                 // '\xDD'
@@ -2518,13 +2531,13 @@ impl<'text> Scanner<'text> {
                         if flags.intersects(EscapeSequenceScanningFlags::ReportInvalidEscapeErrors) {
                             self.error(&diagnostics::Hexadecimal_digit_expected);
                         }
-                        return Cow::Borrowed(self.slice(start, self.state.pos));
+                        return Cooked::Borrowed(self.slice(start, self.state.pos));
                     }
                     self.state.pos += 1;
                 }
                 self.state.token_flags |= TokenFlags::HexEscape;
                 let escaped_value = u32::from_str_radix(self.slice(start + 2, self.state.pos), 16).unwrap_or(0);
-                Cow::Owned(rune_string(escaped_value))
+                Cooked::rune(escaped_value)
             }
             // when encountering a LineContinuation (i.e. a backslash and a line terminator sequence),
             // the line terminator is interpreted to be "the empty code unit sequence".
@@ -2532,9 +2545,9 @@ impl<'text> Scanner<'text> {
                 if self.char() == Some(b'\n') {
                     self.state.pos += 1;
                 }
-                Cow::Borrowed("")
+                Cooked::Borrowed("")
             }
-            0x0A /* \n */ => Cow::Borrowed(""),
+            0x0A /* \n */ => Cooked::Borrowed(""),
             _ => {
                 let mut ch = u32::from(ch);
                 // ch was read as a single byte; for multi-byte UTF-8 characters,
@@ -2547,7 +2560,7 @@ impl<'text> Scanner<'text> {
                 }
                 // LineContinuation: a backslash followed by a line terminator is "the empty code unit sequence".
                 if ch == 0x2028 || ch == 0x2029 {
-                    return Cow::Borrowed("");
+                    return Cooked::Borrowed("");
                 }
                 if flags.intersects(EscapeSequenceScanningFlags::AnyUnicodeMode)
                     || flags.intersects(EscapeSequenceScanningFlags::RegularExpression)
@@ -2558,9 +2571,9 @@ impl<'text> Scanner<'text> {
                 }
                 if ch < RUNE_SELF {
                     // Single ASCII characters are always slices of the text.
-                    return Cow::Borrowed(self.slice(self.state.pos - 1, self.state.pos));
+                    return Cooked::Borrowed(self.slice(self.state.pos - 1, self.state.pos));
                 }
-                Cow::Owned(rune_string(ch))
+                Cooked::rune(ch)
             }
         }
     }
@@ -2688,9 +2701,9 @@ impl<'text> Scanner<'text> {
                     fixed_part = Cow::Borrowed(digits);
                 } else {
                     let val = parse_int_64(digits, 8);
-                    let mut value = ArenaStringBuilder::with_capacity(digits.len());
+                    let mut value = self.storage.buffer(digits.len());
                     write!(value, "{val}").unwrap();
-                    self.state.token_value = value.into_str();
+                    self.state.token_value = value.finish();
                     self.state.token_flags |= TokenFlags::Octal;
                     let with_minus = self.state.token == Kind::MinusToken;
                     let literal = format!("{}0o{:o}", if with_minus { "-" } else { "" }, val);
@@ -2734,7 +2747,7 @@ impl<'text> Scanner<'text> {
                 + fractional_part.len()
                 + exponent_preamble.len()
                 + exponent_part.len();
-            let mut value = ArenaStringBuilder::with_capacity(capacity);
+            let mut value = self.storage.buffer(capacity);
             value.push_str(&fixed_part);
             if !fractional_part.is_empty() {
                 value.push('.');
@@ -2744,20 +2757,20 @@ impl<'text> Scanner<'text> {
                 value.push_str(exponent_preamble);
                 value.push_str(&exponent_part);
             }
-            self.state.token_value = value.into_str();
+            self.state.token_value = value.finish();
         } else {
-            self.state.token_value = self.slice(start, end);
+            self.state.token_value = self.storage.source(self.slice(start, end));
         }
         if self.state.token_flags.intersects(TokenFlags::ContainsLeadingZero) {
             self.error_at(&diagnostics::Decimals_with_leading_zeros_are_not_allowed, start, self.state.pos - start, &[]);
-            self.state.token_value = Self::canonical_number(self.state.token_value);
+            self.state.token_value = self.storage.source(Self::canonical_number(self.storage, self.state.token_value.utf8()));
             return Kind::NumericLiteral;
         }
 
         let result = if fixed_part_end == self.state.pos {
             self.scan_big_int_suffix()
         } else {
-            self.state.token_value = Self::canonical_number(self.state.token_value);
+            self.state.token_value = self.storage.source(Self::canonical_number(self.storage, self.state.token_value.utf8()));
             Kind::NumericLiteral
         };
         let (ch, _) = self.char_and_size();
@@ -2786,7 +2799,7 @@ impl<'text> Scanner<'text> {
     }
 
     /// Go `jsnum.FromString(v).String()`, reusing `v` when it is already canonical.
-    fn canonical_number(v: &'text str) -> &'text str {
+    fn canonical_number(storage: S, v: &'text str) -> &'text str {
         // Every decimal integer with at most 15 digits is a safe integer. Its scanner spelling is canonical when it
         // has no leading zero, so neither conversion nor a temporary formatting String is needed. Longer integers,
         // fractions and exponents still go through Number::string for ECMAScript rounding and formatting.
@@ -2798,7 +2811,7 @@ impl<'text> Scanner<'text> {
         if s == v {
             return v;
         }
-        alloc_str(&s)
+        storage.text(&s)
     }
 
     fn scan_number_fragment(&mut self) -> Cow<'text, str> {
@@ -2907,13 +2920,13 @@ impl<'text> Scanner<'text> {
             let has_separator = self.state.token_flags.intersects(TokenFlags::ContainsSeparator);
             let has_uppercase = digits.bytes().any(|b| b.is_ascii_uppercase());
             let digits = if has_separator || has_uppercase {
-                let mut result = ArenaStringBuilder::with_capacity(digits.len());
+                let mut result = self.storage.buffer(digits.len());
                 for byte in digits.bytes() {
                     if byte != b'_' {
                         result.push(byte.to_ascii_lowercase() as char);
                     }
                 }
-                result.into_str()
+                result.finish_str()
             } else {
                 digits
             };
@@ -2924,7 +2937,7 @@ impl<'text> Scanner<'text> {
     }
 
     fn scan_binary_or_octal_digits(&mut self, base: u8, prefix: &str) -> (&'text str, bool) {
-        let mut sb = ArenaStringBuilder::with_capacity(16);
+        let mut sb = self.storage.buffer(16);
         sb.push_str(prefix);
         let mut has_digits = false;
         let mut allow_separator = false;
@@ -2954,7 +2967,7 @@ impl<'text> Scanner<'text> {
         if is_previous_token_separator {
             self.error_at(&diagnostics::Numeric_separators_are_not_allowed_here, self.state.pos - 1, 1, &[]);
         }
-        (sb.into_str(), has_digits)
+        (sb.finish_str(), has_digits)
     }
 
     fn scan_big_int_suffix(&mut self) -> Kind {
@@ -2962,23 +2975,23 @@ impl<'text> Scanner<'text> {
             // Go: tokenValue += "n"; when the value is a text slice directly followed by the `n`
             // this is again a text slice.
             let n = self.slice(self.state.pos, self.state.pos + 1);
-            self.state.token_value = self.concat_value(self.state.token_value, n);
+            self.state.token_value = self.storage.source(self.concat_value(self.state.token_value.utf8(), n));
             if self.state.token_flags.intersects(TokenFlags::BinaryOrOctalSpecifier) {
-                self.state.token_value = alloc_str(&(jsnum::parse_pseudo_big_int(self.state.token_value) + "n"));
+                self.state.token_value = self.storage.source(self.storage.text(&(jsnum::parse_pseudo_big_int(self.state.token_value.utf8()) + "n")));
             }
             self.state.pos += 1;
             return Kind::BigIntLiteral;
         }
-        if let Some(&cached) = self.number_cache.get(self.state.token_value) {
-            self.state.token_value = cached;
+        if let Some(&cached) = self.number_cache.get(self.state.token_value.utf8()) {
+            self.state.token_value = self.storage.source(cached);
         } else {
-            let original = self.state.token_value;
-            let token_value = Self::canonical_number(original);
+            let original = self.state.token_value.utf8();
+            let token_value = Self::canonical_number(self.storage, original);
             if token_value != original {
                 self.pin_unless_source(original, token_value);
                 self.number_cache.insert(original, token_value);
             }
-            self.state.token_value = token_value;
+            self.state.token_value = self.storage.source(token_value);
         }
         Kind::NumericLiteral
     }

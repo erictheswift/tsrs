@@ -76,3 +76,6 @@ count. All versions/modes agree on syntax checksums and diagnostic counts. Raw s
 
 No material front-end instruction or memory change was measured. This confirms that introducing source
 lifetimes does not reproduce the cost of the prototype graph copy. The original publication overhead remains.
+
+The next step, [per-file scanner storage](scanner-file-arena.md), supplies explicit native allocation and
+byte-valued cooked tokens for this borrowed scanner.

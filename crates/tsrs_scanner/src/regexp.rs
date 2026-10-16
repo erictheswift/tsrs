@@ -1,4 +1,4 @@
-use std::borrow::Cow;
+use crate::storage::{Cooked, ScannerStorage, TokenValue};
 use std::cmp::Ordering;
 use std::fmt::Display;
 
@@ -58,7 +58,7 @@ fn reg_exp_flag_to_first_available_language_version(flag: RegularExpressionFlags
     }
 }
 
-impl Scanner<'_> {
+impl<'text, S: ScannerStorage<'text>> Scanner<'text, S> {
     pub(crate) fn check_regular_expression_flag_availability(
         &mut self,
         flag: RegularExpressionFlags,
@@ -94,8 +94,8 @@ struct DecimalEscapeValue {
 
 /// Go `regExpParser`. Go holds a `*Scanner`; to avoid a borrowing struct this one owns the
 /// scanner for the duration of the parse (see `Scanner::re_scan_slash_token`).
-pub(crate) struct RegExpParser<'text> {
-    scanner: Scanner<'text>,
+pub(crate) struct RegExpParser<'text, S: ScannerStorage<'text>> {
+    scanner: Scanner<'text, S>,
     end: u32,
     any_unicode_mode: bool,
     unicode_sets_mode: bool,
@@ -150,16 +150,16 @@ fn add_unique<'text>(set: &mut Vec<&'text str>, name: &'text str) {
     }
 }
 
-impl<'text> RegExpParser<'text> {
+impl<'text, S: ScannerStorage<'text>> RegExpParser<'text, S> {
     #[expect(clippy::fn_params_excessive_bools, reason = "The boolean parameters preserve the upstream Go function signature.")]
     pub(crate) fn new(
-        scanner: Scanner<'text>,
+        scanner: Scanner<'text, S>,
         end: u32,
         any_unicode_mode: bool,
         unicode_sets_mode: bool,
         annex_b: bool,
         named_capture_groups: bool,
-    ) -> RegExpParser<'text> {
+    ) -> RegExpParser<'text, S> {
         RegExpParser {
             scanner,
             end,
@@ -179,7 +179,7 @@ impl<'text> RegExpParser<'text> {
         }
     }
 
-    pub(crate) fn into_scanner(self) -> Scanner<'text> {
+    pub(crate) fn into_scanner(self) -> Scanner<'text, S> {
         self.scanner
     }
 
@@ -382,7 +382,7 @@ impl<'text> RegExpParser<'text> {
                         self.inc_pos(1);
                         let digits_start = self.pos();
                         self.scan_digits();
-                        let min_str = self.scanner.state.token_value;
+                        let min_str = self.scanner.state.token_value.utf8();
                         if !self.any_unicode_mode_or_non_annex_b && min_str.is_empty() {
                             is_previous_term_quantifiable = true;
                             continue;
@@ -390,7 +390,7 @@ impl<'text> RegExpParser<'text> {
                         if self.char() == Some(b',') {
                             self.inc_pos(1);
                             self.scan_digits();
-                            let max_str = self.scanner.state.token_value;
+                            let max_str = self.scanner.state.token_value.utf8();
                             if min_str.is_empty() {
                                 if !max_str.is_empty() || self.char() == Some(b'}') {
                                     self.error(&diagnostics::Incomplete_quantifier_Digit_expected, digits_start, 0, &[]);
@@ -543,7 +543,7 @@ impl<'text> RegExpParser<'text> {
         if ch.is_some_and(|ch| ch.is_ascii_digit() && ch != b'0') {
             let start = self.pos();
             self.scan_digits();
-            let val = self.scanner.state.token_value.parse::<i64>().unwrap_or(i64::MAX);
+            let val = self.scanner.state.token_value.utf8().parse::<i64>().unwrap_or(i64::MAX);
             self.decimal_escapes.push(DecimalEscapeValue { pos: start, end: self.pos(), value: val });
             return true;
         }
@@ -560,32 +560,32 @@ impl<'text> RegExpParser<'text> {
     //
     //	| '^' | '$' | '/' | '\' | '.' | '*' | '+' | '?' | '(' | ')' | '[' | ']' | '{' | '}' | '|'
     //	| [~AnyUnicodeMode] (any other non-identifier characters)
-    fn scan_character_escape(&mut self, atom_escape: bool) -> Cow<'text, str> {
+    fn scan_character_escape(&mut self, atom_escape: bool) -> Cooked<'text> {
         assert!(self.pos() > 0 && self.text_byte(self.pos() - 1) == b'\\');
         let ch = self.char();
         match ch {
             None => {
                 self.error(&diagnostics::Undetermined_character_escape, self.pos() - 1, 1, &[]);
-                Cow::Borrowed("\\")
+                Cooked::Borrowed("\\")
             }
             Some(0x63) /* c */ => {
                 self.inc_pos(1);
                 let ch = self.char();
                 if let Some(ch) = ch.filter(|&ch| stringutil::is_ascii_letter(u32::from(ch))) {
                     self.inc_pos(1);
-                    return Cow::Owned(rune_string(u32::from(ch & 0x1f)));
+                    return Cooked::rune(u32::from(ch & 0x1f));
                 }
                 if self.any_unicode_mode_or_non_annex_b {
                     self.error(&diagnostics::X_c_must_be_followed_by_an_ASCII_letter, self.pos() - 2, 2, &[]);
                 } else if atom_escape {
                     self.dec_pos(1);
-                    return Cow::Borrowed("\\");
+                    return Cooked::Borrowed("\\");
                 }
-                Cow::Owned(ch.map_or_else(|| rune_string(RUNE_ERROR), |ch| rune_string(u32::from(ch))))
+                Cooked::rune(ch.map_or(RUNE_ERROR, u32::from))
             }
             Some(ch @ (0x5E | 0x24 | 0x2F | 0x5C | 0x2E | 0x2A | 0x2B | 0x3F | 0x28 | 0x29 | 0x5B | 0x5D | 0x7B | 0x7D | 0x7C)) => {
                 self.inc_pos(1);
-                Cow::Owned(rune_string(u32::from(ch)))
+                Cooked::rune(u32::from(ch))
             }
             _ => {
                 self.dec_pos(1); // back up to include the backslash for scanEscapeSequence
@@ -613,9 +613,9 @@ impl<'text> RegExpParser<'text> {
             self.group_name_references.push(GroupNameReference {
                 pos: self.scanner.state.token_start,
                 end: self.pos(),
-                name: self.scanner.state.token_value,
+                name: self.scanner.state.token_value.utf8(),
             });
-        } else if self.named_capturing_groups_contains(self.scanner.state.token_value) {
+        } else if self.named_capturing_groups_contains(self.scanner.state.token_value.utf8()) {
             self.error(
                 &diagnostics::Named_capturing_groups_with_the_same_name_must_be_mutually_exclusive_to_each_other,
                 self.scanner.state.token_start,
@@ -623,7 +623,7 @@ impl<'text> RegExpParser<'text> {
                 &[],
             );
         } else {
-            let token_value = self.scanner.state.token_value;
+            let token_value = self.scanner.state.token_value.utf8();
             // A previous definition can only have come from a mutually exclusive alternative.
             // Below ES2018 the group itself is already reported, so don't stack a second error on it.
             if self.group_specifiers.contains(token_value)
@@ -697,8 +697,8 @@ impl<'text> RegExpParser<'text> {
                 if min_character.is_empty() {
                     continue;
                 }
-                let (min_character_value, min_size) = stringutil::decode_js_string_rune(&min_character);
-                let (max_character_value, max_size) = stringutil::decode_js_string_rune(&max_character);
+                let (min_character_value, min_size) = min_character.decode();
+                let (max_character_value, max_size) = max_character.decode();
                 if min_character.len() == min_size && max_character.len() == max_size && min_character_value > max_character_value {
                     self.error(&diagnostics::Range_out_of_order_in_character_class, min_start, self.pos() - min_start, &[]);
                 }
@@ -734,7 +734,7 @@ impl<'text> RegExpParser<'text> {
             return;
         }
         let mut start = self.pos();
-        let mut operand: Cow<'text, str> = Cow::Borrowed("");
+        let mut operand: Cooked<'text> = Cooked::Borrowed("");
         let mut two_chars: &[u8] = b"";
         if self.pos() + 1 < self.end {
             two_chars = &self.text().as_bytes()[self.pos() as usize..(self.pos() + 2) as usize];
@@ -811,7 +811,7 @@ impl<'text> RegExpParser<'text> {
                         &[],
                     );
                     start = self.pos() - 2;
-                    operand = Cow::Borrowed(&self.text()[start as usize..self.pos() as usize]);
+                    operand = Cooked::Borrowed(&self.text()[start as usize..self.pos() as usize]);
                     continue;
                 }
                 if operand.is_empty() {
@@ -841,8 +841,8 @@ impl<'text> RegExpParser<'text> {
                         &[],
                     );
                 } else if !operand.is_empty() {
-                    let (min_character_value, min_size) = stringutil::decode_js_string_rune(&operand);
-                    let (max_character_value, max_size) = stringutil::decode_js_string_rune(&second_operand);
+                    let (min_character_value, min_size) = operand.decode();
+                    let (max_character_value, max_size) = second_operand.decode();
                     if operand.len() == min_size && second_operand.len() == max_size && min_character_value > max_character_value {
                         self.error(&diagnostics::Range_out_of_order_in_character_class, start, self.pos() - start, &[]);
                     }
@@ -867,7 +867,7 @@ impl<'text> RegExpParser<'text> {
                         );
                         self.inc_pos(1);
                     }
-                    operand = Cow::Borrowed(&self.text()[start as usize..self.pos() as usize]);
+                    operand = Cooked::Borrowed(&self.text()[start as usize..self.pos() as usize]);
                     continue;
                 }
             }
@@ -888,7 +888,7 @@ impl<'text> RegExpParser<'text> {
                         &[],
                     );
                     self.inc_pos(2);
-                    operand = Cow::Borrowed(&self.text()[start as usize..self.pos() as usize]);
+                    operand = Cooked::Borrowed(&self.text()[start as usize..self.pos() as usize]);
                 }
                 _ => {
                     operand = self.scan_class_set_operand();
@@ -986,29 +986,29 @@ impl<'text> RegExpParser<'text> {
     //	| '\' CharacterClassEscape
     //	| '\q{' ClassStringDisjunctionContents '}'
     //	| ClassSetCharacter
-    fn scan_class_set_operand(&mut self) -> Cow<'text, str> {
+    fn scan_class_set_operand(&mut self) -> Cooked<'text> {
         self.may_contain_strings = false;
         match self.char() {
             Some(0x5B) /* [ */ => {
                 self.inc_pos(1);
                 self.scan_class_set_expression();
                 self.scan_expected_char(b']');
-                Cow::Borrowed("")
+                Cooked::Borrowed("")
             }
             Some(0x5C) /* \ */ => {
                 self.inc_pos(1);
                 if self.scan_character_class_escape() {
-                    return Cow::Borrowed("");
+                    return Cooked::Borrowed("");
                 } else if self.char() == Some(b'q') {
                     self.inc_pos(1);
                     if self.char() == Some(b'{') {
                         self.inc_pos(1);
                         self.scan_class_string_disjunction_contents();
                         self.scan_expected_char(b'}');
-                        return Cow::Borrowed("");
+                        return Cooked::Borrowed("");
                     }
                     self.error(&diagnostics::X_q_must_be_followed_by_string_alternatives_enclosed_in_braces, self.pos() - 2, 2, &[]);
-                    return Cow::Borrowed("q");
+                    return Cooked::Borrowed("q");
                 }
                 self.dec_pos(1);
                 self.scan_class_set_character()
@@ -1049,7 +1049,7 @@ impl<'text> RegExpParser<'text> {
     //
     //	| SourceCharacter -- ClassSetSyntaxCharacter -- ClassSetReservedDoublePunctuator
     //	| '\' (CharacterEscape | ClassSetReservedPunctuator | 'b')
-    fn scan_class_set_character(&mut self) -> Cow<'text, str> {
+    fn scan_class_set_character(&mut self) -> Cooked<'text> {
         let ch = self.char();
         if ch == Some(b'\\') {
             self.inc_pos(1);
@@ -1057,11 +1057,11 @@ impl<'text> RegExpParser<'text> {
             match inner_ch {
                 Some(0x62) /* b */ => {
                     self.inc_pos(1);
-                    return Cow::Borrowed("\u{8}");
+                    return Cooked::Borrowed("\u{8}");
                 }
                 Some(inner_ch @ (0x26 | 0x2D | 0x21 | 0x23 | 0x25 | 0x2C | 0x3A | 0x3B | 0x3C | 0x3D | 0x3E | 0x40 | 0x60 | 0x7E)) => {
                     self.inc_pos(1);
-                    return Cow::Owned(rune_string(u32::from(inner_ch)));
+                    return Cooked::rune(u32::from(inner_ch));
                 }
                 _ => return self.scan_character_escape(false /*atomEscape*/),
             }
@@ -1077,14 +1077,14 @@ impl<'text> RegExpParser<'text> {
                     &[],
                 );
                 self.inc_pos(2);
-                return Cow::Borrowed(&self.text()[(self.pos() - 2) as usize..self.pos() as usize]);
+                return Cooked::Borrowed(&self.text()[(self.pos() - 2) as usize..self.pos() as usize]);
             }
         }
         if let Some(ch @ (0x2F | 0x28 | 0x29 | 0x5B | 0x5D | 0x7B | 0x7D | 0x2D | 0x7C)) = ch {
             let s = rune_string(u32::from(ch));
             self.error(&diagnostics::Unexpected_0_Did_you_mean_to_escape_it_with_backslash, self.pos(), 1, &[&s]);
             self.inc_pos(1);
-            return Cow::Owned(s);
+            return Cooked::rune(u32::from(ch));
         }
         self.scan_source_character()
     }
@@ -1100,22 +1100,22 @@ impl<'text> RegExpParser<'text> {
     //	| '-'
     //	| CharacterClassEscape
     //	| CharacterEscape
-    fn scan_class_atom(&mut self) -> Cow<'text, str> {
+    fn scan_class_atom(&mut self) -> Cooked<'text> {
         if self.char() == Some(b'\\') {
             self.inc_pos(1);
             let ch = self.char().expect("position is before regexp end");
             match ch {
                 0x62 /* b */ => {
                     self.inc_pos(1);
-                    Cow::Borrowed("\u{8}")
+                    Cooked::Borrowed("\u{8}")
                 }
                 0x2D /* - */ => {
                     self.inc_pos(1);
-                    Cow::Owned(rune_string(u32::from(b'-')))
+                    Cooked::rune(u32::from(b'-'))
                 }
                 _ => {
                     if self.scan_character_class_escape() {
-                        return Cow::Borrowed("");
+                        return Cooked::Borrowed("");
                     }
                     self.scan_character_escape(false /*atomEscape*/)
                 }
@@ -1291,9 +1291,9 @@ impl<'text> RegExpParser<'text> {
         &self.text()[start as usize..self.pos() as usize]
     }
 
-    fn scan_source_character(&mut self) -> Cow<'text, str> {
+    fn scan_source_character(&mut self) -> Cooked<'text> {
         if self.pos() >= self.end {
-            return Cow::Borrowed("");
+            return Cooked::Borrowed("");
         }
         let text = self.text();
         if !self.any_unicode_mode {
@@ -1302,7 +1302,7 @@ impl<'text> RegExpParser<'text> {
                 // Now advance past the full UTF-8 sequence (the high surrogate call did not advance).
                 let (_, size) = decode_rune(&text.as_bytes()[self.pos() as usize..]);
                 self.inc_pos(size as u32);
-                return Cow::Owned(stringutil::encode_js_string_rune(low));
+                return Cooked::rune(low);
             }
             let (ch, size) = decode_rune(&text.as_bytes()[self.pos() as usize..]);
             if ch == RUNE_ERROR || size == 0 {
@@ -1310,9 +1310,9 @@ impl<'text> RegExpParser<'text> {
                 self.inc_pos(1);
                 let p = (self.pos() - 1) as usize;
                 return match text.get(p..p + 1) {
-                    Some(s) => Cow::Borrowed(s),
+                    Some(s) => Cooked::Borrowed(s),
                     // A multi-byte U+FFFD in valid UTF-8 text: Go returns its first byte.
-                    None => Cow::Owned(rune_string(RUNE_ERROR)),
+                    None => Cooked::rune(RUNE_ERROR),
                 };
             }
             if ch >= 0x10000 {
@@ -1320,22 +1320,22 @@ impl<'text> RegExpParser<'text> {
                 // The low surrogate will be emitted on the next call, which also advances.
                 let (high, low) = stringutil::code_point_to_surrogate_pair(ch);
                 self.pending_low_surrogate = Some(low);
-                return Cow::Owned(stringutil::encode_js_string_rune(high));
+                return Cooked::rune(high);
             }
             self.inc_pos(size as u32);
-            return Cow::Borrowed(&text[(self.pos() - size as u32) as usize..self.pos() as usize]);
+            return Cooked::Borrowed(&text[(self.pos() - size as u32) as usize..self.pos() as usize]);
         }
         let (ch, size) = decode_rune(&text.as_bytes()[self.pos() as usize..]);
         if size == 0 {
-            return Cow::Borrowed("");
+            return Cooked::Borrowed("");
         }
         if ch == RUNE_ERROR {
             // Invalid UTF-8; consume the byte to avoid infinite loops.
             self.inc_pos(size as u32);
-            return Cow::Borrowed("");
+            return Cooked::Borrowed("");
         }
         self.inc_pos(size as u32);
-        Cow::Borrowed(&text[(self.pos() - size as u32) as usize..self.pos() as usize])
+        Cooked::Borrowed(&text[(self.pos() - size as u32) as usize..self.pos() as usize])
     }
 
     fn scan_expected_char(&mut self, ch: u8) {
@@ -1352,7 +1352,7 @@ impl<'text> RegExpParser<'text> {
         while self.pos() < self.end && self.char().is_some_and(|ch| stringutil::is_digit(u32::from(ch))) {
             self.inc_pos(1);
         }
-        self.scanner.state.token_value = &self.text()[start as usize..self.pos() as usize];
+        self.scanner.state.token_value = self.scanner.storage.source(&self.text()[start as usize..self.pos() as usize]);
     }
 
     pub(crate) fn run(&mut self) {

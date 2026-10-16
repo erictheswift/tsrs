@@ -1,6 +1,7 @@
 mod number;
 mod regexp;
 mod scanner;
+pub mod storage;
 mod unicodeproperties;
 mod utilities;
 
