@@ -8,144 +8,9 @@ use crate::utilities::token_is_identifier_or_keyword;
 use crate::*;
 
 impl Parser {
-    pub(crate) fn parse_namespace_import(&mut self) -> P<Node> {
-        // NameSpaceImport:
-        //  * as ImportedBinding
-        let pos = self.node_pos();
-        self.parse_expected(Kind::AsteriskToken);
-        self.parse_expected(Kind::AsKeyword);
-        let name = self.parse_identifier();
-        let node = self.factory.new_namespace_import(name);
-        self.finish_node(node, pos)
-    }
-
-    pub(crate) fn parse_named_imports(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        // NamedImports:
-        //  { }
-        //  { ImportsList }
-        //  { ImportsList, }
-        let imports = self
-            .parse_bracketed_list(
-                ParsingContext::ImportOrExportSpecifiers,
-                Parser::parse_import_specifier,
-                Kind::OpenBraceToken,
-                Kind::CloseBraceToken,
-            )
-            .unwrap();
-        let node = self.factory.new_named_imports(imports);
-        self.finish_node(node, pos)
-    }
-
-    pub(crate) fn parse_import_specifier(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        let (is_type_only, property_name, name) = self.parse_import_or_export_specifier(Kind::ImportSpecifier);
-        let identifier_name;
-        if name.kind() == Kind::Identifier {
-            identifier_name = name;
-        } else {
-            let loc = self.skip_range_trivia(name.loc());
-            self.parse_error_at_range(loc, &diagnostics::Identifier_expected, &[]);
-            identifier_name = self.new_identifier("");
-            self.finish_node(
-                identifier_name,
-                name.pos()
-                    .expect_source("parsed nodes have source positions"),
-            );
-        }
-        let node = self.factory.new_import_specifier(is_type_only, property_name, identifier_name);
-        let node = self.finish_node(node, pos);
-        self.check_js_syntax(node)
-    }
 
     pub(crate) fn parse_import_or_export_specifier(&mut self, kind: Kind) -> (bool, Option<P<Node>>, P<Node>) {
-        // ImportSpecifier:
-        //   BindingIdentifier
-        //   ModuleExportName as BindingIdentifier
-        // ExportSpecifier:
-        //   ModuleExportName
-        //   ModuleExportName as ModuleExportName
-        // let checkIdentifierIsKeyword = isKeyword(token()) && !isIdentifier();
-        // let checkIdentifierStart = scanner.getTokenStart();
-        // let checkIdentifierEnd = scanner.getTokenEnd();
-        let mut is_type_only = false;
-        let mut property_name: Option<P<Node>> = None;
-        let mut can_parse_as_keyword = true;
-        let disallow_keywords = kind == Kind::ImportSpecifier;
-        let (mut name, mut name_ok) = self.parse_module_export_name(disallow_keywords);
-        if name.kind() == Kind::Identifier && name.text() == "type" {
-            // If the first token of an import specifier is 'type', there are a lot of possibilities,
-            // especially if we see 'as' afterwards:
-            //
-            // import { type } from "mod";          - isTypeOnly: false,   name: type
-            // import { type as } from "mod";       - isTypeOnly: true,    name: as
-            // import { type as as } from "mod";    - isTypeOnly: false,   name: as,    propertyName: type
-            // import { type as as as } from "mod"; - isTypeOnly: true,    name: as,    propertyName: as
-            if self.token == Kind::AsKeyword {
-                // { type as ...? }
-                let first_as = self.parse_identifier_name();
-                if self.token == Kind::AsKeyword {
-                    // { type as as ...? }
-                    let second_as = self.parse_identifier_name();
-                    if self.can_parse_module_export_name() {
-                        // { type as as something }
-                        // { type as as "something" }
-                        is_type_only = true;
-                        property_name = Some(first_as);
-                        (name, name_ok) = self.parse_module_export_name(disallow_keywords);
-                        can_parse_as_keyword = false;
-                    } else {
-                        // { type as as }
-                        property_name = Some(name);
-                        name = second_as;
-                        can_parse_as_keyword = false;
-                    }
-                } else if self.can_parse_module_export_name() {
-                    // { type as something }
-                    // { type as "something" }
-                    property_name = Some(name);
-                    can_parse_as_keyword = false;
-                    (name, name_ok) = self.parse_module_export_name(disallow_keywords);
-                } else {
-                    // { type as }
-                    is_type_only = true;
-                    name = first_as;
-                }
-            } else if self.can_parse_module_export_name() {
-                // { type something ...? }
-                // { type "something" ...? }
-                is_type_only = true;
-                (name, name_ok) = self.parse_module_export_name(disallow_keywords);
-            }
-        }
-        if can_parse_as_keyword && self.token == Kind::AsKeyword {
-            property_name = Some(name);
-            self.parse_expected(Kind::AsKeyword);
-            (name, name_ok) = self.parse_module_export_name(disallow_keywords);
-        }
-
-        if !name_ok {
-            let loc = self.skip_range_trivia(name.loc());
-            self.parse_error_at_range(loc, &diagnostics::Identifier_expected, &[]);
-        }
-
-        (is_type_only, property_name, name)
-    }
-
-    pub(crate) fn can_parse_module_export_name(&self) -> bool {
-        token_is_identifier_or_keyword(self.token) || self.token == Kind::StringLiteral
-    }
-
-    pub(crate) fn parse_module_export_name(&mut self, disallow_keywords: bool) -> (P<Node>, bool) {
-        let mut name_ok = true;
-
-        if self.token == Kind::StringLiteral {
-            return (self.parse_literal_expression(), name_ok);
-        }
-        if disallow_keywords && ast::is_keyword(self.token) && !self.is_identifier() {
-            name_ok = false;
-        }
-        (self.parse_identifier_name(), name_ok)
+        crate::import_parser::ImportParser::parse_import_or_export_specifier(self, kind)
     }
 
     pub(crate) fn try_parse_import_attributes(&mut self) -> Option<P<Node>> {
@@ -259,9 +124,7 @@ impl Parser {
     }
 
     pub(crate) fn parse_namespace_export(&mut self, pos: u32) -> P<Node> {
-        let (export_name, _) = self.parse_module_export_name(false /*disallowKeywords*/);
-        let node = self.factory.new_namespace_export(export_name);
-        self.finish_node(node, pos)
+        crate::import_parser::ImportParser::parse_namespace_export(self, pos)
     }
 
     pub(crate) fn parse_named_exports(&mut self) -> P<Node> {

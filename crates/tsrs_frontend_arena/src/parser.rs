@@ -10,6 +10,7 @@ use tsrs_parser::token_parser::TokenParser;
 use tsrs_scanner::{Scanner, ScannerState};
 use tsrs_parser::{context_parser::ContextParser, lookahead_parser::LookaheadParser};
 use tsrs_parser::{ParsingContexts, list_parser::ListParser};
+use tsrs_parser::import_parser::ImportParser;
 
 /// Parse the same complete entity-name input as `tsrs_parser::parse_isolated_entity_name`, using
 /// native references throughout. The result and its token text borrow the supplied arena.
@@ -50,7 +51,7 @@ pub fn parse_isolated_entity_name<'ast>(
 /// Parser state limited to one construction scope.
 ///
 /// Supports migrated names, tokens, literals and template parts, plus context/speculation,
-/// syntax lookahead, individual modifiers, semicolons and list recovery through the shared traits.
+/// syntax lookahead, individual modifiers, semicolons, lists and import clauses through shared traits.
 /// Full expression and source-file parsing are not provided yet.
 /// Create it with `NodeFactory::parser`.
 ///
@@ -77,6 +78,7 @@ pub struct Parser<'build, 'ast: 'build> {
     statement_has_await_identifier: bool,
     has_parse_error: bool,
     diagnostics: Vec<Diagnostic>,
+    js_diagnostics: Vec<Diagnostic>,
     parsing_contexts: ParsingContexts,
     node_stack: Vec<&'build construction::Node<'build, 'ast>>,
     reparse_list: Vec<&'build construction::Node<'build, 'ast>>,
@@ -104,6 +106,7 @@ pub struct ParserState<'build, 'ast: 'build> {
     scanner_state: ScannerState<'ast, &'ast [u8]>,
     context_flags: NodeFlags,
     diagnostics_len: usize,
+    js_diagnostics_len: usize,
     statement_has_await_identifier: bool,
     has_parse_error: bool,
     brand: PhantomData<fn(&'build ()) -> &'build ()>,
@@ -117,6 +120,7 @@ impl<'build, 'ast> ContextParser<'ast> for Parser<'build, 'ast> {
             scanner_state: self.scanner.mark(),
             context_flags: self.context_flags,
             diagnostics_len: self.diagnostics.len(),
+            js_diagnostics_len: self.js_diagnostics.len(),
             statement_has_await_identifier: self.statement_has_await_identifier,
             has_parse_error: self.has_parse_error,
             brand: PhantomData,
@@ -128,6 +132,7 @@ impl<'build, 'ast> ContextParser<'ast> for Parser<'build, 'ast> {
         self.token = self.scanner.token();
         self.context_flags = state.context_flags;
         self.diagnostics.truncate(state.diagnostics_len);
+        self.js_diagnostics.truncate(state.js_diagnostics_len);
         self.statement_has_await_identifier = state.statement_has_await_identifier;
         self.has_parse_error = state.has_parse_error;
         // Never reclaim storage here: speculative nodes and scanner values may still be borrowed.
@@ -184,6 +189,38 @@ impl<'build, 'ast> ListParser<'ast> for Parser<'build, 'ast> {
     }
 }
 
+impl<'ast> ImportParser<'ast> for Parser<'_, 'ast> {
+    fn node_loc(node: Self::Node) -> TextRange { node.loc() }
+    fn node_flags(node: Self::Node) -> NodeFlags { node.flags() }
+    fn node_text(node: Self::Node) -> &'ast [u8] { node.text().as_bytes() }
+    fn import_specifier_is_type_only(node: Self::Node) -> bool {
+        node.as_import_specifier().is_type_only()
+    }
+    fn set_skip_jsdoc_leading_asterisks(&mut self, skip: bool) {
+        self.scanner.set_skip_jsdoc_leading_asterisks(skip);
+    }
+    fn js_error_at_range(&mut self, loc: TextRange, message: &'static Message, args: &[&dyn Display]) {
+        let range = self.skip_range_trivia(loc);
+        // JavaScript syntax errors neither deduplicate nor mark the next parsed node as erroneous.
+        self.js_diagnostics.push(Self::new_diagnostic(DiagnosticPhase::JavaScript, range, message, args));
+    }
+    fn new_namespace_import(&self, name: Self::Node) -> Self::Node {
+        self.factory.new_namespace_import(name)
+    }
+    fn new_named_imports(&self, elements: Self::NodeList) -> Self::Node {
+        self.factory.new_named_imports(elements)
+    }
+    fn new_import_specifier(&self, is_type_only: bool, property_name: Option<Self::Node>, name: Self::Node) -> Self::Node {
+        self.factory.new_import_specifier(is_type_only, property_name, name)
+    }
+    fn new_namespace_export(&self, name: Self::Node) -> Self::Node {
+        self.factory.new_namespace_export(name)
+    }
+    fn new_import_clause(&self, phase_modifier: Kind, name: Option<Self::Node>, named_bindings: Option<Self::Node>) -> Self::Node {
+        self.factory.new_import_clause(phase_modifier, name, named_bindings)
+    }
+}
+
 impl<'build, 'ast> Parser<'build, 'ast> {
     pub(crate) fn new(
         mut scanner: Scanner<'ast, &'ast FileArena>,
@@ -213,15 +250,21 @@ impl<'build, 'ast> Parser<'build, 'ast> {
             statement_has_await_identifier: false,
             has_parse_error: false,
             diagnostics: Vec::new(),
+            js_diagnostics: Vec::new(),
             parsing_contexts: 0,
             node_stack: Vec::new(),
             reparse_list: Vec::new(),
         }
     }
 
-    /// Diagnostics produced so far, in scanner/parser order.
+    /// Parse diagnostics produced so far, in scanner/parser order.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// JavaScript syntax diagnostics, kept separate from parse errors as in the source-file parser.
+    pub fn js_diagnostics(&self) -> &[Diagnostic] {
+        &self.js_diagnostics
     }
 
     /// Construct nodes for list-element callbacks in this parser's existing construction scope.
@@ -229,9 +272,35 @@ impl<'build, 'ast> Parser<'build, 'ast> {
         &self.factory
     }
 
-    /// Detach diagnostics without retaining the parser or its construction scope.
+    /// Detach parse diagnostics without retaining the parser or its construction scope.
     pub fn into_diagnostics(self) -> Vec<Diagnostic> {
         self.diagnostics
+    }
+
+    /// Detach both diagnostic streams, in parse-then-JavaScript order.
+    pub fn into_diagnostic_streams(self) -> (Vec<Diagnostic>, Vec<Diagnostic>) {
+        (self.diagnostics, self.js_diagnostics)
+    }
+
+    fn new_diagnostic(
+        phase: DiagnosticPhase,
+        loc: TextRange,
+        message: &'static Message,
+        args: &[&dyn Display],
+    ) -> Diagnostic {
+        Diagnostic {
+            phase,
+            file_name: None,
+            loc: Some(loc),
+            code: message.code(),
+            category: message.category(),
+            reports_unnecessary: message.reports_unnecessary(),
+            reports_deprecated: message.reports_deprecated(),
+            message: message.text().to_owned(),
+            arguments: args.iter().map(ToString::to_string).collect(),
+            chain: Vec::new(),
+            related: Vec::new(),
+        }
     }
 
     #[cold]
@@ -334,19 +403,7 @@ impl<'build, 'ast> TokenParser<'ast> for Parser<'build, 'ast> {
             .last()
             .is_none_or(|last| last.loc.map(TextRange::source_pos) != Some(loc.source_pos()))
         {
-            self.diagnostics.push(Diagnostic {
-                phase: DiagnosticPhase::Parse,
-                file_name: None,
-                loc: Some(loc),
-                code: message.code(),
-                category: message.category(),
-                reports_unnecessary: message.reports_unnecessary(),
-                reports_deprecated: message.reports_deprecated(),
-                message: message.text().to_owned(),
-                arguments: args.iter().map(ToString::to_string).collect(),
-                chain: Vec::new(),
-                related: Vec::new(),
-            });
+            self.diagnostics.push(Self::new_diagnostic(DiagnosticPhase::Parse, loc, message, args));
         }
         self.has_parse_error = true;
     }

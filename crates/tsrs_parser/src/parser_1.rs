@@ -2609,18 +2609,15 @@ impl Parser {
     }
 
     pub(crate) fn next_token_is_from_keyword_or_equals_token(&mut self) -> bool {
-        self.next_token();
-        self.token == Kind::FromKeyword || self.token == Kind::EqualsToken
+        crate::import_parser::ImportParser::next_token_is_from_keyword_or_equals_token(self)
     }
 
     pub(crate) fn token_after_import_definitely_produces_import_declaration(&self) -> bool {
-        self.token == Kind::AsteriskToken || self.token == Kind::OpenBraceToken
+        crate::import_parser::ImportParser::token_after_import_definitely_produces_import_declaration(self)
     }
 
     pub(crate) fn token_after_imported_identifier_definitely_produces_import_declaration(&self) -> bool {
-        // In `import id ___`, the current token decides whether to produce
-        // an ImportDeclaration or ImportEqualsDeclaration.
-        self.token == Kind::CommaToken || self.token == Kind::FromKeyword
+        crate::import_parser::ImportParser::token_after_imported_identifier_definitely_produces_import_declaration(self)
     }
 
     pub(crate) fn parse_import_equals_declaration(
@@ -2677,52 +2674,9 @@ impl Parser {
         phase_modifier: Kind,
         skip_jsdoc_leading_asterisks: bool,
     ) -> Option<P<Node>> {
-        // ImportDeclaration:
-        //  import ImportClause from ModuleSpecifier ;
-        //  import ModuleSpecifier;
-        if identifier.is_some() || self.token == Kind::AsteriskToken || self.token == Kind::OpenBraceToken {
-            let import_clause = self.parse_import_clause(identifier, pos, phase_modifier, skip_jsdoc_leading_asterisks);
-            self.parse_expected(Kind::FromKeyword);
-            return Some(import_clause);
-        }
-        None
+        crate::import_parser::ImportParser::try_parse_import_clause(self, identifier, pos, phase_modifier, skip_jsdoc_leading_asterisks)
     }
 
-    pub(crate) fn parse_import_clause(
-        &mut self,
-        identifier: Option<P<Node>>,
-        pos: u32,
-        phase_modifier: Kind,
-        skip_jsdoc_leading_asterisks: bool,
-    ) -> P<Node> {
-        // ImportClause:
-        //  ImportedDefaultBinding
-        //  NameSpaceImport
-        //  NamedImports
-        //  ImportedDefaultBinding, NameSpaceImport
-        //  ImportedDefaultBinding, NamedImports
-        // If there was no default import or if there is comma token after default import
-        // parse namespace or named imports
-        let mut named_bindings = None;
-        let save_has_await_identifier = self.statement_has_await_identifier;
-        if identifier.is_none() || self.parse_optional(Kind::CommaToken) {
-            if skip_jsdoc_leading_asterisks {
-                self.scanner.set_skip_jsdoc_leading_asterisks(true);
-            }
-            if self.token == Kind::AsteriskToken {
-                named_bindings = Some(self.parse_namespace_import());
-            } else {
-                named_bindings = Some(self.parse_named_imports());
-            }
-            if skip_jsdoc_leading_asterisks {
-                self.scanner.set_skip_jsdoc_leading_asterisks(false);
-            }
-        }
-        let result = self.factory.new_import_clause(phase_modifier, identifier, named_bindings);
-        let result = self.finish_node(result, pos);
-        self.statement_has_await_identifier = save_has_await_identifier;
-        result
-    }
 }
 
 const _: () = assert!(ParsingContext::ClassMembers as u8 == tsrs_ast::lazylist::CLASS_MEMBERS);

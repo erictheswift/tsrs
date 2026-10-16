@@ -2230,17 +2230,7 @@ impl Parser {
     }
 
     pub(crate) fn skip_range_trivia(&self, text_range: TextRange) -> TextRange {
-        TextRange::new(
-            scanner::skip_trivia(
-                self.source_text,
-                text_range
-                    .pos()
-                    .expect_source("parsed ranges have source positions"),
-            ),
-            text_range
-                .end()
-                .expect_source("parsed ranges have source positions"),
-        )
+        crate::token_parser::TokenParser::skip_range_trivia(self, text_range)
     }
 
     pub(crate) fn process_pragmas_into_fields(&mut self, context: P<ast::SourceFile>) {
@@ -2484,9 +2474,7 @@ impl Parser {
                 }
             }
             Kind::ImportSpecifier => {
-                if node.is_type_only() {
-                    self.js_error_at_range(node.loc(), &diagnostics::X_0_declarations_can_only_be_used_in_TypeScript_files, &[&"import...type"]);
-                }
+                crate::import_parser::ImportParser::check_js_import_specifier(self, node);
             }
             Kind::ExportSpecifier => {
                 if node.is_type_only() {

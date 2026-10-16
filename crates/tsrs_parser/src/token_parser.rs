@@ -68,6 +68,20 @@ pub trait TokenParser<'text> {
     fn new_prefix_unary_expression(&self, kind: Kind, operand: Self::Node) -> Self::Node;
     fn new_literal_type_node(&self, literal: Self::Node) -> Self::Node;
 
+    fn skip_range_trivia(&self, text_range: TextRange) -> TextRange {
+        TextRange::new(
+            scanner::skip_trivia(
+                self.scanner().text(),
+                text_range
+                    .pos()
+                    .expect_source("parsed ranges have source positions"),
+            ),
+            text_range
+                .end()
+                .expect_source("parsed ranges have source positions"),
+        )
+    }
+
     fn node_pos(&self) -> u32 {
         self.scanner().token_full_start()
     }

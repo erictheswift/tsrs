@@ -112,3 +112,6 @@ Workspace clippy, source lint and whitespace checks pass. Regenerating the AST a
 reproduces the checked-in generated content. The stage remains isolated on the migration branch; complete
 native source-file parsing/binding and their allocation-retention costs still need measurement before a
 default frontend switch.
+
+The next stage, [native import clauses and module export names](native-parser-imports.md), shares import
+bindings and specifier ambiguity handling and adds a separate native JavaScript diagnostic stream.
