@@ -658,28 +658,7 @@ impl Parser {
         allow_private_name: bool,
         diagnostic_message: Option<&'static Message>,
     ) -> P<Node> {
-        let pos = self.node_pos();
-        let mut entity;
-        if allow_reserved_words {
-            entity = self.parse_identifier_name_with_diagnostic(diagnostic_message);
-        } else {
-            entity = self.parse_identifier_with_diagnostic(diagnostic_message, None);
-        }
-        while self.parse_optional(Kind::DotToken) {
-            if self.token == Kind::LessThanToken {
-                // The entity is part of a JSDoc-style generic. We will use the gap between `typeName` and
-                // `typeArguments` to report it as a grammar error in the checker.
-                break;
-            }
-            let right = self.parse_right_side_of_dot(
-                allow_reserved_words,
-                allow_private_name,
-                true, /*allowUnicodeEscapeSequenceInIdentifierName*/
-            );
-            let node = self.factory.new_qualified_name(entity, right);
-            entity = self.finish_node(node, pos);
-        }
-        entity
+        crate::name_parser::NameParser::parse_entity_name(self, allow_reserved_words, allow_private_name, diagnostic_message)
     }
 
     pub(crate) fn parse_right_side_of_dot(
@@ -688,55 +667,7 @@ impl Parser {
         allow_private_identifiers: bool,
         allow_unicode_escape_sequence_in_identifier_name: bool,
     ) -> P<Node> {
-        // Technically a keyword is valid here as all identifiers and keywords are identifier names.
-        // However, often we'll encounter this in error situations when the identifier or keyword
-        // is actually starting another valid construct.
-        //
-        // So, we check for the following specific case:
-        //
-        //      name.
-        //      identifierOrKeyword identifierNameOrKeyword
-        //
-        // Note: the newlines are important here.  For example, if that above code
-        // were rewritten into:
-        //
-        //      name.identifierOrKeyword
-        //      identifierNameOrKeyword
-        //
-        // Then we would consider it valid.  That's because ASI would take effect and
-        // the code would be implicitly: "name.identifierOrKeyword; identifierNameOrKeyword".
-        // In the first case though, ASI will not take effect because there is not a
-        // line terminator after the identifier or keyword.
-        if self.has_preceding_line_break()
-            && token_is_identifier_or_keyword(self.token)
-            && self.look_ahead(Parser::next_token_is_identifier_or_keyword_on_same_line)
-        {
-            // Report that we need an identifier.  However, report it right after the dot,
-            // and not on the next token.  This is because the next token might actually
-            // be an identifier and the error would be quite confusing.
-            let pos = self.node_pos();
-            self.parse_error_at(pos, pos, &diagnostics::Identifier_expected, &[]);
-            return self.create_missing_identifier();
-        }
-        if self.token == Kind::PrivateIdentifier {
-            let node = self.parse_private_identifier();
-            if allow_private_identifiers {
-                return node;
-            }
-            let pos = self.node_pos();
-            self.parse_error_at(pos, pos, &diagnostics::Identifier_expected, &[]);
-            return self.create_missing_identifier();
-        }
-        if allow_identifier_names {
-            if allow_unicode_escape_sequence_in_identifier_name {
-                return self.parse_identifier_name();
-            }
-            return self.parse_identifier_name_error_on_unicode_escape_sequence();
-        }
-        let save_has_await_identifier = self.statement_has_await_identifier;
-        let id = self.parse_identifier();
-        self.statement_has_await_identifier = save_has_await_identifier;
-        id
+        crate::name_parser::NameParser::parse_right_side_of_dot(self, allow_identifier_names, allow_private_identifiers, allow_unicode_escape_sequence_in_identifier_name)
     }
 
     pub(crate) fn new_identifier(&mut self, text: &'static str) -> P<Node> {
@@ -760,17 +691,11 @@ impl Parser {
     }
 
     pub(crate) fn create_missing_identifier(&mut self) -> P<Node> {
-        let node = self.new_identifier("");
-        let pos = self.node_pos();
-        self.finish_node(node, pos)
+        crate::name_parser::NameParser::create_missing_identifier(self)
     }
 
     pub(crate) fn parse_private_identifier(&mut self) -> P<Node> {
-        let pos = self.node_pos();
-        let text = self.scanner.token_value();
-        self.next_token();
-        let node = self.factory.new_private_identifier(text);
-        self.finish_node(node, pos)
+        crate::name_parser::NameParser::parse_private_identifier(self)
     }
 
     pub(crate) fn re_scan_less_than_token(&mut self) -> Kind {

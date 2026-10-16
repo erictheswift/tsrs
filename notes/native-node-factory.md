@@ -149,3 +149,7 @@ Existing parse/bind harness, before → after this stage:
 All six instruction comparisons are within 0.06%, with identical peak RSS medians, syntax checksums and
 diagnostic counts. This confirms the existing path remains stable; it is not evidence for the cost of a
 future native parser/binder, which this harness does not yet run.
+
+The next stage, [native name parsing](native-name-parser.md), uses this factory for the existing isolated
+entity-name entry point and shares its grammar with the production parser. Full source-file parsing and
+binding still use the legacy bridge.

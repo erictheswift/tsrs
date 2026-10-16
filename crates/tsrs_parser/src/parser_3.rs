@@ -2082,91 +2082,31 @@ impl Parser {
     }
 
     pub(crate) fn parse_identifier_name_error_on_unicode_escape_sequence(&mut self) -> P<Node> {
-        if self.scanner.has_unicode_escape() || self.scanner.has_extended_unicode_escape() {
-            self.parse_error_at_current_token(&diagnostics::Unicode_escape_sequence_cannot_appear_here, &[]);
-        }
-        self.create_identifier(token_is_identifier_or_keyword(self.token))
+        crate::name_parser::NameParser::parse_identifier_name_error_on_unicode_escape_sequence(self)
     }
 
     pub(crate) fn parse_binding_identifier(&mut self) -> P<Node> {
-        self.parse_binding_identifier_with_diagnostic(None)
+        crate::name_parser::NameParser::parse_binding_identifier(self)
     }
 
     pub(crate) fn parse_binding_identifier_with_diagnostic(&mut self, private_identifier_diagnostic_message: Option<&'static Message>) -> P<Node> {
-        let save_has_await_identifier = self.statement_has_await_identifier;
-        let is_binding_identifier = self.is_binding_identifier();
-        let id = self.create_identifier_with_diagnostic(is_binding_identifier, None /*diagnosticMessage*/, private_identifier_diagnostic_message);
-        self.statement_has_await_identifier = save_has_await_identifier;
-        id
+        crate::name_parser::NameParser::parse_binding_identifier_with_diagnostic(self, private_identifier_diagnostic_message)
     }
 
     pub(crate) fn parse_identifier_name(&mut self) -> P<Node> {
-        self.parse_identifier_name_with_diagnostic(None)
-    }
-
-    pub(crate) fn parse_identifier_name_with_diagnostic(&mut self, diagnostic_message: Option<&'static Message>) -> P<Node> {
-        self.create_identifier_with_diagnostic(token_is_identifier_or_keyword(self.token), diagnostic_message, None)
+        crate::name_parser::NameParser::parse_identifier_name(self)
     }
 
     pub(crate) fn parse_identifier(&mut self) -> P<Node> {
-        self.parse_identifier_with_diagnostic(None, None)
+        crate::name_parser::NameParser::parse_identifier(self)
     }
 
     pub(crate) fn parse_identifier_with_diagnostic(&mut self, diagnostic_message: Option<&'static Message>, private_identifier_diagnostic_message: Option<&'static Message>) -> P<Node> {
-        let is_identifier = self.is_identifier();
-        self.create_identifier_with_diagnostic(is_identifier, diagnostic_message, private_identifier_diagnostic_message)
+        crate::name_parser::NameParser::parse_identifier_with_diagnostic(self, diagnostic_message, private_identifier_diagnostic_message)
     }
 
     pub(crate) fn create_identifier(&mut self, is_identifier: bool) -> P<Node> {
-        self.create_identifier_with_diagnostic(is_identifier, None, None)
-    }
-
-    pub(crate) fn create_identifier_with_diagnostic(&mut self, is_identifier: bool, diagnostic_message: Option<&'static Message>, private_identifier_diagnostic_message: Option<&'static Message>) -> P<Node> {
-        if is_identifier {
-            let pos = if self.scanner.has_preceding_jsdoc_leading_asterisks() { self.scanner.token_start() } else { self.node_pos() };
-            let text = self.scanner.token_value();
-            let end = self.scanner.token_end();
-            self.next_token_without_check();
-            let id = self.new_source_identifier(text, TextRange::new(pos, end));
-            return self.finish_node(id, pos);
-        }
-        self.create_missing_identifier_with_diagnostic(diagnostic_message, private_identifier_diagnostic_message)
-    }
-
-    #[cold]
-    fn create_missing_identifier_with_diagnostic(&mut self, diagnostic_message: Option<&'static Message>, private_identifier_diagnostic_message: Option<&'static Message>) -> P<Node> {
-        if self.token == Kind::PrivateIdentifier {
-            if let Some(private_identifier_diagnostic_message) = private_identifier_diagnostic_message {
-                self.parse_error_at_current_token(private_identifier_diagnostic_message, &[]);
-            } else {
-                self.parse_error_at_current_token(&diagnostics::Private_identifiers_are_not_allowed_outside_class_bodies, &[]);
-            }
-            return self.create_identifier(true /*isIdentifier*/);
-        }
-        // Only for end of file because the error gets reported incorrectly on embedded script tags.
-        let report_at_current_position = self.token == Kind::EndOfFile;
-        if let Some(diagnostic_message) = diagnostic_message {
-            if report_at_current_position {
-                let pos = self.scanner.token_full_start();
-                self.parse_error_at(pos, pos, diagnostic_message, &[]);
-            } else {
-                self.parse_error_at_current_token(diagnostic_message, &[]);
-            }
-        } else if is_reserved_word(self.token) {
-            let token_text = self.scanner.token_text();
-            if report_at_current_position {
-                let pos = self.scanner.token_full_start();
-                self.parse_error_at(pos, pos, &diagnostics::Identifier_expected_0_is_a_reserved_word_that_cannot_be_used_here, &[&token_text]);
-            } else {
-                self.parse_error_at_current_token(&diagnostics::Identifier_expected_0_is_a_reserved_word_that_cannot_be_used_here, &[&token_text]);
-            }
-        } else if report_at_current_position {
-            let pos = self.scanner.token_full_start();
-            self.parse_error_at(pos, pos, &diagnostics::Identifier_expected, &[]);
-        } else {
-            self.parse_error_at_current_token(&diagnostics::Identifier_expected, &[]);
-        }
-        self.create_missing_identifier()
+        crate::name_parser::NameParser::create_identifier(self, is_identifier)
     }
 
     pub(crate) fn new_node_list(&self, loc: TextRange, nodes: &[P<Node>]) -> P<NodeList> {
@@ -2597,22 +2537,11 @@ impl Parser {
 
     // Ignore strict mode flag because we will report an error in type checker instead.
     pub(crate) fn is_identifier(&self) -> bool {
-        if self.token == Kind::Identifier {
-            return true;
-        }
-        // If we have a 'yield' keyword, and we're in the [yield] context, then 'yield' is
-        // considered a keyword and is not an identifier.
-        // If we have a 'await' keyword, and we're in the [Await] context, then 'await' is
-        // considered a keyword and is not an identifier.
-        if self.token == Kind::YieldKeyword && self.in_yield_context() || self.token == Kind::AwaitKeyword && self.in_await_context() {
-            return false;
-        }
-        self.token > Kind::LastReservedWord
+        crate::name_parser::NameParser::is_identifier(self)
     }
 
     pub(crate) fn is_binding_identifier(&self) -> bool {
-        // `let await`/`let yield` in [Yield] or [Await] are allowed here and disallowed in the binder.
-        self.token == Kind::Identifier || self.token > Kind::LastReservedWord
+        crate::name_parser::NameParser::is_binding_identifier(self)
     }
 
     pub(crate) fn is_import_attribute_name(&self) -> bool {

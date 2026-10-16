@@ -4,7 +4,8 @@
 //! their complete syntax payloads and binder graph into immutable records, then frees construction
 //! storage. This is an intermediate step toward allocating the final representation directly.
 //! `FileArena::build` now supports direct construction and publication in the same slots; wiring the
-//! parser and binder to that scoped factory is the next stage.
+//! source-file parser and binder to that scoped factory remains in progress.
+//! `parse_isolated_entity_name` already parses directly into native references using shared grammar.
 //!
 //! ```compile_fail
 //! use tsrs_frontend_arena::{FileArena, ParseOptions, parse_and_bind};
@@ -59,6 +60,7 @@
 mod arena;
 pub mod construction;
 mod factory;
+mod parser;
 pub mod generated;
 mod metadata;
 mod model;
@@ -70,6 +72,7 @@ pub use text::Text;
 
 pub use arena::FileArena;
 pub use factory::NodeFactory;
+pub use parser::parse_isolated_entity_name;
 pub use generated::NodeData;
 pub use metadata::{FileMetadata, FileReference, PatternAmbientModule, Pragma, PragmaArgument};
 pub use model::{

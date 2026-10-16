@@ -212,10 +212,31 @@ impl FileArena {
             NodeFactory<'build, 'ast>,
         ) -> &'build build::Node<'build, 'ast>,
     ) -> &'ast Node<'ast> {
+        match self.try_build(|factory| Ok::<_, std::convert::Infallible>(construct(factory))) {
+            Ok(root) => root,
+            Err(never) => match never {},
+        }
+    }
+
+    /// Publish only successful construction. Errors may own diagnostics but cannot retain scoped
+    /// graph references. Failed allocations are reclaimed when the arena drops, without rewinding.
+    ///
+    /// ```compile_fail
+    /// use tsrs_frontend_arena::FileArena;
+    /// let arena = FileArena::new();
+    /// let result = arena.try_build(|f| Err(f.new_identifier(f.text(b"escaped"))));
+    /// result.err().unwrap().set_parent(None);
+    /// ```
+    pub fn try_build<'ast, E>(
+        &'ast self,
+        construct: impl for<'build> FnOnce(
+            NodeFactory<'build, 'ast>,
+        ) -> Result<&'build build::Node<'build, 'ast>, E>,
+    ) -> Result<&'ast Node<'ast>, E> {
         let root = construct(NodeFactory {
             arena: self,
             brand: PhantomData,
-        });
+        })?;
         // SAFETY: only this scope's factory can create records bearing its invariant brand. All
         // branded record references therefore point to fully initialized slots in this arena.
         // Slices are either factory-allocated or borrowed from a captured owner which the higher-
@@ -223,7 +244,7 @@ impl FileArena {
         // Record/enum layouts and field offsets are asserted beside
         // their definitions. The callback has ended and cannot retain construction references or
         // mutation cells. Reinterpreting its root now freezes the reachable graph for 'ast.
-        unsafe { &*std::ptr::from_ref(root).cast::<Node<'ast>>() }
+        Ok(unsafe { &*std::ptr::from_ref(root).cast::<Node<'ast>>() })
     }
 }
 
