@@ -581,9 +581,10 @@ impl<V: Default + LinkCopy + 'static> IdLinkStore<V> {
     }
 }
 
-/// Go `nodeLinkStore`, indexed by allocation addresses in units of `size_of::<Node>()`.
+/// Go `nodeLinkStore`, indexed by allocation addresses in units of the minimum node allocation size.
 ///
-/// Two live nodes cannot share a unit: their headers alone occupy that many nonoverlapping bytes.
+/// Two live nodes cannot share a unit: their headers, rounded to the handle's alignment, occupy that many
+/// nonoverlapping bytes. Compressed handles address eight-byte units, so a 20-byte header occupies three.
 /// This derives the slot from the existing address without assigning an id or changing the node.
 /// Each page has 128 pointers to lazily allocated groups of 8 values. Groups stay in the arena, so
 /// references remain valid across recursive checks and table growth. Four-byte values need no padding.
@@ -614,7 +615,7 @@ impl<V: 'static> NodeLinkStore<V> {
     #[inline]
     fn index(node: P<Node>) -> usize {
         if tsrs_core::COMPRESSED_PTRS {
-            tsrs_core::ptr::key_to_usize(node.key()) / (std::mem::size_of::<Node>() / 8)
+            tsrs_core::ptr::key_to_usize(node.key()) / std::mem::size_of::<Node>().div_ceil(8)
         } else {
             node.addr() / std::mem::size_of::<Node>()
         }
