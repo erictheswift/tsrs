@@ -1502,31 +1502,71 @@ pub fn arena_pin() {
     with_arena(super::arena::Arena::bump_epoch);
 }
 
-/// A UTF-8 string constructed directly in the current arena.
+/// A UTF-8 string constructed directly in a borrowed allocator, or in the current arena (legacy constructors).
 ///
 /// Growing allocates a larger arena block and leaves the previous block behind, as a bump allocator cannot
 /// free it. Give the builder a realistic initial capacity when possible. Like every arena allocation API in
-/// this module, a builder must not outlive or cross the allocation scope in which it was created.
-pub struct ArenaStringBuilder {
+/// this module, a legacy builder must not outlive or cross the allocation scope in which it was created.
+pub struct ArenaStringBuilder<'alloc> {
+    allocator: Option<&'alloc crate::Allocator>,
     ptr: std::ptr::NonNull<u8>,
     len: usize,
     capacity: usize,
 }
 
-impl ArenaStringBuilder {
+impl ArenaStringBuilder<'static> {
     /// Creates an empty builder without allocating.
     #[inline]
-    pub fn new() -> ArenaStringBuilder {
-        ArenaStringBuilder { ptr: std::ptr::NonNull::dangling(), len: 0, capacity: 0 }
+    pub fn new() -> Self {
+        Self { allocator: None, ptr: std::ptr::NonNull::dangling(), len: 0, capacity: 0 }
     }
 
     /// Creates an empty builder with at least `capacity` bytes allocated in the current arena.
     #[inline]
-    pub fn with_capacity(capacity: usize) -> ArenaStringBuilder {
+    pub fn with_capacity(capacity: usize) -> Self {
         if capacity == 0 {
             return ArenaStringBuilder::new();
         }
-        ArenaStringBuilder { ptr: arena_string_capacity(capacity), len: 0, capacity }
+        Self { allocator: None, ptr: arena_string_capacity(capacity), len: 0, capacity }
+    }
+}
+
+impl<'alloc> ArenaStringBuilder<'alloc> {
+    /// Builds directly in `allocator`; growing never switches to a nested allocation scope.
+    ///
+    /// ```compile_fail,E0597
+    /// use tsrs_core::{Allocator, ArenaStringBuilder};
+    /// let text = {
+    ///     let allocator = Allocator::current();
+    ///     let mut builder = ArenaStringBuilder::with_capacity_in(&allocator, 8);
+    ///     builder.push_str("borrowed");
+    ///     builder.into_str()
+    /// };
+    /// println!("{text}");
+    /// ```
+    pub fn with_capacity_in(allocator: &'alloc crate::Allocator, capacity: usize) -> Self {
+        let mut builder = Self {
+            allocator: Some(allocator),
+            ptr: std::ptr::NonNull::dangling(),
+            len: 0,
+            capacity: 0,
+        };
+        if capacity != 0 {
+            builder.ptr = builder.allocate(capacity);
+            builder.capacity = capacity;
+        }
+        builder
+    }
+
+    #[inline]
+    fn allocate(&self, capacity: usize) -> std::ptr::NonNull<u8> {
+        if let Some(allocator) = self.allocator {
+            let layout = std::alloc::Layout::from_size_align(capacity, 1)
+                .expect("arena string capacity overflow");
+            allocator.arena().alloc_layout(layout)
+        } else {
+            arena_string_capacity(capacity)
+        }
     }
 
     /// Number of initialized UTF-8 bytes.
@@ -1553,7 +1593,7 @@ impl ArenaStringBuilder {
     fn grow(&mut self, required: usize) {
         let doubled = self.capacity.checked_mul(2).unwrap_or(required);
         let capacity = doubled.max(required).max(16);
-        let ptr = arena_string_capacity(capacity);
+        let ptr = self.allocate(capacity);
         if self.len != 0 {
             // SAFETY: the old block contains `len` initialized bytes, and the new block has `capacity >= len` bytes.
             // Separate arena allocations do not overlap.
@@ -1587,7 +1627,7 @@ impl ArenaStringBuilder {
 
     /// Finalizes the builder. The returned string lives as long as the arena allocation scope.
     #[inline]
-    pub fn into_str(self) -> &'static str {
+    pub fn into_str(self) -> &'alloc str {
         if self.len == 0 {
             return "";
         }
@@ -1603,13 +1643,13 @@ impl ArenaStringBuilder {
     }
 }
 
-impl Default for ArenaStringBuilder {
+impl Default for ArenaStringBuilder<'static> {
     fn default() -> Self {
         ArenaStringBuilder::new()
     }
 }
 
-impl fmt::Write for ArenaStringBuilder {
+impl fmt::Write for ArenaStringBuilder<'_> {
     fn write_str(&mut self, value: &str) -> fmt::Result {
         self.push_str(value);
         Ok(())

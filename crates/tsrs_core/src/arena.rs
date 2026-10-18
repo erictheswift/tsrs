@@ -1022,6 +1022,91 @@ pub struct RegionScope {
     _not_send: std::marker::PhantomData<*const ()>,
 }
 
+/// A thread-bound allocation target kept alive while parser and scanner data borrow it.
+///
+/// Captures the current region (or the thread arena). Allocations through this guard keep using that
+/// target even inside a nested scope. Legacy `P<T>` allocations still use the current scope and retain
+/// their manual ownership contract; this guard does not make those handles lifetime-safe.
+///
+/// ```compile_fail,E0597
+/// use tsrs_core::Allocator;
+/// let text = {
+///     let allocator = Allocator::current();
+///     allocator.alloc_str("temporary")
+/// };
+/// println!("{text}");
+/// ```
+pub struct Allocator {
+    arena: NonNull<Arena>,
+    _scope: RegionScope,
+}
+
+impl Allocator {
+    pub fn current() -> Self {
+        let scope = match current_region() {
+            Some(region) => region.enter(),
+            None => enter_thread_arena(),
+        };
+        let arena = NonNull::new(CURRENT.with(Cell::get).cast_mut()).expect("entered arena");
+        Self { arena, _scope: scope }
+    }
+
+    #[inline]
+    pub(crate) fn arena(&self) -> &Arena {
+        // SAFETY: `_scope` retains the region and its allocation lock, or the thread arena. The guard
+        // is thread-bound and the returned borrow cannot outlive it.
+        unsafe { self.arena.as_ref() }
+    }
+
+    #[inline]
+    pub fn alloc_str(&self, text: &str) -> &str {
+        if text.is_empty() { "" } else { self.arena().alloc_str(text) }
+    }
+
+    #[inline]
+    pub fn alloc_slice<'a, T: Copy + 'a>(&'a self, items: &[T]) -> &'a [T] {
+        if items.is_empty() { &[] } else { self.arena().alloc_slice_copy(items) }
+    }
+
+    /// Values with destructors must not borrow the guard: the region may outlive it and run their
+    /// destructors later. Borrowed, `Copy` elements can instead use `alloc_slice`.
+    #[inline]
+    pub fn alloc_vec<T: 'static>(&self, items: Vec<T>) -> &[T] {
+        if items.is_empty() {
+            return &[];
+        }
+        let arena = self.arena();
+        let items = arena.alloc_vec(items);
+        arena.track_drop(items.as_mut_ptr(), items.len());
+        items
+    }
+
+    #[inline]
+    pub fn checkpoint(&self) -> Checkpoint {
+        self.arena().checkpoint()
+    }
+
+    #[inline]
+    pub fn rewindable(&self, checkpoint: &Checkpoint) -> bool {
+        self.arena().rewindable_now(checkpoint)
+    }
+
+    /// # Safety
+    /// `checkpoint` must belong to this allocator. No reference to a discarded allocation may be
+    /// used afterwards, including references in scanner snapshots or string builders. Pin the allocator
+    /// before rewinding when a cache retains an allocation.
+    /// Rewind nested checkpoints in reverse order. This reachability condition is not lifetime-checked.
+    #[inline]
+    pub unsafe fn rewind(&self, checkpoint: Checkpoint) {
+        rewind(self.arena(), checkpoint);
+    }
+
+    #[inline]
+    pub fn pin(&self) {
+        self.arena().bump_epoch();
+    }
+}
+
 impl RegionScope {
     fn push(arena: *const Arena, region: Option<Region>) -> RegionScope {
         let token = NEXT_TOKEN.with(|t| {

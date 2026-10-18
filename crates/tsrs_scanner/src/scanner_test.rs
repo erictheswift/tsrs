@@ -5,6 +5,80 @@ use crate::Scanner;
 use crate::utilities::normalize_jsdoc_type_source_text;
 
 #[test]
+fn scoped_values_borrow_input_and_outlive_the_scanner() {
+    let allocator = tsrs_core::Allocator::current();
+    let text = String::from("identifier 'a\\nb'");
+    let value = {
+        let mut scanner = Scanner::new_in(&allocator);
+        scanner.set_text(&text);
+        assert_eq!(scanner.scan(), Kind::Identifier);
+        assert_eq!(scanner.token_value().as_ptr(), text.as_ptr());
+        assert_eq!(scanner.scan(), Kind::StringLiteral);
+        scanner.token_value()
+    };
+    assert_eq!(value, "a\nb");
+}
+
+#[test]
+fn scoped_reset_regexp_and_directives_keep_the_allocator() {
+    use tsrs_core::arena::Region;
+    let region = Region::new(4096);
+    let _scope = region.enter();
+    let allocator = tsrs_core::Allocator::current();
+    let mut scanner = Scanner::new_in(&allocator);
+    scanner.set_text("first");
+    scanner.scan();
+    let nested = Region::new(4096);
+    let _nested_scope = nested.enter();
+    scanner.reset();
+    scanner.set_text(
+        r"/(?<\u0061>.)\k<a>/u 1_2 // @ts-ignore
+after",
+    );
+    scanner.set_on_error(true);
+    assert_eq!(scanner.scan(), Kind::SlashToken);
+    assert_eq!(scanner.re_scan_slash_token(true), Kind::RegularExpressionLiteral);
+    assert!(!scanner.has_errors());
+    assert_eq!(scanner.scan(), Kind::NumericLiteral);
+    assert_eq!(scanner.token_value(), "12");
+    assert!(Region::containing(scanner.token_value().as_ptr().addr()).unwrap().ptr_eq(&region));
+    let state = scanner.mark();
+    assert_eq!(scanner.scan(), Kind::Identifier);
+    assert_eq!(scanner.comment_directives().len(), 1);
+    assert!(
+        Region::containing(scanner.comment_directives().as_ptr().addr()).unwrap().ptr_eq(&region)
+    );
+    scanner.rewind(state);
+    assert_eq!(scanner.token_value(), "12");
+    assert_eq!(scanner.comment_directives().len(), 0);
+    assert_eq!(scanner.scan(), Kind::Identifier);
+    assert_eq!(scanner.comment_directives().len(), 1);
+}
+
+#[test]
+fn scoped_numeric_cache_pins_the_captured_allocator_during_speculation() {
+    use tsrs_core::arena::Region;
+    let region = Region::new(4096);
+    let _scope = region.enter();
+    let allocator = tsrs_core::Allocator::current();
+    let mut scanner = Scanner::new_in(&allocator);
+    scanner.set_text("0xFF");
+    let state = scanner.mark();
+    let checkpoint = allocator.checkpoint();
+    let nested = Region::new(4096);
+    let _nested_scope = nested.enter();
+    scanner.scan();
+    let cached = scanner.token_value().as_ptr();
+    scanner.rewind(state);
+    assert!(!allocator.rewindable(&checkpoint));
+    // SAFETY: the number cache pins its retained allocation, preventing the rewind.
+    unsafe { allocator.rewind(checkpoint) };
+    scanner.scan();
+    assert_eq!(scanner.token_value(), "255");
+    assert_eq!(scanner.token_value().as_ptr(), cached);
+}
+
+#[test]
 fn test_scan_string_preserves_lone_surrogates() {
     let mut s = Scanner::new();
     s.set_text(r#""🦀퟿\ud800\ud801🦀""#);

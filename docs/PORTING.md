@@ -77,7 +77,19 @@ programs and file versions ([LSP.md](LSP.md#memory-management)). The rules are:
   Rust `static` is an `SP<T>`. Packed words store `p.to_bits()` / `p.key()`, never addresses.
 - Go `*T` that can be nil -> `Option<P<T>>`. Go `*T` that is never nil -> `P<T>`.
   Decide from the Go code (nil checks, `return nil`). When unsure, use `Option`.
-- There are **no lifetime parameters** anywhere in this codebase. Arena data is `'static`.
+- Parser and scanner state borrow an explicit `Allocator`: `Parser<'alloc>`, `Scanner<'alloc>`, their
+  snapshots and computed text cannot outlive that guard. The guard keeps its captured allocation target
+  alive and allocates into it even inside another region scope. Scoped string builders carry the same
+  lifetime. Other arena data still uses the legacy `'static` contract.
+- AST storage (`P<T>`, node fields, source-text registration) has not migrated to lifetimes. Public parse
+  functions keep their existing signatures and region ownership requirements; private adapters in
+  `tsrs_parser::legacy` erase the lifetime only when storing region-backed data in that AST. Parser input
+  must be copied into the allocator, process-lifetime text, or an existing source file's text before it
+  reaches those adapters. `Scanner::new()` remains the legacy ambient-allocation path for checker and
+  language-service callers; new scoped callers use `Scanner::new_in(&allocator)`.
+- Scoped `Allocator::rewind` is unsafe: restoring parser/scanner state and pinning retained cache entries
+  must prove no discarded allocation remains reachable. Lifetimes alone do not prove rollback safety;
+  legacy allocation and rewind entry points retain their manual contracts.
 - Arena objects remain live until their arena is released, unless an explicit recycling site proves them dead
   (rolled-back parses, dropped flow labels, scratch mappers and inference contexts whose escape
   bit is clear; `tsrs_core::arena`, notes/mem-recycle.md). A struct field that keeps a mapper must be a `MapperCell`.

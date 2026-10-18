@@ -18,7 +18,7 @@ use crate::parser_1::{
 use crate::types::ParseFlags;
 use crate::utilities::{is_keyword_or_punctuation, token_is_identifier_or_keyword};
 
-impl Parser {
+impl<'alloc> Parser<'alloc> {
     pub(crate) fn parse_assignment_expression_or_higher(&mut self) -> P<Node> {
         self.parse_assignment_expression_or_higher_worker(
             true, /*allowReturnTypeInArrowFunction*/
@@ -1176,7 +1176,9 @@ impl Parser {
     pub(crate) fn parse_jsx_text(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let text = self.scanner.token_value();
-        let result = self.factory.new_jsx_text(text, self.token == Kind::JsxTextAllWhiteSpaces);
+        let result = self
+            .factory
+            .new_jsx_text(self.legacy_text(text), self.token == Kind::JsxTextAllWhiteSpaces);
         self.scan_jsx_text();
         self.finish_node(result, pos)
     }
@@ -2525,7 +2527,7 @@ impl Parser {
 
     pub(crate) fn parse_literal_expression(&mut self) -> P<Node> {
         let pos = self.node_pos();
-        let text = self.scanner.token_value();
+        let text = self.legacy_text(self.scanner.token_value());
         let token_flags = self.scanner.token_flags();
         let result = match self.token {
             Kind::StringLiteral => self.factory.new_string_literal(text, token_flags),
@@ -3324,7 +3326,7 @@ impl Parser {
         &mut self,
         flags: NodeFlags,
         value: bool,
-        f: impl FnOnce(&mut Parser) -> T,
+        f: impl FnOnce(&mut Parser<'alloc>) -> T,
     ) -> T {
         let save_context_flags = self.context_flags;
         self.set_context_flags(flags, value);
@@ -3441,9 +3443,13 @@ impl Parser {
             }
         }
         context.check_js_directive.set(check_js_directive);
-        context.referenced_files.set(tsrs_core::alloc_vec(referenced_files));
-        context.type_reference_directives.set(tsrs_core::alloc_vec(type_reference_directives));
-        context.lib_reference_directives.set(tsrs_core::alloc_vec(lib_reference_directives));
+        context.referenced_files.set(self.legacy_slice(self.allocator.alloc_vec(referenced_files)));
+        context
+            .type_reference_directives
+            .set(self.legacy_slice(self.allocator.alloc_vec(type_reference_directives)));
+        context
+            .lib_reference_directives
+            .set(self.legacy_slice(self.allocator.alloc_vec(lib_reference_directives)));
     }
 
     pub(crate) fn parse_resolution_mode(
@@ -3847,7 +3853,7 @@ pub(crate) fn attach_file_to_diagnostics(
 
 pub(crate) fn get_comment_pragmas(
     _f: &mut ast::NodeFactory,
-    source_text: &'static str,
+    source_text: &str,
 ) -> Vec<ast::Pragma> {
     let mut pragmas = Vec::new();
     pragmas.extend(scanner::get_leading_comment_ranges(source_text, 0).flat_map(|comment_range| {

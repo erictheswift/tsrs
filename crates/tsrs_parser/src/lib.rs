@@ -1,4 +1,5 @@
 mod jsdoc;
+mod legacy;
 mod parser_1;
 mod parser_2;
 mod parser_3;

@@ -37,4 +37,4 @@ libc = "0.2"
 unicode-normalization.workspace = true
 
 [lib]
-doctest = false
+doctest = true

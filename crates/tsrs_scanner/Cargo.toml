@@ -18,4 +18,4 @@ bitflags.workspace = true
 memchr.workspace = true
 
 [lib]
-doctest = false
+doctest = true

@@ -1,6 +1,6 @@
 use bitflags::bitflags;
 use tsrs_ast::{self as ast, DiagnosticExt, Kind, Node, NodeFlags, NodeList, SourceFile};
-use tsrs_core::{P, TextRange, alloc_slice, alloc_str, alloc_vec, stringutil};
+use tsrs_core::{P, TextRange, stringutil};
 use tsrs_diagnostics::{self as diagnostics, Message};
 
 use crate::parser_1::{JSDocInfo, JsdocScannerInfo, Parser, ParsingContext, new_parser};
@@ -20,8 +20,9 @@ pub(crate) fn init() {
 // parseJSDocForNode lazily parses JSDoc for a node in a TS file.
 // Called on first access to Node.JSDoc() for non-JS source files.
 fn parse_jsdoc_for_node(source_file: &'static SourceFile, node: P<Node>) -> Vec<P<Node>> {
-    let mut p = new_parser();
-    p.initialize_state_static(
+    let allocator = tsrs_core::Allocator::current();
+    let mut p = new_parser(&allocator);
+    p.initialize_state_in(
         source_file.parse_options().clone(),
         source_file.text(),
         source_file.script_kind(),
@@ -62,20 +63,20 @@ bitflags! {
     }
 }
 
-impl Parser {
+impl<'alloc> Parser<'alloc> {
     #[inline]
     pub(crate) fn with_jsdoc(
         &mut self,
         node: P<Node>,
         info: JsdocScannerInfo,
-    ) -> &'static [P<Node>] {
+    ) -> &'alloc [P<Node>] {
         if !info.intersects(JsdocScannerInfo::HasJSDoc) {
             return &[];
         }
         self.with_jsdoc_worker(node, info)
     }
 
-    fn with_jsdoc_worker(&mut self, node: P<Node>, info: JsdocScannerInfo) -> &'static [P<Node>] {
+    fn with_jsdoc_worker(&mut self, node: P<Node>, info: JsdocScannerInfo) -> &'alloc [P<Node>] {
         // For TS/TSX files, defer JSDoc parsing to first access, unless the comment
         // contains @see/@link (needed for unused-identifier checks).
         // @deprecated is detected via cheap text scan to set PossiblyContainsDeprecatedTag;
@@ -115,7 +116,7 @@ impl Parser {
                 self.has_deprecated_tag = false;
                 node.set_flags(node.flags() | NodeFlags::PossiblyContainsDeprecatedTag);
             }
-            let jsdoc = alloc_vec(jsdoc);
+            let jsdoc = self.allocator.alloc_vec(jsdoc);
             if self.is_java_script() {
                 self.reparse_tags(node, jsdoc);
             }
@@ -195,7 +196,7 @@ impl Parser {
         // move jsdoc diagnostics to jsdocDiagnostics -- for JS files only
         let moved = self.diagnostics.split_off(save_diagnostics_length);
         if self.context_flags.intersects(NodeFlags::JavaScriptFile) && !moved.is_empty() {
-            tsrs_core::arena_pin();
+            self.allocator.pin();
             self.jsdoc_diagnostics.extend(moved);
         }
 
@@ -232,13 +233,13 @@ impl Parser {
         let mut backtick_count = 0;
         let mut in_fenced_code_block = false;
         let mut comment_parts: Vec<P<Node>> = Vec::new();
-        let mut comments: Vec<&'static str> = std::mem::take(&mut self.jsdoc_comments_space);
+        let mut comments: Vec<&'alloc str> = std::mem::take(&mut self.jsdoc_comments_space);
         let mut comments_pos = None;
         let mut link_end = start;
         let mut margin = None;
         macro_rules! push_comment {
             ($text:expr_2021) => {{
-                let text: &'static str = $text;
+                let text: &'alloc str = $text;
                 if margin.is_none() {
                     margin = Some(indent);
                 }
@@ -365,7 +366,7 @@ impl Parser {
                             if link_end == start {
                                 remove_leading_newlines(&mut comments);
                             }
-                            let text = self.factory.new_jsdoc_text(alloc_slice(&comments));
+                            let text = self.factory.new_jsdoc_text(self.legacy_texts(&comments));
                             let jsdoc_text = self.finish_node_with_end(text, link_end, comment_end);
                             comment_parts.push(jsdoc_text);
                             comment_parts.push(link);
@@ -403,7 +404,7 @@ impl Parser {
         if !comments.is_empty() {
             let last = comments.len() - 1;
             comments[last] = comments[last].trim_end();
-            let text = self.factory.new_jsdoc_text(alloc_slice(&comments));
+            let text = self.factory.new_jsdoc_text(self.legacy_texts(&comments));
             let jsdoc_text = self.finish_node_with_end(text, link_end, comments_pos);
             comment_parts.push(jsdoc_text);
         }
@@ -453,7 +454,7 @@ impl Parser {
 
         let mut preceding_line_break = self.scanner.has_preceding_line_break();
         let mut seen_line_break = false;
-        let mut indents: Vec<&'static str> = Vec::with_capacity(4);
+        let mut indents: Vec<&'alloc str> = Vec::with_capacity(4);
         while (preceding_line_break && self.token == Kind::AsteriskToken)
             || self.token == Kind::WhitespaceTrivia
             || self.token == Kind::NewLineTrivia
@@ -564,9 +565,9 @@ impl Parser {
         if indent_text.is_empty() {
             margin += end - pos;
         }
-        let mut initial_margin: &'static str = "";
+        let mut initial_margin: &'alloc str = "";
         if margin < indent_text.len() as u32 {
-            initial_margin = alloc_str(&indent_text[margin as usize..]);
+            initial_margin = self.allocator.alloc_str(&indent_text[margin as usize..]);
         }
         self.parse_tag_comments(margin, Some(initial_margin))
     }
@@ -574,11 +575,11 @@ impl Parser {
     pub(crate) fn parse_tag_comments(
         &mut self,
         indent: u32,
-        initial_margin: Option<&'static str>,
+        initial_margin: Option<&'alloc str>,
     ) -> Option<P<NodeList>> {
         let mut indent = indent;
         let comments_pos = self.node_pos();
-        let mut comments: Vec<&'static str> = std::mem::take(&mut self.jsdoc_tag_comments_space);
+        let mut comments: Vec<&'alloc str> = std::mem::take(&mut self.jsdoc_tag_comments_space);
         let mut parts: Vec<P<Node>> = std::mem::take(&mut self.jsdoc_tag_comments_parts_space);
         let mut link_end = None;
         let mut state = JsdocState::BeginningOfLine;
@@ -587,7 +588,7 @@ impl Parser {
         let mut margin = None;
         macro_rules! push_comment {
             ($text:expr_2021) => {{
-                let text: &'static str = $text;
+                let text: &'alloc str = $text;
                 if margin.is_none() {
                     margin = Some(indent);
                 }
@@ -669,7 +670,7 @@ impl Parser {
                         let link = self.parse_jsdoc_link(link_start);
                         if let Some(link) = link {
                             let comment_start = link_end.unwrap_or(comments_pos);
-                            let text = self.factory.new_jsdoc_text(alloc_slice(&comments));
+                            let text = self.factory.new_jsdoc_text(self.legacy_texts(&comments));
                             let text = self.finish_node_with_end(text, comment_start, comment_end);
                             parts.push(text);
                             parts.push(link);
@@ -734,7 +735,7 @@ impl Parser {
         remove_trailing_whitespace(&mut comments);
         if !comments.is_empty() {
             let comment_start = link_end.unwrap_or(comments_pos);
-            let text = self.factory.new_jsdoc_text(alloc_slice(&comments));
+            let text = self.factory.new_jsdoc_text(self.legacy_texts(&comments));
             let text = self.finish_node(text, comment_start);
             parts.push(text);
         }
@@ -762,7 +763,7 @@ impl Parser {
         // start at token after link, then skip any whitespace
         self.skip_whitespace();
         let name = self.parse_jsdoc_link_name();
-        let mut text: Vec<&'static str> = Vec::new();
+        let mut text: Vec<&'alloc str> = Vec::new();
         while self.token != Kind::CloseBraceToken
             && self.token != Kind::NewLineTrivia
             && self.token != Kind::EndOfFile
@@ -770,7 +771,7 @@ impl Parser {
             text.push(self.scanner.token_text());
             self.next_token_jsdoc(); // Couldn't this be nextTokenCommentJSDoc?
         }
-        let text = alloc_vec(text);
+        let text = self.legacy_texts(&text);
         let create = match link_type {
             "link" => self.factory.new_jsdoc_link(name, text),
             "linkcode" => self.factory.new_jsdoc_link_code(name, text),
@@ -806,7 +807,7 @@ impl Parser {
         None
     }
 
-    pub(crate) fn parse_jsdoc_link_prefix(&mut self) -> Option<&'static str> {
+    pub(crate) fn parse_jsdoc_link_prefix(&mut self) -> Option<&'alloc str> {
         self.skip_whitespace_or_asterisk();
         if self.token == Kind::OpenBraceToken
             && self.next_token_jsdoc() == Kind::AtToken
@@ -954,8 +955,10 @@ impl Parser {
                 if let Some(children) = children {
                     let is_array_type =
                         type_expression.type_node().unwrap().kind() == Kind::ArrayType;
-                    let literal =
-                        self.factory.new_jsdoc_type_literal(alloc_vec(children), is_array_type);
+                    let literal = self.factory.new_jsdoc_type_literal(
+                        self.legacy_slice(self.allocator.alloc_vec(children)),
+                        is_array_type,
+                    );
                     let literal = self.finish_node(literal, pos);
                     let node = self.factory.new_jsdoc_type_expression(literal);
                     return Some(self.finish_node(node, pos));
@@ -1161,7 +1164,7 @@ impl Parser {
     pub(crate) fn parse_simple_tag(
         &mut self,
         start: u32,
-        create_tag: impl FnOnce(&mut Parser, P<Node>, Option<P<NodeList>>) -> P<Node>,
+        create_tag: impl FnOnce(&mut Parser<'alloc>, P<Node>, Option<P<NodeList>>) -> P<Node>,
         tag_name: P<Node>,
         margin: u32,
         indent_text: &str,
@@ -1286,9 +1289,10 @@ impl Parser {
                 let first_pos = jsdoc_property_tags
                     .first()
                     .map(|t| t.pos().expect_source("parsed nodes have source positions"));
-                let jsdoc_type_literal = self
-                    .factory
-                    .new_jsdoc_type_literal(alloc_vec(jsdoc_property_tags), is_array_type);
+                let jsdoc_type_literal = self.factory.new_jsdoc_type_literal(
+                    self.legacy_slice(self.allocator.alloc_vec(jsdoc_property_tags)),
+                    is_array_type,
+                );
                 let child_type_expression =
                     child_type_tag.map(|t| t.as_jsdoc_type_tag().type_expression);
                 if let Some(child_type_expression) = child_type_expression
@@ -1668,7 +1672,7 @@ impl Parser {
     }
 }
 
-fn remove_leading_newlines(comments: &mut Vec<&'static str>) {
+fn remove_leading_newlines(comments: &mut Vec<&str>) {
     let mut i = 0;
     i += (i..comments.len())
         .take_while(|&i| comments[i].trim_start_matches(['\r', '\n']).is_empty())
@@ -1680,7 +1684,7 @@ fn trim_end(s: &str) -> &str {
     s.trim_end_matches(|c: char| stringutil::is_white_space_like(c as u32))
 }
 
-fn remove_trailing_whitespace(comments: &mut Vec<&'static str>) {
+fn remove_trailing_whitespace(comments: &mut Vec<&str>) {
     let mut end = comments.len();
     for (i, element) in comments.iter_mut().enumerate().rev() {
         let trimmed = trim_end(element);

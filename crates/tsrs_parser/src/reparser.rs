@@ -1,13 +1,13 @@
 use tsrs_ast::{
     self as ast, ClassLikeBase, Kind, ModifierList, Node, NodeFlags, NodeList, TokenFlags,
 };
-use tsrs_core::{P, TextRange, alloc_slice, alloc_str};
+use tsrs_core::{P, TextRange};
 use tsrs_diagnostics as diagnostics;
 use tsrs_scanner as scanner;
 
 use crate::parser_1::{JSDocInfo, Parser, ParsingContext};
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn finish_reparsed_node(&mut self, node: P<Node>, location_node: P<Node>) {
         node.set_flags(self.context_flags | NodeFlags::Reparsed);
         node.set_loc(location_node.loc());
@@ -96,10 +96,10 @@ impl Parser {
                 };
                 type_alias.as_type_alias_declaration().type_.set(t);
                 self.finish_reparsed_node(type_alias, tag);
-                self.jsdoc_infos.push(JSDocInfo { parent: type_alias, js_docs: alloc_slice(&[js_doc]) });
+                self.jsdoc_infos.push(JSDocInfo { parent: type_alias, js_docs: self.allocator.alloc_slice(&[js_doc]) });
                 type_alias.set_flags(type_alias.flags() | NodeFlags::HasJSDoc);
                 let result = self.wrap_in_jsdoc_namespace(full_name, type_alias, false /*nested*/);
-                tsrs_core::arena_pin();
+                self.allocator.pin();
                 self.reparse_list.push(result);
             }
             Kind::JSDocCallbackTag => {
@@ -119,10 +119,10 @@ impl Parser {
                 let type_parameters = self.gather_type_parameters(js_doc, true /*typedefOrCallback*/);
                 type_alias.as_type_alias_declaration().type_parameters.set(type_parameters);
                 self.finish_reparsed_node(type_alias, tag);
-                self.jsdoc_infos.push(JSDocInfo { parent: type_alias, js_docs: alloc_slice(&[js_doc]) });
+                self.jsdoc_infos.push(JSDocInfo { parent: type_alias, js_docs: self.allocator.alloc_slice(&[js_doc]) });
                 type_alias.set_flags(type_alias.flags() | NodeFlags::HasJSDoc);
                 let result = self.wrap_in_jsdoc_namespace(full_name, type_alias, false /*nested*/);
-                tsrs_core::arena_pin();
+                self.allocator.pin();
                 self.reparse_list.push(result);
             }
             Kind::JSDocImportTag => {
@@ -137,7 +137,7 @@ impl Parser {
                 let attributes = self.add_deep_clone_reparse(import_tag.attributes);
                 let import_declaration = self.factory.new_js_import_declaration(modifiers, Some(import_clause), module_specifier, attributes);
                 self.finish_reparsed_node(import_declaration, tag);
-                tsrs_core::arena_pin();
+                self.allocator.pin();
                 self.reparse_list.push(import_declaration);
             }
             Kind::JSDocOverloadTag
@@ -155,7 +155,7 @@ impl Parser {
                         tag,
                         parent.modifiers(),
                     );
-                    tsrs_core::arena_pin();
+                    self.allocator.pin();
                     self.reparse_list.push(signature);
                 }
             _ => {}
@@ -283,7 +283,9 @@ impl Parser {
                         result.push('_');
                         result.push_str(&pi.to_string());
                     }
-                    let identifier = self.factory.new_identifier(alloc_str(&result));
+                    let identifier = self
+                        .factory
+                        .new_identifier(self.legacy_text(self.allocator.alloc_str(&result)));
                     name = self.add_transformed_reparse(identifier, name);
                 } else {
                     name = self.add_deep_clone_reparse(Some(name)).unwrap();
@@ -389,7 +391,10 @@ impl Parser {
             let prop_jsdoc = self.factory.new_jsdoc(new_comment, None);
             self.finish_reparsed_node(prop_jsdoc, tag);
             prop_jsdoc.set_parent(Some(node));
-            self.jsdoc_infos.push(JSDocInfo { parent: node, js_docs: alloc_slice(&[prop_jsdoc]) });
+            self.jsdoc_infos.push(JSDocInfo {
+                parent: node,
+                js_docs: self.allocator.alloc_slice(&[prop_jsdoc]),
+            });
             node.set_flags(node.flags() | NodeFlags::HasJSDoc);
         }
     }

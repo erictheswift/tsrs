@@ -7,10 +7,7 @@ use tsrs_ast::{
     self as ast, Diagnostic, DiagnosticExt, Kind, ModifierFlags, ModifierList, Node, NodeFactory,
     NodeFlags, NodeList, SourceFile, SourceFileParseOptions, TokenFlags,
 };
-use tsrs_core::{
-    LanguageVariant, P, ScriptKind, TextRange, alloc_slice, alloc_str, alloc_vec, new_text_range,
-    tspath,
-};
+use tsrs_core::{Allocator, LanguageVariant, P, ScriptKind, TextRange, new_text_range, tspath};
 use tsrs_diagnostics::{self as diagnostics, Message};
 use tsrs_scanner::{self as scanner, Scanner, ScannerState};
 
@@ -87,9 +84,9 @@ impl ParsingContext {
 /// Bit set of `1 << ParsingContext`.
 pub type ParsingContexts = u32;
 
-pub struct JSDocInfo {
+pub struct JSDocInfo<'alloc> {
     pub(crate) parent: P<Node>,
-    pub(crate) js_docs: &'static [P<Node>],
+    pub(crate) js_docs: &'alloc [P<Node>],
 }
 
 bitflags! {
@@ -101,12 +98,13 @@ bitflags! {
     }
 }
 
-pub struct Parser {
-    pub(crate) scanner: Scanner,
+pub struct Parser<'alloc> {
+    pub(crate) allocator: &'alloc Allocator,
+    pub(crate) scanner: Scanner<'alloc>,
     pub(crate) factory: NodeFactory,
 
     pub(crate) opts: SourceFileParseOptions,
-    pub(crate) source_text: &'static str,
+    pub(crate) source_text: &'alloc str,
 
     pub(crate) script_kind: ScriptKind,
     pub(crate) language_variant: LanguageVariant,
@@ -126,10 +124,10 @@ pub struct Parser {
     // `register_source_text` index of `source_text` (`NO_SOURCE_TEXT`: identifiers store their text)
     pub(crate) source_text_index: u32,
     pub(crate) not_parenthesized_arrow: FxHashSet<u32>,
-    pub(crate) jsdoc_infos: Vec<JSDocInfo>,
+    pub(crate) jsdoc_infos: Vec<JSDocInfo<'alloc>>,
     pub(crate) possible_await_spans: Vec<usize>,
-    pub(crate) jsdoc_comments_space: Vec<&'static str>,
-    pub(crate) jsdoc_tag_comments_space: Vec<&'static str>,
+    pub(crate) jsdoc_comments_space: Vec<&'alloc str>,
+    pub(crate) jsdoc_tag_comments_space: Vec<&'alloc str>,
     pub(crate) jsdoc_tag_comments_parts_space: Vec<P<Node>>,
     pub(crate) reparse_list: Vec<P<Node>>,
 
@@ -148,9 +146,10 @@ pub struct Parser {
     pub(crate) node_stack: Vec<P<Node>>,
 }
 
-pub(crate) fn new_parser() -> Parser {
+pub(crate) fn new_parser(allocator: &Allocator) -> Parser<'_> {
     Parser {
-        scanner: Scanner::new(),
+        allocator,
+        scanner: Scanner::new_in(allocator),
         factory: NodeFactory::default(),
         opts: SourceFileParseOptions::default(),
         source_text: "",
@@ -215,7 +214,8 @@ pub fn parse_source_file(
     source_text: &str,
     script_kind: ScriptKind,
 ) -> P<SourceFile> {
-    parse_source_file_static(opts, alloc_str(source_text), script_kind)
+    let allocator = Allocator::current();
+    parse_source_file_in(&allocator, opts, allocator.alloc_str(source_text), script_kind)
 }
 
 /// `parse_source_file` for text the caller hands over (a file just read): outside a region it becomes the
@@ -283,10 +283,20 @@ fn parse_source_file_static(
     source_text: &'static str,
     script_kind: ScriptKind,
 ) -> P<SourceFile> {
+    let allocator = Allocator::current();
+    parse_source_file_in(&allocator, opts, source_text, script_kind)
+}
+
+fn parse_source_file_in<'alloc>(
+    allocator: &'alloc Allocator,
+    opts: SourceFileParseOptions,
+    source_text: &'alloc str,
+    script_kind: ScriptKind,
+) -> P<SourceFile> {
     crate::jsdoc::init();
-    let mut p = new_parser();
-    p.initialize_state_static(opts, source_text, script_kind);
-    p.source_text_index = ast::register_source_text(source_text);
+    let mut p = new_parser(allocator);
+    p.initialize_state_in(opts, source_text, script_kind);
+    p.source_text_index = ast::register_source_text(p.legacy_text(source_text));
     p.next_token();
     if p.script_kind == ScriptKind::JSON {
         return p.parse_json_text();
@@ -294,7 +304,7 @@ fn parse_source_file_static(
     p.parse_source_file_worker()
 }
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn is_java_script(&self) -> bool {
         self.script_kind == ScriptKind::JS || self.script_kind == ScriptKind::JSX
     }
@@ -363,8 +373,12 @@ impl Parser {
             statements = self.new_node_list(new_text_range(pos, end), &[statement]);
             eof = self.parse_expected_token(Kind::EndOfFile);
         }
-        let node =
-            self.factory.new_source_file(self.opts.clone(), self.source_text, statements, eof);
+        let node = self.factory.new_source_file(
+            self.opts.clone(),
+            self.legacy_text(self.source_text),
+            statements,
+            eof,
+        );
         node.as_source_file().text_index.set(self.source_text_index);
         let node = self.finish_node(node, pos);
         let result = node.as_source_file_p();
@@ -385,7 +399,7 @@ pub(crate) fn get_error_span_for_node(source_text: &str, node: P<Node>) -> TextR
     new_text_range(pos, node.end().expect_source("parsed nodes have source positions"))
 }
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn validate_json_value(
         &mut self,
         source_file: P<SourceFile>,
@@ -444,7 +458,7 @@ pub(crate) fn is_double_quoted_string(node: P<Node>) -> bool {
         && !node.as_string_literal().token_flags().intersects(TokenFlags::SingleQuote)
 }
 
-impl Parser {
+impl Parser<'_> {
     // validateJsonObjectLiteral validates properties of a JSON object literal.
     pub(crate) fn validate_json_object_literal(
         &mut self,
@@ -481,28 +495,31 @@ impl Parser {
 }
 
 pub fn parse_isolated_entity_name(text: &str) -> Option<P<Node>> {
-    let mut p = new_parser();
+    let allocator = Allocator::current();
+    let mut p = new_parser(&allocator);
     p.initialize_state(SourceFileParseOptions::default(), text, ScriptKind::JS);
     p.next_token();
     let entity_name = p.parse_entity_name(true, false, None);
     if p.token == Kind::EndOfFile && p.diagnostics.is_empty() { Some(entity_name) } else { None }
 }
 
-impl Parser {
+impl<'alloc> Parser<'alloc> {
     pub(crate) fn initialize_state(
         &mut self,
         opts: SourceFileParseOptions,
         source_text: &str,
         script_kind: ScriptKind,
     ) {
-        self.initialize_state_static(opts, alloc_str(source_text), script_kind);
+        self.initialize_state_in(opts, self.allocator.alloc_str(source_text), script_kind);
     }
 
-    /// `initialize_state` for text that already lives in the arena (Go shares the string; no copy).
-    pub(crate) fn initialize_state_static(
+    /// `initialize_state` for text already owned by the backing region, an existing source file,
+    /// or the process (Go shares the string; no copy). Never pass a caller's temporary borrow here:
+    /// AST storage erases this lifetime through the adapters in `legacy`.
+    pub(crate) fn initialize_state_in(
         &mut self,
         opts: SourceFileParseOptions,
-        source_text: &'static str,
+        source_text: &'alloc str,
         script_kind: ScriptKind,
     ) {
         assert!(
@@ -599,8 +616,8 @@ impl Parser {
 }
 
 #[derive(Clone, Copy)]
-pub struct ParserState {
-    pub(crate) scanner_state: ScannerState,
+pub struct ParserState<'alloc> {
+    pub(crate) scanner_state: ScannerState<'alloc>,
     pub(crate) context_flags: NodeFlags,
     pub(crate) diagnostics_len: usize,
     pub(crate) js_diagnostics_len: usize,
@@ -611,14 +628,14 @@ pub struct ParserState {
     pub(crate) has_parse_error: bool,
     // Rolling back a parse also discards the arena memory it allocated (notes/mem-recycle.md). Parser data that
     // `rewind` does not truncate and that can receive nodes from inside a speculation (`reparse_list`,
-    // `jsdoc_diagnostics`, the scanner's number caches) calls `tsrs_core::arena_pin`, which cancels that.
+    // `jsdoc_diagnostics`, the scanner's number caches) calls `Allocator::pin`, which cancels that.
     pub(crate) arena: tsrs_core::arena::Checkpoint,
 }
 
-impl Parser {
-    pub(crate) fn mark(&self) -> ParserState {
+impl<'alloc> Parser<'alloc> {
+    pub(crate) fn mark(&self) -> ParserState<'alloc> {
         ParserState {
-            arena: tsrs_core::arena_checkpoint(),
+            arena: self.allocator.checkpoint(),
             scanner_state: self.scanner.mark(),
             context_flags: self.context_flags,
             diagnostics_len: self.diagnostics.len(),
@@ -631,14 +648,16 @@ impl Parser {
         }
     }
 
-    pub(crate) fn rewind(&mut self, state: ParserState) {
+    pub(crate) fn rewind(&mut self, state: ParserState<'alloc>) {
         let arena = state.arena;
         self.rewind_keeping_nodes(state);
-        tsrs_core::arena_rewind(arena);
+        // SAFETY: rewind_keeping_nodes restored scanner state and truncated speculative references;
+        // caches and other surviving state pin the allocator when they retain an allocation.
+        unsafe { self.allocator.rewind(arena) };
     }
 
     /// `rewind` for a caller that keeps nodes it parsed after `mark` (the top-level await reparse).
-    pub(crate) fn rewind_keeping_nodes(&mut self, state: ParserState) {
+    pub(crate) fn rewind_keeping_nodes(&mut self, state: ParserState<'alloc>) {
         self.scanner.rewind(state.scanner_state);
         self.token = self.scanner.token();
         self.context_flags = state.context_flags;
@@ -653,7 +672,10 @@ impl Parser {
 
     // Keep speculative scanner snapshots and rollback bookkeeping out of callers' common-path frames.
     #[inline(never)]
-    pub(crate) fn look_ahead(&mut self, callback: impl FnOnce(&mut Parser) -> bool) -> bool {
+    pub(crate) fn look_ahead(
+        &mut self,
+        callback: impl FnOnce(&mut Parser<'alloc>) -> bool,
+    ) -> bool {
         let state = self.mark();
         let result = callback(self);
         self.rewind(state);
@@ -745,7 +767,12 @@ impl Parser {
             // tsrs-only: the `SourceFile` outlives a scratch region the file is parsed in (fileregions.rs in
             // tsrs_compiler frees a checked file's tree, not the file); a no-op outside one.
             let _outer = tsrs_core::arena::escape_scratch();
-            self.factory.new_source_file(self.opts.clone(), self.source_text, statement_list, eof)
+            self.factory.new_source_file(
+                self.opts.clone(),
+                self.legacy_text(self.source_text),
+                statement_list,
+                eof,
+            )
         };
         node.as_source_file().text_index.set(self.source_text_index);
         let node = self.finish_node(node, pos);
@@ -763,7 +790,7 @@ impl Parser {
             }
         }
         if !self.lazy_lists.is_empty() {
-            result.lazy_lists.set(alloc_slice(&self.lazy_lists));
+            result.lazy_lists.set(self.legacy_slice(self.allocator.alloc_slice(&self.lazy_lists)));
         }
         collect_external_module_references(result);
         if ast::is_in_js_file(Some(node)) {
@@ -773,8 +800,9 @@ impl Parser {
     }
 
     pub(crate) fn finish_source_file(&mut self, result: P<SourceFile>, is_declaration_file: bool) {
-        result.comment_directives.set(self.scanner.comment_directives());
-        result.pragmas.set(alloc_vec(get_comment_pragmas(&mut self.factory, self.source_text)));
+        result.comment_directives.set(self.legacy_slice(self.scanner.comment_directives()));
+        let pragmas = get_comment_pragmas(&mut self.factory, self.source_text);
+        result.pragmas.set(self.legacy_slice(self.allocator.alloc_vec(pragmas)));
         self.process_pragmas_into_fields(result);
         result.set_diagnostics(&attach_file_to_diagnostics(&self.diagnostics, result));
         result.set_jsdoc_diagnostics(&attach_file_to_diagnostics(&self.jsdoc_diagnostics, result));
@@ -792,7 +820,9 @@ impl Parser {
             result.set_has_lazy_jsdoc(true);
         }
         self.reparsed_clones.sort_by(|a, b| ast::compare_node_positions(*a, *b));
-        result.reparsed_clones.set(alloc_slice(&self.reparsed_clones));
+        result
+            .reparsed_clones
+            .set(self.legacy_slice(self.allocator.alloc_slice(&self.reparsed_clones)));
         ast::set_external_module_indicator(&result, self.opts.external_module_indicator_options);
     }
 
@@ -802,7 +832,9 @@ impl Parser {
         }
         let mut result =
             FxHashMap::with_capacity_and_hasher(self.jsdoc_infos.len(), rustc_hash::FxBuildHasher);
-        result.extend(self.jsdoc_infos.iter().map(|info| (info.parent, info.js_docs)));
+        result.extend(
+            self.jsdoc_infos.iter().map(|info| (info.parent, self.legacy_slice(info.js_docs))),
+        );
         result
     }
 
@@ -933,7 +965,7 @@ impl Parser {
             let _outer = tsrs_core::arena::escape_scratch();
             self.factory.new_source_file(
                 source_file.parse_options().clone(),
-                self.source_text,
+                self.legacy_text(self.source_text),
                 list,
                 source_file.end_of_file_token,
             )
@@ -948,7 +980,7 @@ impl Parser {
     pub(crate) fn parse_list_index(
         &mut self,
         kind: ParsingContext,
-        parse_element: impl FnMut(&mut Parser, usize) -> P<Node>,
+        parse_element: impl FnMut(&mut Parser<'alloc>, usize) -> P<Node>,
     ) -> Vec<P<Node>> {
         let start = self.parse_list_index_on_stack(kind, parse_element);
         self.node_stack.split_off(start)
@@ -958,7 +990,7 @@ impl Parser {
     pub(crate) fn parse_list_index_on_stack(
         &mut self,
         kind: ParsingContext,
-        mut parse_element: impl FnMut(&mut Parser, usize) -> P<Node>,
+        mut parse_element: impl FnMut(&mut Parser<'alloc>, usize) -> P<Node>,
     ) -> usize {
         let save_parsing_contexts = self.parsing_contexts;
         self.parsing_contexts |= 1 << kind as u32;
@@ -1003,7 +1035,7 @@ impl Parser {
     pub(crate) fn parse_member_list(
         &mut self,
         kind: ParsingContext,
-        parse_element: fn(&mut Parser) -> P<Node>,
+        parse_element: fn(&mut Parser<'alloc>) -> P<Node>,
     ) -> P<NodeList> {
         if self.lazy_dts && !self.context_flags.intersects(NodeFlags::JSDoc) {
             return self.parse_member_list_lazily(kind, parse_element);
@@ -1019,13 +1051,13 @@ impl Parser {
     fn parse_member_list_lazily(
         &mut self,
         kind: ParsingContext,
-        parse_element: fn(&mut Parser) -> P<Node>,
+        parse_element: fn(&mut Parser<'alloc>) -> P<Node>,
     ) -> P<NodeList> {
         let pos = self.node_pos();
         let context_flags = self.context_flags;
         let parsing_contexts = self.parsing_contexts;
         let clean_start = !self.has_parse_error;
-        let cp = tsrs_core::arena_checkpoint();
+        let cp = self.allocator.checkpoint();
         let before = self.lazy_watch();
         let list = self.parse_list(kind, parse_element);
         let after = self.lazy_watch();
@@ -1035,7 +1067,7 @@ impl Parser {
             || (after.0, after.1, after.2, after.3, after.5)
                 != (before.0, before.1, before.2, before.3, before.5)
             || self.has_parse_error
-            || !tsrs_core::arena_rewindable(&cp)
+            || !self.allocator.rewindable(&cp)
             || lazy_list_blocked(list.nodes())
         {
             return list;
@@ -1043,7 +1075,10 @@ impl Parser {
         let loc = list.loc();
         debug_assert_eq!(loc.source_pos(), Some(pos));
         self.lazy_lists.truncate(before.4);
-        tsrs_core::arena_rewind(cp);
+        // SAFETY: the checks above exclude diagnostics, directives, JSDoc, and escaping nodes;
+        // caches pin retained allocations, and nested lazy records have been truncated. The scanner
+        // stays at the closing brace, whose token text borrows the source.
+        unsafe { self.allocator.rewind(cp) };
         let record = P::new(tsrs_ast::lazylist::LazyNodeList::new(
             loc.pos().expect_source("parsed lists have source positions"),
             loc.end().expect_source("parsed lists have source positions"),
@@ -1079,7 +1114,7 @@ impl Parser {
     pub(crate) fn parse_list(
         &mut self,
         kind: ParsingContext,
-        mut parse_element: impl FnMut(&mut Parser) -> P<Node>,
+        mut parse_element: impl FnMut(&mut Parser<'alloc>) -> P<Node>,
     ) -> P<NodeList> {
         let pos = self.node_pos();
         let start = self.parse_list_index_on_stack(kind, |p, _| parse_element(p));
@@ -1098,7 +1133,7 @@ impl Parser {
     pub(crate) fn parse_delimited_list<R: Into<Option<P<Node>>>>(
         &mut self,
         kind: ParsingContext,
-        mut parse_element: impl FnMut(&mut Parser) -> R,
+        mut parse_element: impl FnMut(&mut Parser<'alloc>) -> R,
     ) -> Option<P<NodeList>> {
         let pos = self.node_pos();
         let save_parsing_contexts = self.parsing_contexts;
@@ -1170,7 +1205,7 @@ impl Parser {
     pub(crate) fn parse_bracketed_list<R: Into<Option<P<Node>>>>(
         &mut self,
         kind: ParsingContext,
-        parse_element: impl FnMut(&mut Parser) -> R,
+        parse_element: impl FnMut(&mut Parser<'alloc>) -> R,
         opening: Kind,
         closing: Kind,
     ) -> Option<P<NodeList>> {
@@ -1885,7 +1920,7 @@ pub(crate) fn is_declare_modifier(modifier: P<Node>) -> bool {
     modifier.kind() == Kind::DeclareKeyword
 }
 
-impl Parser {
+impl<'alloc> Parser<'alloc> {
     pub(crate) fn is_let_declaration(&mut self) -> bool {
         // In ES6 'let' always starts a lexical declaration if followed by an identifier or {
         // or [.
@@ -2381,7 +2416,8 @@ impl Parser {
         } else {
             let save_context_flags = self.context_flags;
             self.set_context_flags(NodeFlags::DisallowInContext, in_for_statement_initializer);
-            let parse_element: fn(&mut Parser) -> P<Node> = if in_for_statement_initializer {
+            let parse_element: fn(&mut Parser<'alloc>) -> P<Node> = if in_for_statement_initializer
+            {
                 Parser::parse_variable_declaration
             } else {
                 Parser::parse_variable_declaration_allow_exclamation
@@ -2722,7 +2758,7 @@ pub(crate) fn is_async_modifier(modifier: P<Node>) -> bool {
     modifier.kind() == Kind::AsyncKeyword
 }
 
-impl Parser {
+impl<'alloc> Parser<'alloc> {
     pub(crate) fn parse_heritage_clauses(&mut self, is_interface: bool) -> Option<P<NodeList>> {
         // ClassTail[Yield,Await] : (Modified) See 14.5
         //      ClassHeritage[?Yield,?Await]opt { ClassBody[?Yield,?Await]opt }
@@ -2738,7 +2774,7 @@ impl Parser {
         let pos = self.node_pos();
         let kind = self.token;
         self.next_token();
-        let mut parse_element: fn(&mut Parser) -> P<Node> =
+        let mut parse_element: fn(&mut Parser<'alloc>) -> P<Node> =
             Parser::parse_expression_with_type_arguments;
         if is_type_heritage_clause(is_interface, kind) {
             parse_element = Parser::parse_type_heritage_clause_element;
@@ -2757,7 +2793,7 @@ pub(crate) fn is_type_heritage_clause(is_interface: bool, token: Kind) -> bool {
         || !is_interface && token == Kind::ImplementsKeyword
 }
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_type_heritage_clause_element(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let node = self.parse_expression_with_type_arguments();
@@ -2786,7 +2822,7 @@ pub(crate) fn is_valid_heritage_type_reference_expression(node: P<Node>) -> bool
         && is_valid_heritage_type_reference_expression(node.expression().unwrap())
 }
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn convert_entity_name_expression_to_entity_name(
         &mut self,
         node: P<Node>,
@@ -3034,7 +3070,7 @@ pub(crate) fn modifier_list_has_async(modifiers: Option<P<ModifierList>>) -> boo
     modifiers.is_some_and(|modifiers| modifiers.nodes().iter().any(|m| is_async_modifier(*m)))
 }
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_property_declaration(
         &mut self,
         pos: u32,
@@ -3229,7 +3265,7 @@ pub(crate) fn get_space_suggestion(expression_text: &str) -> String {
     String::new()
 }
 
-impl Parser {
+impl Parser<'_> {
     pub(crate) fn parse_error_for_invalid_name(
         &mut self,
         name_diagnostic: &'static Message,
@@ -3702,8 +3738,9 @@ fn reparse_lazy_list(
     file: P<SourceFile>,
 ) -> &'static [P<Node>] {
     crate::jsdoc::init();
-    let mut p = new_parser();
-    p.initialize_state_static(file.parse_options().clone(), file.text(), file.script_kind());
+    let allocator = Allocator::current();
+    let mut p = new_parser(&allocator);
+    p.initialize_state_in(file.parse_options().clone(), file.text(), file.script_kind());
     p.source_text_index = file.text_index.get();
     p.scanner.reset_token_state(record.pos);
     p.next_token();

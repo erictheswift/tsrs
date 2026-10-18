@@ -1,4 +1,5 @@
 pub mod arena;
+pub use arena::Allocator;
 pub mod ptr;
 #[cfg(compressed_ptrs)]
 pub mod reserve;

@@ -1,16 +1,17 @@
 //! Scanner API notes for consumers (parser, checker):
 //!
-//! Text and positions. The scanner scans a `&'static str` (for the parser, the file's source text: leaked,
-//! embedded, or copied into the current arena or region; other callers pass their own static or `alloc_str` text).
-//! Positions are unsigned byte offsets. Scanner EOF is represented separately from rune values.
+//! Text and positions. `Scanner<'alloc>::new_in` borrows an `Allocator` and scans `&'alloc str`.
+//! Parser input is embedded text, owned text, or text copied into that allocator. Other scoped
+//! callers can borrow their own strings. Positions are unsigned byte offsets; EOF is separate.
 //!
-//! Token values. `token_value()` returns `&'static str`. When the Go scanner would produce a
-//! substring of the source text (the overwhelmingly common case: identifiers, keywords, simple
-//! strings, numbers that are already canonical) this is a slice of the source text and costs
-//! nothing. When the value is computed (escape sequences, numeric separators, normalized numbers,
-//! template literals containing `\r`) it is allocated with `alloc_str` in the current allocation
-//! target (the thread arena, or the entered region), where the parser also allocates nodes, so the
-//! parser can store token values in nodes directly without copying.
+//! Token values. `token_value()` returns `&'alloc str`. Identifiers, simple strings, and canonical
+//! numbers borrow the source text without copying. Computed values (escapes, numeric separators,
+//! normalized numbers, and templates containing `\r`) use the captured allocator, even when another
+//! region is entered. Snapshots and numeric caches carry the same lifetime. Reset preserves the allocator.
+//!
+//! Compatibility. `Scanner::new()` creates a legacy `Scanner<'static>` whose computed values use
+//! the current allocation target. Its caller must still keep all referenced regions alive. The parser
+//! uses the scoped path and explicitly adapts its output to the AST's legacy ownership contract.
 //!
 //! Errors (Go `ErrorCallback` / `SetOnError`). Go's scanner calls a callback synchronously. In
 //! Rust the parser owns the scanner and is itself a `&mut self` state machine, so the scanner
@@ -42,7 +43,8 @@ use tsrs_ast::{
     SourceFileLike, TokenFlags,
 };
 use tsrs_core::{
-    ArenaStringBuilder, LanguageVariant, P, ScriptTarget, TextRange, UTF16Offset, alloc_str, jsnum,
+    Allocator, ArenaStringBuilder, LanguageVariant, P, ScriptTarget, TextRange, UTF16Offset,
+    alloc_str, jsnum,
     stringutil::{self, Rune},
 };
 use tsrs_diagnostics as diagnostics;
@@ -306,43 +308,95 @@ fn text_to_token() -> &'static FxHashMap<&'static str, Kind> {
 }
 
 #[derive(Clone, Copy, Debug, Default)]
-pub struct ScannerState {
+pub struct ScannerState<'alloc> {
     pub(crate) pos: u32, // Current position in text (and ending position of current token)
     pub(crate) full_start_pos: u32, // Starting position of current token including preceding whitespace
     pub(crate) token_start: u32,    // Starting position of non-whitespace part of current token
     pub(crate) token: Kind,         // Kind of current token
-    pub(crate) token_value: &'static str, // Parsed value of current token
+    pub(crate) token_value: &'alloc str, // Parsed value of current token
     pub(crate) token_flags: TokenFlags, // Flags for current token
-    pub(crate) comment_directives: &'static [CommentDirective], // a snapshot, like Go's slice header: Rewind restores it
+    pub(crate) comment_directives: &'alloc [CommentDirective], // a snapshot, like Go's slice header: Rewind restores it
     pub(crate) skip_jsdoc_leading_asterisks: u32, // Leading asterisks to skip when scanning types inside JSDoc. Should be 0 outside JSDoc
 }
 
-#[derive(Default)]
-pub struct Scanner {
-    pub(crate) text: &'static str,
+/// Source text, computed values, and snapshots cannot outlive their borrowed allocator.
+///
+/// ```compile_fail,E0597
+/// use tsrs_core::Allocator;
+/// use tsrs_scanner::Scanner;
+/// let mut scanner = {
+///     let allocator = Allocator::current();
+///     Scanner::new_in(&allocator)
+/// };
+/// scanner.scan();
+/// ```
+///
+/// ```compile_fail,E0597
+/// use tsrs_core::Allocator;
+/// use tsrs_scanner::Scanner;
+/// let value = {
+///     let allocator = Allocator::current();
+///     let mut scanner = Scanner::new_in(&allocator);
+///     scanner.set_text("1_2");
+///     scanner.scan();
+///     scanner.token_value()
+/// };
+/// println!("{value}");
+/// ```
+///
+/// ```compile_fail,E0597
+/// use tsrs_core::Allocator;
+/// use tsrs_scanner::Scanner;
+/// let state = {
+///     let allocator = Allocator::current();
+///     let mut scanner = Scanner::new_in(&allocator);
+///     scanner.set_text("1_2");
+///     scanner.scan();
+///     scanner.mark()
+/// };
+/// println!("{state:?}");
+/// ```
+///
+/// Borrowing a caller's string also constrains the scanner's lifetime.
+///
+/// ```compile_fail,E0597
+/// use tsrs_core::Allocator;
+/// use tsrs_scanner::Scanner;
+/// let allocator = Allocator::current();
+/// let mut scanner = Scanner::new_in(&allocator);
+/// {
+///     let text = String::from("temporary");
+///     scanner.set_text(&text);
+/// }
+/// scanner.scan();
+/// ```
+pub struct Scanner<'alloc> {
+    allocator: Option<&'alloc Allocator>,
+    pub(crate) text: &'alloc str,
     pub(crate) end: u32,
     language_variant: LanguageVariant,
     script_target: ScriptTarget,
     on_error: bool,
     errors: Vec<ScanError>,
     skip_trivia: bool,
-    pub(crate) state: ScannerState,
+    pub(crate) state: ScannerState<'alloc>,
 
-    number_cache: FxHashMap<&'static str, &'static str>,
-    hex_number_cache: FxHashMap<&'static str, &'static str>,
-    hex_digit_cache: FxHashMap<&'static str, &'static str>,
+    number_cache: FxHashMap<&'alloc str, &'alloc str>,
+    hex_number_cache: FxHashMap<&'alloc str, &'alloc str>,
+    hex_digit_cache: FxHashMap<&'alloc str, &'alloc str>,
 }
 
 // Like Oxc's byte handlers, dispatch out of the token loop so simple tokens do not
 // pay for the stack frame of numeric, comment, and Unicode scanning. None is the
 // old `continue 'scan` for skipped trivia; Some returns the token kind directly.
-type ByteHandler = fn(&mut Scanner) -> Option<Kind>;
+type ByteHandler<'alloc> = fn(&mut Scanner<'alloc>) -> Option<Kind>;
 
-static BYTE_HANDLERS: [ByteHandler; 256] = {
-    let mut table = [Scanner::scan_byte_default as ByteHandler; 256];
-    let mut byte = 0;
-    while byte < table.len() {
-        table[byte] = match byte as u8 {
+impl<'alloc> Scanner<'alloc> {
+    const BYTE_HANDLERS: [ByteHandler<'alloc>; 256] = {
+        let mut table = [Scanner::scan_byte_default as ByteHandler<'alloc>; 256];
+        let mut byte = 0;
+        while byte < table.len() {
+            table[byte] = match byte as u8 {
             0x09 | 0x0B | 0x0C | 0x20 => Scanner::scan_byte_whitespace,
             0x0A | 0x0D => Scanner::scan_byte_line_break,
             0x21 /* ! */ => Scanner::scan_byte_exclamation,
@@ -378,10 +432,11 @@ static BYTE_HANDLERS: [ByteHandler; 256] = {
             b'a'..=b'z' | b'A'..=b'Z' | b'_' | b'$' => Scanner::scan_byte_identifier,
             _ => Scanner::scan_byte_default,
         };
-        byte += 1;
-    }
-    table
-};
+            byte += 1;
+        }
+        table
+    };
+}
 
 pub(crate) const RUNE_SELF: Rune = 0x80;
 
@@ -517,13 +572,65 @@ pub(crate) fn rune_string(r: Rune) -> String {
     rune_to_char(r).to_string()
 }
 
-impl Scanner {
-    fn default_scanner() -> Scanner {
-        Scanner { skip_trivia: true, ..Default::default() }
+impl Scanner<'static> {
+    /// Legacy scanner using the ambient allocation target. Its text, snapshots, and token values
+    /// must not outlive their regions. Use `new_in` for allocator-bound data.
+    pub fn new() -> Self {
+        Self::default_scanner(None)
+    }
+}
+
+#[expect(
+    clippy::derivable_impls,
+    reason = "only the legacy Scanner<'static> has a default allocator; scoped scanners require new_in"
+)]
+impl Default for Scanner<'static> {
+    fn default() -> Self {
+        Self { skip_trivia: false, ..Self::default_scanner(None) }
+    }
+}
+
+impl<'alloc> Scanner<'alloc> {
+    fn default_scanner(allocator: Option<&'alloc Allocator>) -> Self {
+        Self {
+            allocator,
+            text: "",
+            end: 0,
+            language_variant: LanguageVariant::default(),
+            script_target: ScriptTarget::default(),
+            on_error: false,
+            errors: Vec::new(),
+            skip_trivia: true,
+            state: ScannerState::default(),
+            number_cache: FxHashMap::default(),
+            hex_number_cache: FxHashMap::default(),
+            hex_digit_cache: FxHashMap::default(),
+        }
     }
 
-    pub fn new() -> Scanner {
-        Scanner::default_scanner()
+    pub fn new_in(allocator: &'alloc Allocator) -> Self {
+        Self::default_scanner(Some(allocator))
+    }
+
+    fn alloc_str(&self, text: &str) -> &'alloc str {
+        match self.allocator {
+            Some(allocator) => allocator.alloc_str(text),
+            None => alloc_str(text),
+        }
+    }
+
+    fn string_builder(&self, capacity: usize) -> ArenaStringBuilder<'alloc> {
+        match self.allocator {
+            Some(allocator) => ArenaStringBuilder::with_capacity_in(allocator, capacity),
+            None => ArenaStringBuilder::with_capacity(capacity),
+        }
+    }
+
+    fn pin(&self) {
+        match self.allocator {
+            Some(allocator) => allocator.pin(),
+            None => tsrs_core::arena_pin(),
+        }
     }
 
     pub fn reset(&mut self) {
@@ -533,13 +640,13 @@ impl Scanner {
         number_cache.clear();
         hex_number_cache.clear();
         hex_digit_cache.clear();
-        *self = Scanner::default_scanner();
+        *self = Self::default_scanner(self.allocator);
         self.number_cache = number_cache;
         self.hex_number_cache = hex_number_cache;
         self.hex_digit_cache = hex_digit_cache;
     }
 
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.text
     }
 
@@ -552,7 +659,7 @@ impl Scanner {
             s.is_empty() || (p >= t && p + s.len() <= t + self.text.len())
         };
         if !in_text(key) || !in_text(value) {
-            tsrs_core::arena_pin();
+            self.pin();
         }
     }
 
@@ -576,11 +683,11 @@ impl Scanner {
         self.state.pos
     }
 
-    pub fn token_text(&self) -> &'static str {
+    pub fn token_text(&self) -> &'alloc str {
         &self.text[self.state.token_start as usize..self.state.pos as usize]
     }
 
-    pub fn token_value(&self) -> &'static str {
+    pub fn token_value(&self) -> &'alloc str {
         self.state.token_value
     }
 
@@ -588,15 +695,15 @@ impl Scanner {
         TextRange::new(self.state.token_start, self.state.pos)
     }
 
-    pub fn comment_directives(&self) -> &'static [CommentDirective] {
+    pub fn comment_directives(&self) -> &'alloc [CommentDirective] {
         self.state.comment_directives
     }
 
-    pub fn mark(&self) -> ScannerState {
+    pub fn mark(&self) -> ScannerState<'alloc> {
         self.state
     }
 
-    pub fn rewind(&mut self, state: ScannerState) {
+    pub fn rewind(&mut self, state: ScannerState<'alloc>) {
         self.state = state;
     }
 
@@ -695,7 +802,7 @@ impl Scanner {
         }
     }
 
-    pub fn set_text(&mut self, text: &'static str) {
+    pub fn set_text(&mut self, text: &'alloc str) {
         self.text = text;
         self.end = text.len() as u32;
         self.state = ScannerState::default();
@@ -833,13 +940,13 @@ impl Scanner {
     }
 
     #[inline]
-    fn slice(&self, start: u32, end: u32) -> &'static str {
+    fn slice(&self, start: u32, end: u32) -> &'alloc str {
         &self.text[start as usize..end as usize]
     }
 
     /// Go `a + b` for two token-value fragments: when `b` directly follows `a` in the source
     /// text the result is the covering text slice, otherwise it is arena-allocated.
-    fn concat_value(&self, a: &'static str, b: &str) -> &'static str {
+    fn concat_value(&self, a: &'alloc str, b: &str) -> &'alloc str {
         if b.is_empty() {
             return a;
         }
@@ -854,21 +961,21 @@ impl Scanner {
             let start = a_start - base;
             return &self.text[start..start + a.len() + b.len()];
         }
-        let mut s = ArenaStringBuilder::with_capacity(a.len() + b.len());
+        let mut s = self.string_builder(a.len() + b.len());
         s.push_str(a);
         s.push_str(b);
         s.into_str()
     }
 
-    /// Returns `s` as a `'static` value without copying if it already is a slice of the text.
-    fn intern_value(&self, s: &str) -> &'static str {
+    /// Borrows `s` from the input when possible; otherwise copies it into the allocator.
+    fn intern_value(&self, s: &str) -> &'alloc str {
         let base = self.text.as_ptr() as usize;
         let p = s.as_ptr() as usize;
         if p >= base && p + s.len() <= base + self.text.len() {
             let start = p - base;
             return &self.text[start..start + s.len()];
         }
-        alloc_str(s)
+        self.alloc_str(s)
     }
 
     pub fn scan(&mut self) -> Kind {
@@ -900,7 +1007,7 @@ impl Scanner {
             };
             self.state.pos = pos;
             self.state.token_start = pos;
-            if let Some(token) = BYTE_HANDLERS[byte as usize](self) {
+            if let Some(token) = Self::BYTE_HANDLERS[byte as usize](self) {
                 self.state.token = token;
                 return token;
             }
@@ -1267,7 +1374,7 @@ impl Scanner {
                     } else if let Some(&cached_value) = self.hex_number_cache.get(digits) {
                         self.state.token_value = cached_value;
                     } else {
-                        let mut value = ArenaStringBuilder::with_capacity(2 + digits.len());
+                        let mut value = self.string_builder(2 + digits.len());
                         value.push_str("0x");
                         value.push_str(digits);
                         self.state.token_value = value.into_str();
@@ -1668,7 +1775,10 @@ impl Scanner {
         // but never rewrites elements below a saved length).
         let mut directives = self.state.comment_directives.to_vec();
         directives.push(CommentDirective { loc: TextRange::new(start, end), kind });
-        self.state.comment_directives = tsrs_core::alloc_vec(directives);
+        self.state.comment_directives = match self.allocator {
+            Some(allocator) => allocator.alloc_vec(directives),
+            None => tsrs_core::alloc_vec(directives),
+        };
     }
 
     pub fn re_scan_less_than_token(&mut self) -> Kind {
@@ -1889,7 +1999,7 @@ impl Scanner {
                     let save_token_pos = self.state.token_start;
                     let save_token_flags = self.state.token_flags;
                     self.end = end_of_reg_exp_body;
-                    let scanner = std::mem::take(self);
+                    let scanner = std::mem::replace(self, Self::default_scanner(self.allocator));
                     let mut parser = RegExpParser::new(
                         scanner,
                         end_of_reg_exp_body,
@@ -2233,8 +2343,7 @@ impl Scanner {
                 is_identifier_start,
                 variant == IdentifierVariant::RegExpGroupName,
             ) {
-                let mut value =
-                    ArenaStringBuilder::with_capacity((self.state.pos - start) as usize * 2);
+                let mut value = self.string_builder((self.state.pos - start) as usize * 2);
                 value.push_str(self.slice(start, identifier_start));
                 value.push(rune_to_char(escaped));
                 value.push_str(self.scan_identifier_parts(variant));
@@ -2245,8 +2354,8 @@ impl Scanner {
         false
     }
 
-    fn scan_identifier_parts(&mut self, variant: IdentifierVariant) -> &'static str {
-        let mut sb: Option<ArenaStringBuilder> = None;
+    fn scan_identifier_parts(&mut self, variant: IdentifierVariant) -> &'alloc str {
+        let mut sb: Option<ArenaStringBuilder<'alloc>> = None;
         let mut start = self.state.pos;
         let language_variant = if variant == IdentifierVariant::JSX {
             LanguageVariant::JSX
@@ -2266,9 +2375,7 @@ impl Scanner {
                     variant == IdentifierVariant::RegExpGroupName,
                 ) {
                     let so_far = (escape_start - start) as usize;
-                    let sb = sb.get_or_insert_with(|| {
-                        ArenaStringBuilder::with_capacity((so_far * 2).max(16))
-                    });
+                    let sb = sb.get_or_insert_with(|| self.string_builder((so_far * 2).max(16)));
                     sb.push_str(self.slice(start, escape_start));
                     sb.push(rune_to_char(escaped));
                     start = self.state.pos;
@@ -2320,7 +2427,7 @@ impl Scanner {
         None
     }
 
-    fn scan_string(&mut self, jsx_attribute_string: bool) -> &'static str {
+    fn scan_string(&mut self, jsx_attribute_string: bool) -> &'alloc str {
         let quote = self.char().expect("scan_string starts at a quote");
         if quote == b'\'' {
             self.state.token_flags |= TokenFlags::SingleQuote;
@@ -2371,12 +2478,12 @@ impl Scanner {
 
     #[cold]
     #[inline(never)]
-    fn scan_string_slow(&mut self, quote: u8, mut start: u32, table: &[bool; 256]) -> &'static str {
+    fn scan_string_slow(&mut self, quote: u8, mut start: u32, table: &[bool; 256]) -> &'alloc str {
         // Keep the original first-quote capacity estimate on the allocating path.
         let rest = &self.text.as_bytes()[self.state.pos as usize..];
         let capacity = memchr::memchr(quote, rest)
             .map_or(16, |offset| (self.state.pos - start) as usize + offset);
-        let mut sb = ArenaStringBuilder::with_capacity(capacity);
+        let mut sb = self.string_builder(capacity);
         loop {
             sb.push_str(self.slice(start, self.state.pos));
             let Some(ch) = self.char() else {
@@ -2413,7 +2520,7 @@ impl Scanner {
         self.state.pos += 1;
         let mut start = self.state.pos;
         // Go collects the parts in a slice and joins them; a single untouched part is a text slice.
-        let mut parts: Option<ArenaStringBuilder> = None;
+        let mut parts: Option<ArenaStringBuilder<'alloc>> = None;
         let token;
         loop {
             self.scan_ascii_while(|b| b != b'`' && b != b'$' && b != b'\\' && b != b'\r');
@@ -2444,8 +2551,7 @@ impl Scanner {
             }
             if ch == Some(b'\\') {
                 let so_far = (self.state.pos - start) as usize;
-                let buf = parts
-                    .get_or_insert_with(|| ArenaStringBuilder::with_capacity((so_far * 2).max(16)));
+                let buf = parts.get_or_insert_with(|| self.string_builder((so_far * 2).max(16)));
                 buf.push_str(self.slice(start, self.state.pos));
                 let flags = EscapeSequenceScanningFlags::String
                     | if should_emit_invalid_escape_error {
@@ -2462,8 +2568,7 @@ impl Scanner {
             // <CR><LF> and <CR> LineTerminatorSequences are normalized to <LF> for Template Values
             if ch == Some(b'\r') {
                 let so_far = (self.state.pos - start) as usize;
-                let buf = parts
-                    .get_or_insert_with(|| ArenaStringBuilder::with_capacity((so_far * 2).max(16)));
+                let buf = parts.get_or_insert_with(|| self.string_builder((so_far * 2).max(16)));
                 buf.push_str(self.slice(start, self.state.pos));
                 self.state.pos += 1;
                 if self.char() == Some(b'\n') {
@@ -2480,7 +2585,7 @@ impl Scanner {
 
     fn finish_template_parts(
         &mut self,
-        parts: &mut Option<ArenaStringBuilder>,
+        parts: &mut Option<ArenaStringBuilder<'alloc>>,
         start: u32,
         end: u32,
     ) {
@@ -2496,7 +2601,7 @@ impl Scanner {
     pub(crate) fn scan_escape_sequence(
         &mut self,
         flags: EscapeSequenceScanningFlags,
-    ) -> Cow<'static, str> {
+    ) -> Cow<'alloc, str> {
         let start = self.state.pos;
         self.state.pos += 1;
         let Some(ch) = self.char() else {
@@ -2790,7 +2895,7 @@ impl Scanner {
 
     fn scan_number(&mut self) -> Kind {
         let mut start = self.state.pos;
-        let fixed_part: Cow<'static, str>;
+        let fixed_part: Cow<'alloc, str>;
         if self.char() == Some(b'0') {
             self.state.pos += 1;
             if self.char() == Some(b'_') {
@@ -2813,7 +2918,7 @@ impl Scanner {
                     fixed_part = Cow::Borrowed(digits);
                 } else {
                     let val = parse_int_64(digits, 8);
-                    let mut value = ArenaStringBuilder::with_capacity(digits.len());
+                    let mut value = self.string_builder(digits.len());
                     write!(value, "{val}").unwrap();
                     self.state.token_value = value.into_str();
                     self.state.token_flags |= TokenFlags::Octal;
@@ -2835,9 +2940,9 @@ impl Scanner {
             fixed_part = self.scan_number_fragment();
         }
         let fixed_part_end = self.state.pos;
-        let mut fractional_part: Cow<'static, str> = Cow::Borrowed("");
+        let mut fractional_part: Cow<'alloc, str> = Cow::Borrowed("");
         let mut exponent_preamble = "";
-        let mut exponent_part: Cow<'static, str> = Cow::Borrowed("");
+        let mut exponent_part: Cow<'alloc, str> = Cow::Borrowed("");
         if self.char() == Some(b'.') {
             self.state.pos += 1;
             fractional_part = self.scan_number_fragment();
@@ -2864,7 +2969,7 @@ impl Scanner {
                 + fractional_part.len()
                 + exponent_preamble.len()
                 + exponent_part.len();
-            let mut value = ArenaStringBuilder::with_capacity(capacity);
+            let mut value = self.string_builder(capacity);
             value.push_str(&fixed_part);
             if !fractional_part.is_empty() {
                 value.push('.');
@@ -2885,14 +2990,14 @@ impl Scanner {
                 self.state.pos - start,
                 &[],
             );
-            self.state.token_value = Self::canonical_number(self.state.token_value);
+            self.state.token_value = self.canonical_number(self.state.token_value);
             return Kind::NumericLiteral;
         }
 
         let result = if fixed_part_end == self.state.pos {
             self.scan_big_int_suffix()
         } else {
-            self.state.token_value = Self::canonical_number(self.state.token_value);
+            self.state.token_value = self.canonical_number(self.state.token_value);
             Kind::NumericLiteral
         };
         let (ch, _) = self.char_and_size();
@@ -2934,7 +3039,7 @@ impl Scanner {
     }
 
     /// Go `jsnum.FromString(v).String()`, reusing `v` when it is already canonical.
-    fn canonical_number(v: &'static str) -> &'static str {
+    fn canonical_number(&self, v: &'alloc str) -> &'alloc str {
         // Every decimal integer with at most 15 digits is a safe integer. Its scanner spelling is canonical when it
         // has no leading zero, so neither conversion nor a temporary formatting String is needed. Longer integers,
         // fractions and exponents still go through Number::string for ECMAScript rounding and formatting.
@@ -2950,10 +3055,10 @@ impl Scanner {
         if s == v {
             return v;
         }
-        alloc_str(&s)
+        self.alloc_str(&s)
     }
 
-    fn scan_number_fragment(&mut self) -> Cow<'static, str> {
+    fn scan_number_fragment(&mut self) -> Cow<'alloc, str> {
         let mut start = self.state.pos;
         let mut allow_separator = false;
         let mut is_previous_token_separator = false;
@@ -3012,7 +3117,7 @@ impl Scanner {
         Cow::Owned(result)
     }
 
-    fn scan_digits(&mut self) -> (&'static str, bool) {
+    fn scan_digits(&mut self) -> (&'alloc str, bool) {
         let start = self.state.pos;
         let mut is_octal = true;
         while self.char().is_some_and(|ch| stringutil::is_digit(u32::from(ch))) {
@@ -3029,7 +3134,7 @@ impl Scanner {
         min_count: u32,
         scan_as_many_as_possible: bool,
         can_have_separators: bool,
-    ) -> &'static str {
+    ) -> &'alloc str {
         let mut digit_count = 0;
         let start = self.state.pos;
         let mut allow_separator = false;
@@ -3089,7 +3194,7 @@ impl Scanner {
             let has_separator = self.state.token_flags.intersects(TokenFlags::ContainsSeparator);
             let has_uppercase = digits.bytes().any(|b| b.is_ascii_uppercase());
             let digits = if has_separator || has_uppercase {
-                let mut result = ArenaStringBuilder::with_capacity(digits.len());
+                let mut result = self.string_builder(digits.len());
                 for byte in digits.bytes() {
                     if byte != b'_' {
                         result.push(byte.to_ascii_lowercase() as char);
@@ -3105,8 +3210,8 @@ impl Scanner {
         }
     }
 
-    fn scan_binary_or_octal_digits(&mut self, base: u8, prefix: &str) -> (&'static str, bool) {
-        let mut sb = ArenaStringBuilder::with_capacity(16);
+    fn scan_binary_or_octal_digits(&mut self, base: u8, prefix: &str) -> (&'alloc str, bool) {
+        let mut sb = self.string_builder(16);
         sb.push_str(prefix);
         let mut has_digits = false;
         let mut allow_separator = false;
@@ -3162,7 +3267,7 @@ impl Scanner {
             self.state.token_value = self.concat_value(self.state.token_value, n);
             if self.state.token_flags.intersects(TokenFlags::BinaryOrOctalSpecifier) {
                 self.state.token_value =
-                    alloc_str(&(jsnum::parse_pseudo_big_int(self.state.token_value) + "n"));
+                    self.alloc_str(&(jsnum::parse_pseudo_big_int(self.state.token_value) + "n"));
             }
             self.state.pos += 1;
             return Kind::BigIntLiteral;
@@ -3171,7 +3276,7 @@ impl Scanner {
             self.state.token_value = cached;
         } else {
             let original = self.state.token_value;
-            let token_value = Self::canonical_number(original);
+            let token_value = self.canonical_number(original);
             if token_value != original {
                 self.pin_unless_source(original, token_value);
                 self.number_cache.insert(original, token_value);
@@ -3532,7 +3637,7 @@ pub fn get_shebang(text: &str) -> &str {
     &text[..end as usize]
 }
 
-pub fn get_scanner_for_source_file(source_file: P<SourceFile>, pos: u32) -> Scanner {
+pub fn get_scanner_for_source_file(source_file: P<SourceFile>, pos: u32) -> Scanner<'static> {
     let mut s = Scanner::new();
     s.text = source_file.text();
     s.state.pos = pos;
@@ -3956,11 +4061,11 @@ fn new_comment_range(kind: Kind, pos: u32, end: u32, has_trailing_new_line: bool
     CommentRange { text_range: TextRange::new(pos, end), kind, has_trailing_new_line }
 }
 
-pub fn get_leading_comment_ranges(text: &'static str, pos: u32) -> CommentRangeIter {
+pub fn get_leading_comment_ranges(text: &str, pos: u32) -> CommentRangeIter<'_> {
     iterate_comment_ranges(text, pos, false)
 }
 
-pub fn get_trailing_comment_ranges(text: &'static str, pos: u32) -> CommentRangeIter {
+pub fn get_trailing_comment_ranges(text: &str, pos: u32) -> CommentRangeIter<'_> {
     iterate_comment_ranges(text, pos, true)
 }
 
@@ -3970,7 +4075,7 @@ Single-line comment ranges include the leading double-slash characters but not t
 line break. Multi-line comment ranges include the leading slash-asterisk and trailing
 asterisk-slash characters.
 */
-fn iterate_comment_ranges(text: &'static str, pos: u32, trailing: bool) -> CommentRangeIter {
+fn iterate_comment_ranges(text: &str, pos: u32, trailing: bool) -> CommentRangeIter<'_> {
     let mut pos = pos;
     let mut collecting = trailing;
     if pos == 0 {
@@ -3995,8 +4100,8 @@ fn iterate_comment_ranges(text: &'static str, pos: u32, trailing: bool) -> Comme
 
 /// The Go `iter.Seq[ast.CommentRange]` returned by `GetLeadingCommentRanges` /
 /// `GetTrailingCommentRanges`, as an explicit state machine.
-pub struct CommentRangeIter {
-    text: &'static str,
+pub struct CommentRangeIter<'text> {
+    text: &'text str,
     pos: u32,
     trailing: bool,
     collecting: bool,
@@ -4008,7 +4113,7 @@ pub struct CommentRangeIter {
     done: bool,
 }
 
-impl Iterator for CommentRangeIter {
+impl Iterator for CommentRangeIter<'_> {
     type Item = CommentRange;
 
     fn next(&mut self) -> Option<CommentRange> {

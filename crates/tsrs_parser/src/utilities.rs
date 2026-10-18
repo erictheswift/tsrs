@@ -24,7 +24,7 @@ pub fn get_jsdoc_comment_ranges(
     _f: &mut NodeFactory,
     comment_ranges: &[CommentRange],
     node: P<Node>,
-    text: &'static str,
+    text: &str,
 ) -> Vec<CommentRange> {
     let mut comment_ranges = comment_ranges.to_vec();
     let node_pos = node.pos().expect_source("parsed nodes have source positions");
