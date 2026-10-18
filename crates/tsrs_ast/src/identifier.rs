@@ -44,7 +44,10 @@ static SOURCE_TEXT_COUNT: AtomicU32 = AtomicU32::new(0);
 
 /// Registers a file's text for compact identifiers; `NO_SOURCE_TEXT` once the table is full (identifiers of later
 /// files then store their text).
-pub fn register_source_text(text: &'static str) -> u32 {
+///
+/// # Safety
+/// Retain `text` until its index is unregistered and all identifiers using it are unreachable.
+pub unsafe fn register_source_text(text: &str) -> u32 {
     let Ok(index) = SOURCE_TEXT_COUNT
         .try_update(Relaxed, Relaxed, |n| ((n as usize) < SOURCE_TEXTS_CAP).then(|| n + 1))
     else {
@@ -78,7 +81,7 @@ fn source_text_ptr(index: u32) -> *const u8 {
 )]
 fn source_text(index: u32) -> &'static str {
     let slot = &SOURCE_TEXTS[index as usize];
-    // SAFETY: the slot was stored from a `&'static str` by `register_source_text` (see the static's comment).
+    // SAFETY: the registration contract retains the text for every identifier access (see the static's comment).
     unsafe {
         std::str::from_utf8_unchecked(std::slice::from_raw_parts(
             // Relaxed: the source text is published before readers run (see the static's comment).
@@ -111,12 +114,12 @@ pub struct Identifier {
 }
 
 #[repr(C)]
-struct IdentifierWithText {
+struct IdentifierWithText<'alloc> {
     identifier: Identifier,
-    text: PackedStr,
+    text: PackedStr<'alloc>,
 }
 
-impl NodePayload for IdentifierWithText {
+impl NodePayload for IdentifierWithText<'_> {
     const TAG: NodeDataTag = NodeDataTag::Identifier;
 }
 
@@ -200,7 +203,9 @@ impl Identifier {
     #[cold]
     fn stored_text(&self) -> &'static str {
         // SAFETY: identifiers in `MODE_TEXT` were allocated as `IdentifierWithText` (`repr(C)`, identifier first).
-        unsafe { tsrs_core::ptr::arena_neighbor::<_, IdentifierWithText>(self, 0) }.text.as_str()
+        unsafe { tsrs_core::ptr::arena_neighbor::<_, IdentifierWithText<'static>>(self, 0) }
+            .text
+            .as_str()
     }
 
     #[inline]
@@ -265,13 +270,12 @@ impl Identifier {
 
 impl<'alloc> NodeFactory<'alloc> {
     pub fn new_identifier(&self, text: &'alloc str) -> P<Node> {
-        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::Identifier,
             IdentifierWithText {
                 identifier: Identifier { word: OwnedCell::new(MODE_TEXT << MODE_SHIFT) },
-                text: PackedStr::new(text),
+                text: self.pack_text(text),
             },
         )
     }

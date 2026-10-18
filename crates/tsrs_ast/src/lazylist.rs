@@ -47,7 +47,7 @@ pub const CLASS_MEMBERS: u8 = 5;
 static LAZY_HEAD_DATA: [P<Node>; 0] = [];
 
 #[inline]
-pub(crate) fn is_lazy_head(s: &'static [P<Node>]) -> bool {
+pub(crate) fn is_lazy_head(s: &[P<Node>]) -> bool {
     std::ptr::eq(s.as_ptr(), LAZY_HEAD_DATA.as_ptr())
 }
 
@@ -148,8 +148,9 @@ impl LazyNodeList {
     }
 
     /// # Safety
-    /// `head` is the `head` field of a live `LazyNodeList` (a lazy `NodeList`'s long-form slice).
-    pub(crate) unsafe fn from_head(head: &'static &'static [P<Node>]) -> &'static LazyNodeList {
+    /// `head` is the first field of a live, arena-allocated `LazyNodeList`, whose whole
+    /// allocation has exposed provenance (a raw compiler list's long-form slice).
+    pub(crate) unsafe fn from_head<'a>(head: &'a &'a [P<Node>]) -> &'a LazyNodeList {
         // SAFETY: `head` is the first field of a `repr(C)` `LazyNodeList` (this function's contract).
         unsafe { tsrs_core::ptr::arena_neighbor(head, 0) }
     }

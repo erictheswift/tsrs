@@ -287,7 +287,7 @@ impl<T> OwnedSliceCell<T> {
 }
 
 /// `OwnedCell<&'static str>` in 8 bytes (a `PackedStr`); `get` returns the text last `set`.
-pub struct OwnedStrCell(Cell<crate::ptr::PackedStr>);
+pub struct OwnedStrCell(Cell<crate::ptr::PackedStr<'static>>);
 
 impl OwnedStrCell {
     #[inline]

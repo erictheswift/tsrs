@@ -95,3 +95,44 @@ fn scoped_parse_routing_restores_nested_scratch_and_diagnostics_on_unwind() {
     let text = tsrs_core::alloc_str("restored diagnostic routing");
     assert!(Region::containing(text.as_ptr().addr()).unwrap().ptr_eq(&diagnostics));
 }
+
+#[test]
+fn borrowed_raw_payloads_drop_with_their_allocation_region() {
+    struct Borrowed<'a> {
+        text: &'a str,
+        dropped: &'a AtomicBool,
+    }
+    impl Drop for Borrowed<'_> {
+        fn drop(&mut self) {
+            assert_eq!(self.text, "borrowed");
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    let text = String::from("borrowed");
+    let captured_dropped = AtomicBool::new(false);
+    let ambient_dropped = AtomicBool::new(false);
+    {
+        let region = Region::new(4096);
+        let _scope = region.enter();
+        let allocator = Allocator::current();
+        {
+            let nested = Region::new(4096);
+            let _scope = nested.enter();
+            // SAFETY: text and both drop flags outlive reclamation of both regions.
+            let (captured, ambient) = unsafe {
+                (
+                    allocator.alloc_raw(Borrowed { text: &text, dropped: &captured_dropped }),
+                    tsrs_core::ptr::alloc_raw_in(
+                        false,
+                        Borrowed { text: &text, dropped: &ambient_dropped },
+                    ),
+                )
+            };
+            assert!(Region::containing(captured.addr().get()).unwrap().ptr_eq(&region));
+            assert!(Region::containing(ambient.addr().get()).unwrap().ptr_eq(&nested));
+        }
+        assert!(ambient_dropped.load(Ordering::SeqCst));
+        assert!(!captured_dropped.load(Ordering::SeqCst));
+    }
+    assert!(captured_dropped.load(Ordering::SeqCst));
+}

@@ -3518,7 +3518,7 @@ pub(crate) struct LazyMemberTable {
     pub(crate) ready: std::cell::OnceCell<LazyMembers>,
     pub(crate) declared: SymbolTable, // keyed by the declared members' names
     // notes/mem-lazy.md L10: getPropertiesOfType order with declared members standing in (getLazyPropertiesInOrder).
-    pub(crate) ordered_properties: std::cell::OnceCell<ThinSlice<P<Symbol>>>,
+    pub(crate) ordered_properties: std::cell::OnceCell<ThinSlice<'static, P<Symbol>>>,
 }
 
 // 80 bytes in release builds (the symbol table is 24; debug builds add a borrow flag to it).
@@ -3531,11 +3531,11 @@ const _: () =
 
 #[derive(Clone)]
 pub(crate) struct LazyMembers {
-    pub(crate) unaffected: ThinSlice<&'static str>, // sorted names of declared members that instantiate to themselves
-    pub(crate) call_signatures: ThinSlice<P<Signature>>,
-    pub(crate) construct_signatures: ThinSlice<P<Signature>>,
-    pub(crate) index_infos: ThinSlice<P<IndexInfo>>,
-    pub(crate) base_types: ThinSlice<P<Type>>,
+    pub(crate) unaffected: ThinSlice<'static, &'static str>, // sorted names of declared members that instantiate to themselves
+    pub(crate) call_signatures: ThinSlice<'static, P<Signature>>,
+    pub(crate) construct_signatures: ThinSlice<'static, P<Signature>>,
+    pub(crate) index_infos: ThinSlice<'static, P<IndexInfo>>,
+    pub(crate) base_types: ThinSlice<'static, P<Type>>,
 }
 
 /// What `lazy_unaffected_members` keeps per generic target: the declared-member table it describes, the sorted

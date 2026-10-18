@@ -8,8 +8,8 @@ use rustc_hash::FxHashMap;
 use tsrs_core::collections::Set;
 use tsrs_core::tspath::Path;
 use tsrs_core::{
-    FrozenCell, LanguageVariant, OwnedCell, P, ResolutionMode, ScriptKind, TextPos, TextRange,
-    ThinSlice, Tristate, alloc_slice, alloc_str, alloc_vec, compute_ecma_line_starts,
+    FrozenCell, LanguageVariant, OwnedCell, P, PackedStr, ResolutionMode, ScriptKind, TextPos,
+    TextRange, ThinSlice, Tristate, alloc_slice, alloc_str, alloc_vec, compute_ecma_line_starts,
     undefined_text_range,
 };
 use tsrs_diagnostics as diagnostics;
@@ -150,22 +150,47 @@ fn node_header(kind: Kind, data_tag: NodeDataTag) -> Node {
 }
 
 /// Creates a node whose data struct is `data` (Go: the data struct embeds `NodeBase`, one allocation).
-pub(crate) fn new_node<T: NodePayload>(kind: Kind, data: T, hooks: &NodeFactoryHooks) -> P<Node> {
-    new_node_hooked(kind, data, hooks)
+pub(crate) fn new_node<T: NodePayload + 'static>(
+    kind: Kind,
+    data: T,
+    hooks: &NodeFactoryHooks,
+) -> P<Node> {
+    // SAFETY: this legacy entry point accepts only static payloads.
+    unsafe { new_node_hooked(kind, data, hooks) }
 }
 
 #[inline]
-fn new_node_plain<T: NodePayload>(kind: Kind, data: T) -> P<Node> {
+unsafe fn new_node_plain<T: NodePayload>(kind: Kind, data: T) -> P<Node> {
     // SAFETY: `NodeAlloc` is `repr(C)` with the header first, so the pointer to the allocation is a pointer to
-    // its header; the header is never moved or freed (leak arena).
-    unsafe { P::new(NodeAlloc { node: node_header(kind, T::TAG), data }).cast::<Node>() }
+    // its header. The caller retains the arena and borrowed payload inputs through all uses and destruction.
+    unsafe {
+        P::from_raw(
+            tsrs_core::ptr::alloc_raw_in(
+                false,
+                NodeAlloc { node: node_header(kind, T::TAG), data },
+            )
+            .cast::<Node>(),
+        )
+    }
 }
 
 #[inline]
-fn new_node_hooked<T: NodePayload>(kind: Kind, data: T, hooks: &NodeFactoryHooks) -> P<Node> {
+unsafe fn new_node_hooked<T: NodePayload>(
+    kind: Kind,
+    data: T,
+    hooks: &NodeFactoryHooks,
+) -> P<Node> {
     // SAFETY: `NodeAlloc` is `repr(C)` with the header first, so the pointer to the allocation is a pointer to
-    // its header; the header is never moved or freed (leak arena).
-    let n = unsafe { P::new(NodeAlloc { node: node_header(kind, T::TAG), data }).cast::<Node>() };
+    // its header. The caller retains the arena and borrowed payload inputs through all uses and destruction.
+    let n = unsafe {
+        P::from_raw(
+            tsrs_core::ptr::alloc_raw_in(
+                false,
+                NodeAlloc { node: node_header(kind, T::TAG), data },
+            )
+            .cast::<Node>(),
+        )
+    };
     if let Some(on_create) = &hooks.on_create {
         on_create(n);
     }
@@ -173,10 +198,17 @@ fn new_node_hooked<T: NodePayload>(kind: Kind, data: T, hooks: &NodeFactoryHooks
 }
 
 #[inline]
-fn new_node_scratch<T: NodePayload>(kind: Kind, data: T, hooks: &NodeFactoryHooks) -> P<Node> {
+unsafe fn new_node_scratch<T: NodePayload>(
+    kind: Kind,
+    data: T,
+    hooks: &NodeFactoryHooks,
+) -> P<Node> {
     // SAFETY: as in `new_node_hooked`, but this allocation is owned by the active scratch region.
     let n = unsafe {
-        P::new_scratch(NodeAlloc { node: node_header(kind, T::TAG), data }).cast::<Node>()
+        P::from_raw(
+            tsrs_core::ptr::alloc_raw_in(true, NodeAlloc { node: node_header(kind, T::TAG), data })
+                .cast::<Node>(),
+        )
     };
     if let Some(on_create) = &hooks.on_create {
         on_create(n);
@@ -186,7 +218,7 @@ fn new_node_scratch<T: NodePayload>(kind: Kind, data: T, hooks: &NodeFactoryHook
 
 /// Creates a node whose data struct `data` is followed by its rare tail `rare` (`NodeAllocRare`; the header's
 /// rare bit says the tail is there). The factory uses it when one of the struct's rare fields is set.
-fn new_node_with_rare_hooked<T: NodeRareTail>(
+unsafe fn new_node_with_rare_hooked<T: NodeRareTail>(
     kind: Kind,
     data: T,
     rare: T::Rare,
@@ -195,8 +227,13 @@ fn new_node_with_rare_hooked<T: NodeRareTail>(
     let () = T::SAME_OFFSET;
     let mut header = node_header(kind, T::TAG);
     header.header = OwnedCell::new(header.header.get().with_rare_tail());
-    // SAFETY: as in `new_node` (`NodeAllocRare` is `repr(C)` with the header first).
-    let n = unsafe { P::new(NodeAllocRare { node: header, data, rare }).cast::<Node>() };
+    // SAFETY: as in `new_node_plain` (`NodeAllocRare` is `repr(C)` with the header first).
+    let n = unsafe {
+        P::from_raw(
+            tsrs_core::ptr::alloc_raw_in(false, NodeAllocRare { node: header, data, rare })
+                .cast::<Node>(),
+        )
+    };
     if let Some(on_create) = &hooks.on_create {
         on_create(n);
     }
@@ -204,7 +241,7 @@ fn new_node_with_rare_hooked<T: NodeRareTail>(
 }
 
 #[inline]
-fn new_node_with_rare_scratch<T: NodeRareTail>(
+unsafe fn new_node_with_rare_scratch<T: NodeRareTail>(
     kind: Kind,
     data: T,
     rare: T::Rare,
@@ -214,7 +251,12 @@ fn new_node_with_rare_scratch<T: NodeRareTail>(
     let mut header = node_header(kind, T::TAG);
     header.header = OwnedCell::new(header.header.get().with_rare_tail());
     // SAFETY: as in `new_node_with_rare_hooked`, but this allocation is owned by the active scratch region.
-    let n = unsafe { P::new_scratch(NodeAllocRare { node: header, data, rare }).cast::<Node>() };
+    let n = unsafe {
+        P::from_raw(
+            tsrs_core::ptr::alloc_raw_in(true, NodeAllocRare { node: header, data, rare })
+                .cast::<Node>(),
+        )
+    };
     if let Some(on_create) = &hooks.on_create {
         on_create(n);
     }
@@ -222,12 +264,17 @@ fn new_node_with_rare_scratch<T: NodeRareTail>(
 }
 
 #[inline]
-fn new_node_with_rare_plain<T: NodeRareTail>(kind: Kind, data: T, rare: T::Rare) -> P<Node> {
+unsafe fn new_node_with_rare_plain<T: NodeRareTail>(kind: Kind, data: T, rare: T::Rare) -> P<Node> {
     let () = T::SAME_OFFSET;
     let mut header = node_header(kind, T::TAG);
     header.header = OwnedCell::new(header.header.get().with_rare_tail());
     // SAFETY: as in `new_node_plain` (`NodeAllocRare` is `repr(C)` with the header first).
-    unsafe { P::new(NodeAllocRare { node: header, data, rare }).cast::<Node>() }
+    unsafe {
+        P::from_raw(
+            tsrs_core::ptr::alloc_raw_in(false, NodeAllocRare { node: header, data, rare })
+                .cast::<Node>(),
+        )
+    }
 }
 
 /// The rare tail of the node whose data struct is `data`, if it was allocated with one.
@@ -276,8 +323,8 @@ impl<'alloc> NodeFactory<'alloc> {
     ///
     /// # Safety
     /// This factory exposes raw AST handles for the compiler. The caller must retain the backing
-    /// regions for every use of its output and of text/slices supplied to the factory. Safe parsed
-    /// file views enforce that contract without exposing the handles.
+    /// regions and all supplied text/slices through every use of its output and arena destruction.
+    /// Safe parsed file views enforce that contract without exposing the handles.
     pub unsafe fn new_in(allocator: &'alloc tsrs_core::Allocator) -> Self {
         Self {
             allocator: Some(allocator),
@@ -333,15 +380,15 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     pub fn set_comment_directives(&self, file: P<SourceFile>, items: &'alloc [CommentDirective]) {
-        file.comment_directives.set(self.store_slice(items));
+        self.source_file_storage(file).comment_directives.set(items);
     }
 
     pub fn set_pragmas(&self, file: P<SourceFile>, items: &'alloc [Pragma]) {
-        file.pragmas.set(self.store_slice(items));
+        self.source_file_storage(file).pragmas.set(items);
     }
 
     pub fn set_reparsed_clones(&self, file: P<SourceFile>, items: &'alloc [P<Node>]) {
-        file.reparsed_clones.set(self.store_slice(items));
+        self.source_file_storage(file).reparsed_clones.set(items);
     }
 
     pub fn set_lazy_lists(
@@ -349,11 +396,11 @@ impl<'alloc> NodeFactory<'alloc> {
         file: P<SourceFile>,
         items: &'alloc [P<crate::lazylist::LazyNodeList>],
     ) {
-        file.lazy_lists.set(self.store_slice(items));
+        self.source_file_storage(file).lazy_lists.set(items);
     }
 
     pub fn set_referenced_files(&self, file: P<SourceFile>, items: &'alloc [P<FileReference>]) {
-        file.referenced_files.set(self.store_slice(items));
+        self.source_file_storage(file).referenced_files.set(items);
     }
 
     pub fn set_type_reference_directives(
@@ -361,7 +408,7 @@ impl<'alloc> NodeFactory<'alloc> {
         file: P<SourceFile>,
         items: &'alloc [P<FileReference>],
     ) {
-        file.type_reference_directives.set(self.store_slice(items));
+        self.source_file_storage(file).type_reference_directives.set(items);
     }
 
     pub fn set_lib_reference_directives(
@@ -369,11 +416,16 @@ impl<'alloc> NodeFactory<'alloc> {
         file: P<SourceFile>,
         items: &'alloc [P<FileReference>],
     ) {
-        file.lib_reference_directives.set(self.store_slice(items));
+        self.source_file_storage(file).lib_reference_directives.set(items);
     }
 
+    #[expect(
+        clippy::unused_self,
+        reason = "the factory fixes the input lifetime and raw ownership contract"
+    )]
     pub fn register_source_text(&self, text: &'alloc str) -> u32 {
-        crate::register_source_text(self.store_text(text))
+        // SAFETY: registered text follows the factory's raw AST ownership contract.
+        unsafe { crate::register_source_text(text) }
     }
 
     pub fn set_jsdoc_cache(
@@ -381,64 +433,80 @@ impl<'alloc> NodeFactory<'alloc> {
         file: P<SourceFile>,
         cache: FxHashMap<P<Node>, &'alloc [P<Node>]>,
     ) {
-        file.set_jsdoc_cache(
-            cache.into_iter().map(|(node, docs)| (node, self.store_slice(docs))).collect(),
-        );
+        *self.source_file_storage(file).jsdoc_cache.borrow_mut() = cache;
+    }
+
+    /// Allocates borrowed payloads without turning their references into static references.
+    #[inline]
+    fn alloc_storage<T: 'alloc>(&self, value: T) -> std::ptr::NonNull<T> {
+        // SAFETY: the factory's construction contract retains payload inputs through all raw
+        // handle uses and arena destruction. An unbound factory accepts only static payloads.
+        unsafe {
+            match self.allocator {
+                Some(allocator) => allocator.alloc_raw(value),
+                None => tsrs_core::ptr::alloc_raw_in(self.scratch, value),
+            }
+        }
     }
 
     #[inline]
-    #[expect(
-        clippy::unused_self,
-        reason = "the receiver fixes the invariant allocator lifetime and raw AST ownership contract"
-    )]
-    pub(crate) fn store_text(&self, text: &'alloc str) -> &'static str {
-        // SAFETY: borrowed factories are constructed under the raw AST ownership contract.
-        // Unbound factories have a static lifetime and therefore accept only static input here.
-        unsafe { &*std::ptr::from_ref(text) }
+    pub(crate) fn pack_text(&self, text: &'alloc str) -> PackedStr<'alloc> {
+        match self.allocator {
+            Some(allocator) => PackedStr::new_in(allocator, text),
+            // SAFETY: only a static factory can be unbound; its ambient region follows the
+            // compiler's raw ownership contract, including any long-text allocation.
+            None => unsafe { PackedStr::new_unchecked(text) },
+        }
     }
 
     #[inline]
-    #[expect(
-        clippy::unused_self,
-        reason = "the receiver fixes the invariant allocator lifetime and raw AST ownership contract"
-    )]
-    pub(crate) fn store_slice<T: 'static>(&self, items: &'alloc [T]) -> &'static [T] {
-        // SAFETY: the factory construction contract retains the slice for every use of its AST.
-        unsafe { &*std::ptr::from_ref(items) }
+    fn pack_nodes(&self, nodes: &'alloc [P<Node>]) -> ThinSlice<'alloc, P<Node>> {
+        match self.allocator {
+            Some(allocator) => ThinSlice::new_in(allocator, nodes),
+            // SAFETY: as in pack_text; a long list's header belongs to the ambient region.
+            None => unsafe { ThinSlice::new_unchecked(nodes) },
+        }
     }
 
     #[expect(
         clippy::unused_self,
-        reason = "the receiver fixes the invariant allocator lifetime and raw AST ownership contract"
+        reason = "the factory fixes the storage lifetime and raw ownership contract"
     )]
-    pub(crate) fn store_texts(&self, items: &'alloc [&'alloc str]) -> &'static [&'static str] {
-        // SAFETY: both the slice and its elements obey this factory's construction contract.
-        unsafe { std::slice::from_raw_parts(items.as_ptr().cast::<&'static str>(), items.len()) }
+    fn source_file_storage(&self, file: P<SourceFile>) -> &'alloc SourceFileStorage<'alloc> {
+        // SAFETY: the raw compiler alias and the borrowed storage differ only in lifetimes.
+        // The factory contract retains the file and every value written through this view.
+        unsafe { &*std::ptr::from_ref(file.get()).cast::<SourceFileStorage<'alloc>>() }
     }
 
     #[inline]
-    pub(crate) fn new_node<T: NodePayload>(&self, kind: Kind, data: T) -> P<Node> {
+    pub(crate) fn new_node<T: NodePayload + 'alloc>(&self, kind: Kind, data: T) -> P<Node> {
         self.node_count.set(self.node_count.get() + 1);
         if self.allocator.is_some() {
             // SAFETY: NodeAlloc has the header first, as on the legacy allocation path.
             let node = unsafe {
-                self.alloc(NodeAlloc { node: node_header(kind, T::TAG), data }).cast::<Node>()
+                P::from_raw(
+                    self.alloc_storage(NodeAlloc { node: node_header(kind, T::TAG), data })
+                        .cast::<Node>(),
+                )
             };
             if let Some(on_create) = &self.hooks.on_create {
                 on_create(node);
             }
             node
         } else if self.plain_create {
-            new_node_plain(kind, data)
+            // SAFETY: the factory owns the storage under its construction contract.
+            unsafe { new_node_plain(kind, data) }
         } else if self.scratch {
-            new_node_scratch(kind, data, &self.hooks)
+            // SAFETY: the factory owns the storage under its construction contract.
+            unsafe { new_node_scratch(kind, data, &self.hooks) }
         } else {
-            new_node_hooked(kind, data, &self.hooks)
+            // SAFETY: the factory owns the storage under its construction contract.
+            unsafe { new_node_hooked(kind, data, &self.hooks) }
         }
     }
 
     #[inline]
-    pub(crate) fn new_node_with_rare<T: NodeRareTail>(
+    pub(crate) fn new_node_with_rare<T: NodeRareTail + 'alloc>(
         &self,
         kind: Kind,
         data: T,
@@ -450,18 +518,24 @@ impl<'alloc> NodeFactory<'alloc> {
             let mut header = node_header(kind, T::TAG);
             header.header = OwnedCell::new(header.header.get().with_rare_tail());
             // SAFETY: NodeAllocRare has the header first, as on the legacy allocation path.
-            let node =
-                unsafe { self.alloc(NodeAllocRare { node: header, data, rare }).cast::<Node>() };
+            let node = unsafe {
+                P::from_raw(
+                    self.alloc_storage(NodeAllocRare { node: header, data, rare }).cast::<Node>(),
+                )
+            };
             if let Some(on_create) = &self.hooks.on_create {
                 on_create(node);
             }
             node
         } else if self.plain_create {
-            new_node_with_rare_plain(kind, data, rare)
+            // SAFETY: the factory owns the storage under its construction contract.
+            unsafe { new_node_with_rare_plain(kind, data, rare) }
         } else if self.scratch {
-            new_node_with_rare_scratch(kind, data, rare, &self.hooks)
+            // SAFETY: the factory owns the storage under its construction contract.
+            unsafe { new_node_with_rare_scratch(kind, data, rare, &self.hooks) }
         } else {
-            new_node_with_rare_hooked(kind, data, rare, &self.hooks)
+            // SAFETY: the factory owns the storage under its construction contract.
+            unsafe { new_node_with_rare_hooked(kind, data, rare, &self.hooks) }
         }
     }
 
@@ -504,9 +578,9 @@ impl<'alloc> NodeFactory<'alloc> {
     /// Copies `s` for a node this factory creates (identifier and literal text): into the scratch region for a
     /// scratch factory, like the node.
     #[inline]
-    pub fn alloc_text(&self, s: &str) -> &'static str {
+    pub fn alloc_text(&self, s: &str) -> &'alloc str {
         if let Some(allocator) = self.allocator {
-            self.store_text(allocator.alloc_str(s))
+            allocator.alloc_str(s)
         } else if self.scratch {
             tsrs_core::alloc_str_scratch(s)
         } else {
@@ -515,9 +589,9 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     #[inline]
-    pub(crate) fn alloc_nodes_vec(&self, nodes: Vec<P<Node>>) -> &'static [P<Node>] {
+    pub(crate) fn alloc_nodes_vec(&self, nodes: Vec<P<Node>>) -> &'alloc [P<Node>] {
         if let Some(allocator) = self.allocator {
-            self.store_slice(allocator.alloc_vec(nodes))
+            allocator.alloc_vec(nodes)
         } else if self.scratch {
             tsrs_core::alloc_vec_scratch(nodes)
         } else {
@@ -526,9 +600,9 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     #[inline]
-    pub(crate) fn alloc_nodes_slice(&self, nodes: &[P<Node>]) -> &'static [P<Node>] {
+    pub(crate) fn alloc_nodes_slice(&self, nodes: &[P<Node>]) -> &'alloc [P<Node>] {
         if let Some(allocator) = self.allocator {
-            self.store_slice(allocator.alloc_slice(nodes))
+            allocator.alloc_slice(nodes)
         } else if self.scratch {
             tsrs_core::alloc_slice_scratch(nodes)
         } else {
@@ -565,9 +639,11 @@ pub(crate) fn clone_node(updated: P<Node>, original: P<Node>, hooks: &NodeFactor
 // NodeList
 
 /// `nodes` is a `ThinSlice` (pointer and length in one word): 16 bytes, 4.2M lists on the private monorepo.
-pub struct NodeList {
+pub type NodeList = NodeListStorage<'static>;
+
+pub struct NodeListStorage<'alloc> {
     pub loc: OwnedCell<TextRange>,
-    nodes: ThinSlice<P<Node>>,
+    nodes: ThinSlice<'alloc, P<Node>>,
 }
 
 const _: () = assert!(std::mem::size_of::<NodeList>() == 16);
@@ -583,7 +659,12 @@ impl<'alloc> NodeFactory<'alloc> {
 
     /// Stores `nodes` without copying (keeps slice identity, e.g. for sentinel slices).
     pub fn new_node_list_from_static(&self, nodes: &'alloc [P<Node>]) -> P<NodeList> {
-        self.alloc(NodeList::new(undefined_text_range(), self.store_slice(nodes)))
+        let list = NodeListStorage {
+            loc: OwnedCell::new(undefined_text_range()),
+            nodes: self.pack_nodes(nodes),
+        };
+        // SAFETY: storage and raw alias differ only in lifetimes, retained by the factory contract.
+        unsafe { P::from_raw(self.alloc_storage(list).cast::<NodeList>()) }
     }
 
     /// A member list parsed on first use (`lazylist`).
@@ -602,8 +683,24 @@ impl NodeList {
     pub fn new(loc: TextRange, nodes: &'static [P<Node>]) -> NodeList {
         NodeList { loc: OwnedCell::new(loc), nodes: ThinSlice::new(nodes) }
     }
+
+    /// A raw compiler list whose arena-owned members are parsed on first use (`lazylist`).
+    pub fn new_lazy(loc: TextRange, record: &'static crate::lazylist::LazyNodeList) -> NodeList {
+        NodeList { loc: OwnedCell::new(loc), nodes: ThinSlice::from_ref(record.head_ref()) }
+    }
+}
+
+impl<'alloc> NodeListStorage<'alloc> {
+    pub fn new_in(
+        allocator: &'alloc tsrs_core::Allocator,
+        loc: TextRange,
+        nodes: &'alloc [P<Node>],
+    ) -> Self {
+        Self { loc: OwnedCell::new(loc), nodes: ThinSlice::new_in(allocator, nodes) }
+    }
+
     #[inline]
-    pub fn nodes(&self) -> &'static [P<Node>] {
+    pub fn nodes(&self) -> &'alloc [P<Node>] {
         if self.nodes.is_long() {
             return self.nodes_long();
         }
@@ -613,21 +710,16 @@ impl NodeList {
     /// A list of 2^16 nodes or more, or a lazily parsed member list (`lazylist`).
     #[cold]
     #[inline(never)]
-    fn nodes_long(&self) -> &'static [P<Node>] {
+    fn nodes_long(&self) -> &'alloc [P<Node>] {
         match self.lazy_record() {
             Some(record) => record.force_nodes(),
             None => self.nodes.get(),
         }
     }
 
-    /// A list whose members are parsed on first use (`lazylist`), with its loc.
-    pub fn new_lazy(loc: TextRange, record: &'static crate::lazylist::LazyNodeList) -> NodeList {
-        NodeList { loc: OwnedCell::new(loc), nodes: ThinSlice::from_ref(record.head_ref()) }
-    }
-
     /// The lazy-list record of a list made by `new_lazy` (forced or not).
     #[inline]
-    pub fn lazy_record(&self) -> Option<&'static crate::lazylist::LazyNodeList> {
+    pub fn lazy_record(&self) -> Option<&'alloc crate::lazylist::LazyNodeList> {
         let head = self.nodes.long_ref()?;
         // SAFETY: a long-form slice whose data is the lazy head was made by `new_lazy` from a record's `head`.
         crate::lazylist::is_lazy_head(head)
@@ -653,7 +745,7 @@ impl NodeList {
         last.has_trailing_comma_marker() || last.end() < self.end()
     }
 
-    pub fn clone_list(&self, f: &NodeFactory<'_>) -> P<NodeList> {
+    pub fn clone_list(&self, f: &NodeFactory<'alloc>) -> P<NodeList> {
         let result = f.new_node_list_from_static(self.nodes());
         result.loc.set(self.loc.get());
         result
@@ -662,12 +754,14 @@ impl NodeList {
 
 // ModifierList
 
-pub struct ModifierList {
-    pub list: NodeList,
+pub type ModifierList = ModifierListStorage<'static>;
+
+pub struct ModifierListStorage<'alloc> {
+    pub list: NodeListStorage<'alloc>,
     pub modifier_flags: ModifierFlags,
 }
 
-impl NodeFactory<'_> {
+impl<'alloc> NodeFactory<'alloc> {
     pub fn new_modifier_list(&self, nodes: Vec<P<Node>>) -> P<ModifierList> {
         self.new_modifier_list_from_static(self.alloc_nodes_vec(nodes))
     }
@@ -676,17 +770,22 @@ impl NodeFactory<'_> {
         self.new_modifier_list_from_static(self.alloc_nodes_slice(nodes))
     }
 
-    fn new_modifier_list_from_static(&self, nodes: &'static [P<Node>]) -> P<ModifierList> {
-        self.alloc(ModifierList {
-            list: NodeList::new(undefined_text_range(), nodes),
+    fn new_modifier_list_from_static(&self, nodes: &'alloc [P<Node>]) -> P<ModifierList> {
+        let list = ModifierListStorage {
+            list: NodeListStorage {
+                loc: OwnedCell::new(undefined_text_range()),
+                nodes: self.pack_nodes(nodes),
+            },
             modifier_flags: modifiers_to_flags(nodes),
-        })
+        };
+        // SAFETY: storage and raw alias differ only in lifetimes, retained by the factory contract.
+        unsafe { P::from_raw(self.alloc_storage(list).cast::<ModifierList>()) }
     }
 }
 
-impl ModifierList {
+impl<'alloc> ModifierListStorage<'alloc> {
     #[inline]
-    pub fn nodes(&self) -> &'static [P<Node>] {
+    pub fn nodes(&self) -> &'alloc [P<Node>] {
         self.list.nodes()
     }
     #[inline]
@@ -706,11 +805,16 @@ impl ModifierList {
         self.list.has_trailing_comma()
     }
 
-    pub fn clone_list(&self, f: &NodeFactory<'_>) -> P<ModifierList> {
-        f.alloc(ModifierList {
-            list: NodeList::new(self.list.loc.get(), self.list.nodes()),
+    pub fn clone_list(&self, f: &NodeFactory<'alloc>) -> P<ModifierList> {
+        let list = ModifierListStorage {
+            list: NodeListStorage {
+                loc: OwnedCell::new(self.list.loc.get()),
+                nodes: f.pack_nodes(self.nodes()),
+            },
             modifier_flags: self.modifier_flags,
-        })
+        };
+        // SAFETY: storage and raw alias differ only in lifetimes, retained by the factory contract.
+        unsafe { P::from_raw(f.alloc_storage(list).cast::<ModifierList>()) }
     }
 }
 
@@ -816,7 +920,7 @@ pub(crate) struct NodeAlloc<T> {
 }
 
 /// A node data struct with fields, stored after the header of nodes tagged `TAG` (impls are generated).
-pub(crate) trait NodePayload: Sized + 'static {
+pub(crate) trait NodePayload: Sized {
     const TAG: NodeDataTag;
 }
 
@@ -858,7 +962,7 @@ impl Node {
 
     /// The data struct after this node's header. Callers check `data_tag() == T::TAG` first.
     #[inline]
-    pub(crate) fn payload<T: NodePayload>(&self) -> &'static T {
+    pub(crate) fn payload<T: NodePayload + 'static>(&self) -> &'static T {
         debug_assert_eq!(self.data_tag(), T::TAG);
         // SAFETY: a node tagged `T::TAG` was allocated by `new_node::<T>` as a `NodeAlloc<T>` whose header is
         // `self`, so its data struct lives at this offset from the header, for the rest of the process.
@@ -2115,47 +2219,50 @@ pub trait HasFileName {
     fn path(&self) -> &Path;
 }
 
-pub struct SourceFile {
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type SourceFile = SourceFileStorage<'static>;
+
+pub struct SourceFileStorage<'alloc> {
     node: OwnedCell<Option<P<Node>>>, // back pointer to the SourceFile node, set by the factory
     pub declaration_base: DeclarationBase,
     pub locals_container_base: LocalsContainerBase,
 
     // Fields set by NewSourceFile
     parse_options: SourceFileParseOptions,
-    text: &'static str,
+    text: &'alloc str,
     // Written once by the file loader (SetContentMapperInfo) before the file is published.
     content_mapper_info: OwnedCell<Option<P<ContentMapperSourceFileInfo>>>,
     pub statements: P<NodeList>,    // NodeList[*Statement]
     pub end_of_file_token: P<Node>, // TokenNode[*EndOfFileToken]
 
     // Fields set by parser
-    pub diagnostics: OwnedCell<&'static [P<Diagnostic>]>,
-    pub js_diagnostics: OwnedCell<&'static [P<Diagnostic>]>,
-    pub jsdoc_diagnostics: OwnedCell<&'static [P<Diagnostic>]>,
+    pub diagnostics: OwnedCell<&'alloc [P<Diagnostic>]>,
+    pub js_diagnostics: OwnedCell<&'alloc [P<Diagnostic>]>,
+    pub jsdoc_diagnostics: OwnedCell<&'alloc [P<Diagnostic>]>,
     pub language_variant: OwnedCell<LanguageVariant>,
     pub script_kind: OwnedCell<ScriptKind>,
     pub is_declaration_file: OwnedCell<bool>,
     pub uses_uri_style_node_core_modules: OwnedCell<Tristate>,
     pub identifier_count: OwnedCell<usize>,
     pub text_index: OwnedCell<u32>, // `register_source_text` index of `text` (compact identifiers, identifier.rs)
-    pub imports: OwnedCell<&'static [P<Node>]>, // []LiteralLikeNode
-    pub module_augmentations: OwnedCell<&'static [P<Node>]>, // []ModuleName
-    pub ambient_module_names: OwnedCell<&'static [&'static str]>,
-    pub comment_directives: OwnedCell<&'static [CommentDirective]>,
+    pub imports: OwnedCell<&'alloc [P<Node>]>, // []LiteralLikeNode
+    pub module_augmentations: OwnedCell<&'alloc [P<Node>]>, // []ModuleName
+    pub ambient_module_names: OwnedCell<&'alloc [&'alloc str]>,
+    pub comment_directives: OwnedCell<&'alloc [CommentDirective]>,
     // Written by the parser; with lazy JSDoc, also by any checker thread under `jsdoc_mu` (Go `jsdocMu`).
-    pub(crate) jsdoc_cache: FrozenCell<FxHashMap<P<Node>, &'static [P<Node>]>>,
+    pub(crate) jsdoc_cache: FrozenCell<FxHashMap<P<Node>, &'alloc [P<Node>]>>,
     jsdoc_mu: RwLock<()>,
     pub(crate) has_lazy_jsdoc: OwnedCell<bool>,
-    identifiers: OnceLock<Set<&'static str>>,
+    identifiers: OnceLock<Set<&'alloc str>>,
     // ast.go:2517 nameTableOnce/nameTable (Go map, random order; insertion order here)
-    name_table: OnceLock<tsrs_core::collections::OrderedMap<&'static str, NameTableEntry>>,
-    pub reparsed_clones: OwnedCell<&'static [P<Node>]>,
+    name_table: OnceLock<tsrs_core::collections::OrderedMap<&'alloc str, NameTableEntry>>,
+    pub reparsed_clones: OwnedCell<&'alloc [P<Node>]>,
     // tsrs-only: the member lists of this declaration file that are parsed and bound on first use (`lazylist`).
-    pub lazy_lists: OwnedCell<&'static [P<crate::lazylist::LazyNodeList>]>,
-    pub pragmas: OwnedCell<&'static [Pragma]>,
-    pub referenced_files: OwnedCell<&'static [P<FileReference>]>,
-    pub type_reference_directives: OwnedCell<&'static [P<FileReference>]>,
-    pub lib_reference_directives: OwnedCell<&'static [P<FileReference>]>,
+    pub lazy_lists: OwnedCell<&'alloc [P<crate::lazylist::LazyNodeList>]>,
+    pub pragmas: OwnedCell<&'alloc [Pragma]>,
+    pub referenced_files: OwnedCell<&'alloc [P<FileReference>]>,
+    pub type_reference_directives: OwnedCell<&'alloc [P<FileReference>]>,
+    pub lib_reference_directives: OwnedCell<&'alloc [P<FileReference>]>,
     pub check_js_directive: OwnedCell<Option<P<CheckJsDirective>>>,
     pub node_count: OwnedCell<usize>,
     pub text_count: OwnedCell<usize>,
@@ -2169,9 +2276,9 @@ pub struct SourceFile {
     // Fields set by binder
     is_bound: AtomicBool,
     bind_once: Once,
-    pub bind_diagnostics: OwnedCell<&'static [P<Diagnostic>]>,
+    pub bind_diagnostics: OwnedCell<&'alloc [P<Diagnostic>]>,
     pub symbol_count: OwnedCell<usize>,
-    pub pattern_ambient_modules: OwnedCell<&'static [P<PatternAmbientModule>]>,
+    pub pattern_ambient_modules: OwnedCell<&'alloc [P<PatternAmbientModule>]>,
     pub global_exports: OwnedCell<Option<P<SymbolTable>>>,
 
     // tsrs-only: set before the type-check pass when the CLI frees this file's tree once it is checked
@@ -2179,7 +2286,7 @@ pub struct SourceFile {
     check_leaf: AtomicBool,
 
     // Fields set by ECMALineMap
-    ecma_line_map: OnceLock<&'static [u32]>,
+    ecma_line_map: OnceLock<&'alloc [u32]>,
 
     // Fields for UTF-8 to UTF-16 position mapping
     position_map: OnceLock<P<PositionMap>>,
@@ -2213,7 +2320,7 @@ impl<'alloc> NodeFactory<'alloc> {
         }
         let node = self.new_node(
             Kind::SourceFile,
-            SourceFile {
+            SourceFileStorage {
                 node: OwnedCell::new(None),
                 declaration_base: DeclarationBase { symbol: OwnedCell::new(None) },
                 locals_container_base: LocalsContainerBase {
@@ -2221,7 +2328,7 @@ impl<'alloc> NodeFactory<'alloc> {
                     next_container: OwnedCell::new(None),
                 },
                 parse_options: opts,
-                text: self.store_text(text),
+                text,
                 content_mapper_info: OwnedCell::new(None),
                 statements,
                 end_of_file_token,
@@ -2273,6 +2380,12 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 }
 
+impl<'alloc> SourceFileStorage<'alloc> {
+    pub fn text(&self) -> &'alloc str {
+        self.text
+    }
+}
+
 impl SourceFile {
     /// The `SourceFile` node (Go `file.AsNode()`).
     #[inline]
@@ -2288,10 +2401,6 @@ impl SourceFile {
 
     pub fn parse_options(&self) -> &SourceFileParseOptions {
         &self.parse_options
-    }
-
-    pub fn text(&self) -> &'static str {
-        self.text
     }
 
     // OriginalText returns the untransformed source text for content-mapped files, or Text() otherwise.

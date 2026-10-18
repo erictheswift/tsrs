@@ -490,7 +490,7 @@ impl RawWord {
 }
 
 /// `ThinSliceCell` whose writes to a frozen address go to the overlay.
-pub struct OvThinSliceCell<T: 'static>(OvCell<crate::ThinSlice<T>>);
+pub struct OvThinSliceCell<T: 'static>(OvCell<crate::ThinSlice<'static, T>>);
 
 impl<T> OvThinSliceCell<T> {
     #[inline]
@@ -514,7 +514,7 @@ impl<T> Default for OvThinSliceCell<T> {
 }
 
 /// `OptionThinSliceCell` whose writes to a frozen address go to the overlay.
-pub struct OvOptionThinSliceCell<T: 'static>(OvCell<Option<crate::ThinSlice<T>>>);
+pub struct OvOptionThinSliceCell<T: 'static>(OvCell<Option<crate::ThinSlice<'static, T>>>);
 
 impl<T> OvOptionThinSliceCell<T> {
     #[inline]

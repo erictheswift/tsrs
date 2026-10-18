@@ -71,7 +71,7 @@ pub fn new_node_visitor_in<'alloc>(
     NodeVisitor(Rc::new(NodeVisitorData { visit, factory, hooks }))
 }
 
-impl NodeVisitor<'_> {
+impl<'alloc> NodeVisitor<'alloc> {
     pub fn visit_source_file(&mut self, node: P<Node>) -> P<Node> {
         let visited = self.visit_node(Some(node)).unwrap();
         visited.as_source_file();
@@ -163,7 +163,7 @@ impl NodeVisitor<'_> {
     //   - If v.Visit returns nil, the visited Node will be absent in the output.
     //   - If v.Visit returns a different Node than the input, a new slice will be generated and returned.
     //   - If v.Visit returns a SyntaxList Node, then the children of that node will be merged into the output and a new slice will be returned.
-    pub fn visit_slice(&mut self, nodes: &'static [P<Node>]) -> (&'static [P<Node>], bool) {
+    pub fn visit_slice(&mut self, nodes: &'alloc [P<Node>]) -> (&'alloc [P<Node>], bool) {
         let Some(visit) = self.visit.clone() else {
             return (nodes, false);
         };
@@ -323,11 +323,11 @@ pub fn required_child<T>(visited: Option<T>, original: T) -> T {
 }
 
 /// Go `core.SameMap` over a raw node slice: returns `nodes` itself when `f` maps every element to itself.
-pub fn same_map_nodes(
-    factory: &NodeFactory<'_>,
-    nodes: &'static [P<Node>],
+pub fn same_map_nodes<'alloc>(
+    factory: &NodeFactory<'alloc>,
+    nodes: &'alloc [P<Node>],
     mut f: impl FnMut(P<Node>) -> P<Node>,
-) -> &'static [P<Node>] {
+) -> &'alloc [P<Node>] {
     for (i, &node) in nodes.iter().enumerate() {
         let mapped = f(node);
         if mapped != node {

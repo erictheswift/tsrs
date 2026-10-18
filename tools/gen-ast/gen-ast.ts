@@ -310,8 +310,39 @@ function isPackedStr(f: { owner: string; name: string; }): boolean {
 }
 
 function fieldDecl(f: Field): string {
-    if (isPackedStr(f)) return "PackedStr";
-    return f.cell ? `OwnedCell<${f.ty}>` : f.ty;
+    if (isPackedStr(f)) return "PackedStr<'alloc>";
+    return f.cell ? `OwnedCell<${borrowedType(f.ty)}>` : borrowedType(f.ty);
+}
+
+function borrowedType(ty: string): string {
+    return ty.includes("dyn Any") ? ty : ty.replaceAll("'static", "'alloc");
+}
+
+function hasBorrowedStorage(l: Layout): boolean {
+    if (l.name === "Identifier") return false; // Its text tail is handwritten.
+    return l.name === "SourceFile"
+        || l.fields.some(f => borrowedType(f.ty) !== f.ty)
+        || l.embeds.some(e => hasBorrowedStorage(baseLayout(e)));
+}
+
+function storageName(l: Layout): string {
+    return hasBorrowedStorage(l) ? `${l.name}Storage` : l.name;
+}
+
+function storageType(l: Layout): string {
+    return hasBorrowedStorage(l) ? `${storageName(l)}<'alloc>` : l.name;
+}
+
+function storageImpl(l: Layout): string {
+    return `impl${hasBorrowedStorage(l) ? "<'alloc>" : ""} ${storageType(l)}`;
+}
+
+function storageAlias(l: Layout) {
+    if (hasBorrowedStorage(l)) {
+        w("/// Raw compiler view; its owner must retain the backing arena and borrowed data.");
+        w(`pub type ${l.name} = ${storageName(l)}<'static>;`);
+        w();
+    }
 }
 
 function defaultValue(ty: string): string {
@@ -378,8 +409,9 @@ function genBaseStructs() {
     for (const b of api.bases()) {
         if (!isKeptBase(b.key)) continue;
         const l = baseLayout(b.key);
-        w(`pub struct ${b.key} {`);
-        for (const e of l.embeds) w(`    pub ${snake(e)}: ${e},`);
+        storageAlias(l);
+        w(`pub struct ${storageType(l)} {`);
+        for (const e of l.embeds) w(`    pub ${snake(e)}: ${storageType(baseLayout(e))},`);
         for (const f of l.fields) w(`    pub ${f.rust}: ${fieldDecl(f)},`);
         w("}");
         w();
@@ -390,17 +422,17 @@ function genBaseStructs() {
 function genGetters(l: Layout) {
     const fields = promoted(l);
     if (fields.length === 0) return;
-    w(`impl ${l.name} {`);
+    w(`${storageImpl(l)} {`);
     for (const f of fields) {
         const fnName = f.rust;
         w(`    #[inline]`);
-        w(`    pub fn ${fnName}(&self) -> ${f.ty} {`);
+        w(`    pub fn ${fnName}(&self) -> ${borrowedType(f.ty)} {`);
         if (f.rare) w(`        rare_tail(self)?.${f.rust}`);
         else w(`        self.${f.path}${f.cell ? ".get()" : isPackedStr(f) ? ".as_str()" : ""}`);
         w(`    }`);
         if (f.cell) {
             w(`    #[inline]`);
-            w(`    pub fn set_${f.rust.replace(/_$/, "")}(&self, value: ${f.ty}) {`);
+            w(`    pub fn set_${f.rust.replace(/_$/, "")}(&self, value: ${borrowedType(f.ty)}) {`);
             w(`        self.${f.path}.set(value);`);
             w(`    }`);
         }
@@ -417,13 +449,15 @@ function genStruct(node: NodeType) {
         w();
         return;
     }
-    w(`pub struct ${node.name} {`);
-    for (const e of l.embeds) w(`    pub ${snake(e)}: ${e},`);
+    storageAlias(l);
+    w(`pub struct ${storageType(l)} {`);
+    for (const e of l.embeds) w(`    pub ${snake(e)}: ${storageType(baseLayout(e))},`);
     for (const f of l.fields) if (!f.rare) w(`    pub ${f.rust}: ${fieldDecl(f)},`);
     w("}");
     w();
     const rare = l.fields.filter(f => f.rare);
     if (rare.length > 0) {
+        if (hasBorrowedStorage(l)) throw new Error(`${l.name}: borrowed rare tails need lifetime support`);
         w(`/// The rare tail of \`${node.name}\` (\`NodeAllocRare\`): allocated only when one of these is set.`);
         w(`pub struct ${node.name}Rare {`);
         for (const f of rare) w(`    pub ${f.rust}: ${fieldDecl(f)},`);
@@ -440,14 +474,14 @@ function genStruct(node: NodeType) {
 // Builds the struct literal for a layout, pulling values from factory params by Go field name.
 function structLiteral(l: Layout, values: Map<string, string>, indent: string): string {
     if (isEmptyLayout(l)) return l.name;
-    const lines: string[] = [`${l.name} {`];
+    const lines: string[] = [`${storageName(l)} {`];
     for (const e of l.embeds) {
         lines.push(`${indent}    ${snake(e)}: ${structLiteral(baseLayout(e), values, indent + "    ")},`);
     }
     for (const f of l.fields) {
         if (f.rare) continue;
         const v = values.get(f.name) ?? defaultValue(f.ty);
-        const value = f.cell ? `OwnedCell::new(${v})` : isPackedStr(f) ? `PackedStr::new(${v})` : v;
+        const value = f.cell ? `OwnedCell::new(${v})` : isPackedStr(f) ? `self.pack_text(${v})` : v;
         lines.push(value === f.rust ? `${indent}    ${f.rust},` : `${indent}    ${f.rust}: ${value},`);
     }
     lines.push(`${indent}}`);
@@ -486,16 +520,11 @@ function genNewFactory(node: NodeType) {
     const flagsMembers = params.filter(p => isNodeFlagsMember(p.m));
     const signature = params.map(({ name, ty }) => {
         // Any keeps its static bound; borrowed text and slices use the factory lifetime.
-        const paramType = ty.includes("dyn Any") ? ty : ty.replaceAll("'static", "'alloc");
+        const paramType = borrowedType(ty);
         return `, ${name}: ${paramType}`;
     }).join("");
     const emit = (fnName: string, kindName: string) => {
         w(`    pub fn ${fnName}(&self${signature}) -> P<Node> {`);
-        for (const p of params) {
-            if (p.ty === "&'static str") w(`        let ${p.name} = self.store_text(${p.name});`);
-            else if (p.ty === "&'static [&'static str]") w(`        let ${p.name} = self.store_texts(${p.name});`);
-            else if (p.ty.startsWith("&'static [")) w(`        let ${p.name} = self.store_slice(${p.name});`);
-        }
         const values = new Map<string, string>();
         for (const p of params) {
             if (p.m.isKindParam() || isNodeFlagsMember(p.m)) continue;
@@ -546,7 +575,7 @@ function genUpdateFactory(node: NodeType) {
     const updateParams = params.filter(p => !p.m.isKindParam());
     if (updateParams.length === 0) return;
     if (!updateParams.some(p => p.m.isChild())) return;
-    w(`    pub fn update_${snake(node.name)}(&self, node: P<Node>${updateParams.map(p => `, ${p.name}: ${p.ty}`).join("")}) -> P<Node> {`);
+    w(`    pub fn update_${snake(node.name)}(&self, node: P<Node>${updateParams.map(p => `, ${p.name}: ${borrowedType(p.ty)}`).join("")}) -> P<Node> {`);
     w(`        let data = node.as_${snake(node.name)}();`);
     const cmps = updateParams.map(p => diffExpr(p.ty, p.name, memberValue(l, p.m, "data", "node")));
     w(`        if ${cmps.join(" || ")} {`);
@@ -732,7 +761,8 @@ function genNodeDataEnum() {
     w();
     for (const n of nodes) {
         if (isEmptyLayout(layouts.get(n.name)!)) continue;
-        w(`impl NodePayload for ${n.name} {`);
+        const l = layouts.get(n.name)!;
+        w(`impl NodePayload for ${hasBorrowedStorage(l) ? `${storageName(l)}<'_>` : l.name} {`);
         w(`    const TAG: NodeDataTag = NodeDataTag::${n.name};`);
         w(`}`);
     }

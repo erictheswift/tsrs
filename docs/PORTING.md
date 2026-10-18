@@ -85,10 +85,15 @@ programs and file versions ([LSP.md](LSP.md#memory-management)). The rules are:
   Its read-only node, list, text, and diagnostic views preserve the borrow and expose no raw `P<T>`
   or lifetime-erased references. Scoped parsing keeps metadata and diagnostics with the tree and makes
   lazy declaration members readable without binding. Source-text registrations are cleared on region release.
-- The compiler's object graph still uses raw `P<T>` and lifetime-erased AST storage. Its parse entry points
+- AST text and list storage carry `'alloc`, including packed strings/slices, generated payloads, node lists,
+  and source-file metadata. Factory allocation helpers return that lifetime. Long packed strings and list
+  headers allocate through the captured allocator, even inside another region scope.
+- The compiler's object graph still uses raw `P<T>` and static aliases of borrowed storage (`SourceFile`
+  aliases `SourceFileStorage<'static>`, for example). Its parse entry points
   are explicitly unsafe in `tsrs_parser::raw`; callers must retain the relevant file/program regions.
   `NodeFactory::new_in` is unsafe for the same reason: it exposes raw handles. The factory accepts scoped
-  text/slices and performs storage conversion internally; the parser has no lifetime-erasure adapters.
+  text/slices and allocates borrowed payloads directly; only the raw handle boundary erases their lifetime.
+  Callers retain all supplied storage through raw handle use and arena destruction.
   Its invariant lifetime prevents an unbound `NodeFactory<'static>` from accepting temporary input.
   Compiler parsing preserves separate lifetimes for scratch trees and escaping source-file metadata/diagnostics.
 - Scoped `Allocator::rewind` is unsafe: restoring parser/scanner state and pinning retained cache entries

@@ -184,3 +184,44 @@ fn scoped_and_compiler_views_preserve_the_same_parse_tree() {
         );
     }
 }
+
+#[test]
+fn long_factory_text_and_lists_survive_a_nested_region() {
+    let region = Region::new(4096);
+    let _scope = region.enter();
+    let allocator = Allocator::current();
+    // SAFETY: every input is in the captured region, retained through all raw handle uses.
+    let factory = unsafe { NodeFactory::new_in(&allocator) };
+    let text = factory.alloc_text(&"x".repeat(1 << 16));
+    let (node, list) = {
+        let nested = Region::new(4096);
+        let _scope = nested.enter();
+        let node = factory.new_identifier(text);
+        (node, factory.new_node_list(vec![node; 1 << 16]))
+    };
+    assert_eq!(node.text(), text);
+    assert!(Region::containing(node.text().as_ptr().addr()).unwrap().ptr_eq(&region));
+    assert_eq!(list.nodes().len(), 1 << 16);
+    assert_eq!(list.nodes().first(), Some(&node));
+    assert_eq!(list.nodes().last(), Some(&node));
+}
+
+#[test]
+fn scoped_long_literal_retains_normalized_text() {
+    let region = Region::new(4096);
+    let scope = region.enter();
+    let allocator = Allocator::current();
+    let expected = format!("{}\n", "x".repeat(1 << 16));
+    let file = {
+        let nested = Region::new(4096);
+        let _scope = nested.enter();
+        let input = format!("const value = '{}\\n';", "x".repeat(1 << 16));
+        parse_source_file_in(&allocator, options("/src/long.ts"), &input, ScriptKind::TS)
+    };
+    drop(scope);
+    drop(region);
+    let mut texts = Vec::new();
+    collect_text(file.root(), &mut texts);
+    assert!(texts.contains(&expected));
+    assert_eq!(file.diagnostics().len(), 0);
+}

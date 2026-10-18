@@ -83,3 +83,73 @@
 //! };
 //! println!("{:?}", node.kind());
 //! ```
+//!
+//! Factory text allocation cannot return a static reference.
+//!
+//! ```compile_fail,E0597
+//! let text = {
+//!     let allocator = tsrs_core::Allocator::current();
+//!     // No raw AST handles are created or retained.
+//!     let factory = unsafe { tsrs_ast::NodeFactory::new_in(&allocator) };
+//!     factory.alloc_text("temporary")
+//! };
+//! println!("{text}");
+//! ```
+//!
+//! Packed text and generated payloads retain their input borrow.
+//!
+//! ```compile_fail,E0597
+//! let allocator = tsrs_core::Allocator::current();
+//! let payload = {
+//!     let text = String::from("temporary");
+//!     tsrs_ast::LiteralLikeNodeBaseStorage {
+//!         text: tsrs_core::PackedStr::new_in(&allocator, &text),
+//!         token_flags: tsrs_core::OwnedCell::new(tsrs_ast::TokenFlags::None),
+//!     }
+//! };
+//! println!("{}", payload.text());
+//! ```
+//!
+//! Packed text cannot outlive its allocator, even if its input is static.
+//!
+//! ```compile_fail,E0597
+//! let packed = {
+//!     let allocator = tsrs_core::Allocator::current();
+//!     tsrs_core::PackedStr::new_in(&allocator, "text")
+//! };
+//! println!("{}", packed.as_str());
+//! ```
+//!
+//! Packed lists retain both the allocator and borrowed elements.
+//!
+//! ```compile_fail,E0597
+//! let packed = {
+//!     let allocator = tsrs_core::Allocator::current();
+//!     tsrs_core::ThinSlice::new_in(&allocator, &[1_u16, 2])
+//! };
+//! println!("{:?}", packed.get());
+//! ```
+//!
+//! ```compile_fail,E0597
+//! let allocator = tsrs_core::Allocator::current();
+//! let values;
+//! let packed = {
+//!     let text = String::from("temporary");
+//!     values = [text.as_str()];
+//!     tsrs_core::ThinSlice::new_in(&allocator, &values)
+//! };
+//! println!("{:?}", packed.get());
+//! ```
+//!
+//! Node-list storage cannot outlive its backing slice.
+//!
+//! ```compile_fail,E0597
+//! let allocator = tsrs_core::Allocator::current();
+//! let list = {
+//!     let nodes = Vec::new();
+//!     tsrs_ast::NodeListStorage::new_in(
+//!         &allocator, tsrs_core::undefined_text_range(), &nodes,
+//!     )
+//! };
+//! println!("{}", list.nodes().len());
+//! ```

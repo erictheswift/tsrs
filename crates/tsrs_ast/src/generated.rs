@@ -283,14 +283,17 @@ impl ClassLikeBase {
     }
 }
 
-pub struct LiteralLikeNodeBase {
-    pub text: PackedStr,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type LiteralLikeNodeBase = LiteralLikeNodeBaseStorage<'static>;
+
+pub struct LiteralLikeNodeBaseStorage<'alloc> {
+    pub text: PackedStr<'alloc>,
     pub token_flags: OwnedCell<TokenFlags>,
 }
 
-impl LiteralLikeNodeBase {
+impl<'alloc> LiteralLikeNodeBaseStorage<'alloc> {
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.text.as_str()
     }
     #[inline]
@@ -303,15 +306,18 @@ impl LiteralLikeNodeBase {
     }
 }
 
-pub struct TemplateLiteralLikeNodeBase {
-    pub literal_like_node_base: LiteralLikeNodeBase,
-    pub raw_text: &'static str,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type TemplateLiteralLikeNodeBase = TemplateLiteralLikeNodeBaseStorage<'static>;
+
+pub struct TemplateLiteralLikeNodeBaseStorage<'alloc> {
+    pub literal_like_node_base: LiteralLikeNodeBaseStorage<'alloc>,
+    pub raw_text: &'alloc str,
     pub template_flags: TokenFlags,
 }
 
-impl TemplateLiteralLikeNodeBase {
+impl<'alloc> TemplateLiteralLikeNodeBaseStorage<'alloc> {
     #[inline]
-    pub fn raw_text(&self) -> &'static str {
+    pub fn raw_text(&self) -> &'alloc str {
         self.raw_text
     }
     #[inline]
@@ -319,7 +325,7 @@ impl TemplateLiteralLikeNodeBase {
         self.template_flags
     }
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -384,13 +390,16 @@ impl JSDocTagBase {
     }
 }
 
-pub struct JSDocCommentBase {
-    pub text: &'static [&'static str],
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type JSDocCommentBase = JSDocCommentBaseStorage<'static>;
+
+pub struct JSDocCommentBaseStorage<'alloc> {
+    pub text: &'alloc [&'alloc str],
 }
 
-impl JSDocCommentBase {
+impl<'alloc> JSDocCommentBaseStorage<'alloc> {
     #[inline]
-    pub fn text(&self) -> &'static [&'static str] {
+    pub fn text(&self) -> &'alloc [&'alloc str] {
         self.text
     }
 }
@@ -399,13 +408,16 @@ impl JSDocCommentBase {
 
 pub struct Token;
 
-pub struct PrivateIdentifier {
-    pub text: PackedStr,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type PrivateIdentifier = PrivateIdentifierStorage<'static>;
+
+pub struct PrivateIdentifierStorage<'alloc> {
+    pub text: PackedStr<'alloc>,
 }
 
-impl PrivateIdentifier {
+impl<'alloc> PrivateIdentifierStorage<'alloc> {
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.text.as_str()
     }
 }
@@ -3017,13 +3029,16 @@ impl KeywordExpression {
     }
 }
 
-pub struct StringLiteral {
-    pub literal_like_node_base: LiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type StringLiteral = StringLiteralStorage<'static>;
+
+pub struct StringLiteralStorage<'alloc> {
+    pub literal_like_node_base: LiteralLikeNodeBaseStorage<'alloc>,
 }
 
-impl StringLiteral {
+impl<'alloc> StringLiteralStorage<'alloc> {
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -3036,13 +3051,16 @@ impl StringLiteral {
     }
 }
 
-pub struct NumericLiteral {
-    pub literal_like_node_base: LiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type NumericLiteral = NumericLiteralStorage<'static>;
+
+pub struct NumericLiteralStorage<'alloc> {
+    pub literal_like_node_base: LiteralLikeNodeBaseStorage<'alloc>,
 }
 
-impl NumericLiteral {
+impl<'alloc> NumericLiteralStorage<'alloc> {
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -3055,13 +3073,16 @@ impl NumericLiteral {
     }
 }
 
-pub struct BigIntLiteral {
-    pub literal_like_node_base: LiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type BigIntLiteral = BigIntLiteralStorage<'static>;
+
+pub struct BigIntLiteralStorage<'alloc> {
+    pub literal_like_node_base: LiteralLikeNodeBaseStorage<'alloc>,
 }
 
-impl BigIntLiteral {
+impl<'alloc> BigIntLiteralStorage<'alloc> {
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -3074,13 +3095,16 @@ impl BigIntLiteral {
     }
 }
 
-pub struct RegularExpressionLiteral {
-    pub literal_like_node_base: LiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type RegularExpressionLiteral = RegularExpressionLiteralStorage<'static>;
+
+pub struct RegularExpressionLiteralStorage<'alloc> {
+    pub literal_like_node_base: LiteralLikeNodeBaseStorage<'alloc>,
 }
 
-impl RegularExpressionLiteral {
+impl<'alloc> RegularExpressionLiteralStorage<'alloc> {
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -3093,14 +3117,17 @@ impl RegularExpressionLiteral {
     }
 }
 
-pub struct NoSubstitutionTemplateLiteral {
-    pub template_literal_like_node_base: TemplateLiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type NoSubstitutionTemplateLiteral = NoSubstitutionTemplateLiteralStorage<'static>;
+
+pub struct NoSubstitutionTemplateLiteralStorage<'alloc> {
+    pub template_literal_like_node_base: TemplateLiteralLikeNodeBaseStorage<'alloc>,
     pub declaration_base: DeclarationBase,
 }
 
-impl NoSubstitutionTemplateLiteral {
+impl<'alloc> NoSubstitutionTemplateLiteralStorage<'alloc> {
     #[inline]
-    pub fn raw_text(&self) -> &'static str {
+    pub fn raw_text(&self) -> &'alloc str {
         self.template_literal_like_node_base.raw_text
     }
     #[inline]
@@ -3108,7 +3135,7 @@ impl NoSubstitutionTemplateLiteral {
         self.template_literal_like_node_base.template_flags
     }
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.template_literal_like_node_base.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -4554,13 +4581,16 @@ impl ConstructorTypeNode {
     }
 }
 
-pub struct TemplateHead {
-    pub template_literal_like_node_base: TemplateLiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type TemplateHead = TemplateHeadStorage<'static>;
+
+pub struct TemplateHeadStorage<'alloc> {
+    pub template_literal_like_node_base: TemplateLiteralLikeNodeBaseStorage<'alloc>,
 }
 
-impl TemplateHead {
+impl<'alloc> TemplateHeadStorage<'alloc> {
     #[inline]
-    pub fn raw_text(&self) -> &'static str {
+    pub fn raw_text(&self) -> &'alloc str {
         self.template_literal_like_node_base.raw_text
     }
     #[inline]
@@ -4568,7 +4598,7 @@ impl TemplateHead {
         self.template_literal_like_node_base.template_flags
     }
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.template_literal_like_node_base.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -4581,13 +4611,16 @@ impl TemplateHead {
     }
 }
 
-pub struct TemplateMiddle {
-    pub template_literal_like_node_base: TemplateLiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type TemplateMiddle = TemplateMiddleStorage<'static>;
+
+pub struct TemplateMiddleStorage<'alloc> {
+    pub template_literal_like_node_base: TemplateLiteralLikeNodeBaseStorage<'alloc>,
 }
 
-impl TemplateMiddle {
+impl<'alloc> TemplateMiddleStorage<'alloc> {
     #[inline]
-    pub fn raw_text(&self) -> &'static str {
+    pub fn raw_text(&self) -> &'alloc str {
         self.template_literal_like_node_base.raw_text
     }
     #[inline]
@@ -4595,7 +4628,7 @@ impl TemplateMiddle {
         self.template_literal_like_node_base.template_flags
     }
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.template_literal_like_node_base.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -4608,13 +4641,16 @@ impl TemplateMiddle {
     }
 }
 
-pub struct TemplateTail {
-    pub template_literal_like_node_base: TemplateLiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type TemplateTail = TemplateTailStorage<'static>;
+
+pub struct TemplateTailStorage<'alloc> {
+    pub template_literal_like_node_base: TemplateLiteralLikeNodeBaseStorage<'alloc>,
 }
 
-impl TemplateTail {
+impl<'alloc> TemplateTailStorage<'alloc> {
     #[inline]
-    pub fn raw_text(&self) -> &'static str {
+    pub fn raw_text(&self) -> &'alloc str {
         self.template_literal_like_node_base.raw_text
     }
     #[inline]
@@ -4622,7 +4658,7 @@ impl TemplateTail {
         self.template_literal_like_node_base.template_flags
     }
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.template_literal_like_node_base.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -4895,18 +4931,21 @@ impl JsxExpression {
     }
 }
 
-pub struct JsxText {
-    pub literal_like_node_base: LiteralLikeNodeBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type JsxText = JsxTextStorage<'static>;
+
+pub struct JsxTextStorage<'alloc> {
+    pub literal_like_node_base: LiteralLikeNodeBaseStorage<'alloc>,
     pub contains_only_trivia_white_spaces: bool,
 }
 
-impl JsxText {
+impl<'alloc> JsxTextStorage<'alloc> {
     #[inline]
     pub fn contains_only_trivia_white_spaces(&self) -> bool {
         self.contains_only_trivia_white_spaces
     }
     #[inline]
-    pub fn text(&self) -> &'static str {
+    pub fn text(&self) -> &'alloc str {
         self.literal_like_node_base.text.as_str()
     }
     #[inline]
@@ -4919,13 +4958,16 @@ impl JsxText {
     }
 }
 
-pub struct SyntaxList {
-    pub children: &'static [P<Node>],
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type SyntaxList = SyntaxListStorage<'static>;
+
+pub struct SyntaxListStorage<'alloc> {
+    pub children: &'alloc [P<Node>],
 }
 
-impl SyntaxList {
+impl<'alloc> SyntaxListStorage<'alloc> {
     #[inline]
-    pub fn children(&self) -> &'static [P<Node>] {
+    pub fn children(&self) -> &'alloc [P<Node>] {
         self.children
     }
 }
@@ -5790,61 +5832,73 @@ impl ImportSpecifier {
     }
 }
 
-pub struct JSDocText {
-    pub jsdoc_comment_base: JSDocCommentBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type JSDocText = JSDocTextStorage<'static>;
+
+pub struct JSDocTextStorage<'alloc> {
+    pub jsdoc_comment_base: JSDocCommentBaseStorage<'alloc>,
 }
 
-impl JSDocText {
+impl<'alloc> JSDocTextStorage<'alloc> {
     #[inline]
-    pub fn text(&self) -> &'static [&'static str] {
+    pub fn text(&self) -> &'alloc [&'alloc str] {
         self.jsdoc_comment_base.text
     }
 }
 
-pub struct JSDocLink {
-    pub jsdoc_comment_base: JSDocCommentBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type JSDocLink = JSDocLinkStorage<'static>;
+
+pub struct JSDocLinkStorage<'alloc> {
+    pub jsdoc_comment_base: JSDocCommentBaseStorage<'alloc>,
     pub name: Option<P<Node>>,
 }
 
-impl JSDocLink {
+impl<'alloc> JSDocLinkStorage<'alloc> {
     #[inline]
     pub fn name(&self) -> Option<P<Node>> {
         self.name
     }
     #[inline]
-    pub fn text(&self) -> &'static [&'static str] {
+    pub fn text(&self) -> &'alloc [&'alloc str] {
         self.jsdoc_comment_base.text
     }
 }
 
-pub struct JSDocLinkPlain {
-    pub jsdoc_comment_base: JSDocCommentBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type JSDocLinkPlain = JSDocLinkPlainStorage<'static>;
+
+pub struct JSDocLinkPlainStorage<'alloc> {
+    pub jsdoc_comment_base: JSDocCommentBaseStorage<'alloc>,
     pub name: Option<P<Node>>,
 }
 
-impl JSDocLinkPlain {
+impl<'alloc> JSDocLinkPlainStorage<'alloc> {
     #[inline]
     pub fn name(&self) -> Option<P<Node>> {
         self.name
     }
     #[inline]
-    pub fn text(&self) -> &'static [&'static str] {
+    pub fn text(&self) -> &'alloc [&'alloc str] {
         self.jsdoc_comment_base.text
     }
 }
 
-pub struct JSDocLinkCode {
-    pub jsdoc_comment_base: JSDocCommentBase,
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type JSDocLinkCode = JSDocLinkCodeStorage<'static>;
+
+pub struct JSDocLinkCodeStorage<'alloc> {
+    pub jsdoc_comment_base: JSDocCommentBaseStorage<'alloc>,
     pub name: Option<P<Node>>,
 }
 
-impl JSDocLinkCode {
+impl<'alloc> JSDocLinkCodeStorage<'alloc> {
     #[inline]
     pub fn name(&self) -> Option<P<Node>> {
         self.name
     }
     #[inline]
-    pub fn text(&self) -> &'static [&'static str] {
+    pub fn text(&self) -> &'alloc [&'alloc str] {
         self.jsdoc_comment_base.text
     }
 }
@@ -5909,15 +5963,18 @@ impl SyntheticReferenceExpression {
     }
 }
 
-pub struct JSDocTypeLiteral {
+/// Raw compiler view; its owner must retain the backing arena and borrowed data.
+pub type JSDocTypeLiteral = JSDocTypeLiteralStorage<'static>;
+
+pub struct JSDocTypeLiteralStorage<'alloc> {
     pub declaration_base: DeclarationBase,
-    pub jsdoc_property_tags: &'static [P<Node>],
+    pub jsdoc_property_tags: &'alloc [P<Node>],
     pub is_array_type: bool,
 }
 
-impl JSDocTypeLiteral {
+impl<'alloc> JSDocTypeLiteralStorage<'alloc> {
     #[inline]
-    pub fn jsdoc_property_tags(&self) -> &'static [P<Node>] {
+    pub fn jsdoc_property_tags(&self) -> &'alloc [P<Node>] {
         self.jsdoc_property_tags
     }
     #[inline]
@@ -6373,7 +6430,7 @@ pub(crate) enum NodeDataTag {
 impl NodePayload for Identifier {
     const TAG: NodeDataTag = NodeDataTag::Identifier;
 }
-impl NodePayload for PrivateIdentifier {
+impl NodePayload for PrivateIdentifierStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::PrivateIdentifier;
 }
 impl NodePayload for QualifiedName {
@@ -6565,19 +6622,19 @@ impl NodePayload for ClassStaticBlockDeclaration {
 impl NodePayload for KeywordExpression {
     const TAG: NodeDataTag = NodeDataTag::KeywordExpression;
 }
-impl NodePayload for StringLiteral {
+impl NodePayload for StringLiteralStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::StringLiteral;
 }
-impl NodePayload for NumericLiteral {
+impl NodePayload for NumericLiteralStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::NumericLiteral;
 }
-impl NodePayload for BigIntLiteral {
+impl NodePayload for BigIntLiteralStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::BigIntLiteral;
 }
-impl NodePayload for RegularExpressionLiteral {
+impl NodePayload for RegularExpressionLiteralStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::RegularExpressionLiteral;
 }
-impl NodePayload for NoSubstitutionTemplateLiteral {
+impl NodePayload for NoSubstitutionTemplateLiteralStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::NoSubstitutionTemplateLiteral;
 }
 impl NodePayload for BinaryExpression {
@@ -6739,13 +6796,13 @@ impl NodePayload for FunctionTypeNode {
 impl NodePayload for ConstructorTypeNode {
     const TAG: NodeDataTag = NodeDataTag::ConstructorTypeNode;
 }
-impl NodePayload for TemplateHead {
+impl NodePayload for TemplateHeadStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::TemplateHead;
 }
-impl NodePayload for TemplateMiddle {
+impl NodePayload for TemplateMiddleStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::TemplateMiddle;
 }
-impl NodePayload for TemplateTail {
+impl NodePayload for TemplateTailStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::TemplateTail;
 }
 impl NodePayload for TemplateLiteralTypeNode {
@@ -6790,10 +6847,10 @@ impl NodePayload for JsxClosingElement {
 impl NodePayload for JsxExpression {
     const TAG: NodeDataTag = NodeDataTag::JsxExpression;
 }
-impl NodePayload for JsxText {
+impl NodePayload for JsxTextStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::JsxText;
 }
-impl NodePayload for SyntaxList {
+impl NodePayload for SyntaxListStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::SyntaxList;
 }
 impl NodePayload for JSDoc {
@@ -6880,7 +6937,7 @@ impl NodePayload for JSDocSignature {
 impl NodePayload for JSDocNameReference {
     const TAG: NodeDataTag = NodeDataTag::JSDocNameReference;
 }
-impl NodePayload for SourceFile {
+impl NodePayload for SourceFileStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::SourceFile;
 }
 impl NodePayload for ModuleDeclaration {
@@ -6901,16 +6958,16 @@ impl NodePayload for ImportClause {
 impl NodePayload for ImportSpecifier {
     const TAG: NodeDataTag = NodeDataTag::ImportSpecifier;
 }
-impl NodePayload for JSDocText {
+impl NodePayload for JSDocTextStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::JSDocText;
 }
-impl NodePayload for JSDocLink {
+impl NodePayload for JSDocLinkStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::JSDocLink;
 }
-impl NodePayload for JSDocLinkPlain {
+impl NodePayload for JSDocLinkPlainStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::JSDocLinkPlain;
 }
-impl NodePayload for JSDocLinkCode {
+impl NodePayload for JSDocLinkCodeStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::JSDocLinkCode;
 }
 impl NodePayload for TypeParameterDeclaration {
@@ -6919,7 +6976,7 @@ impl NodePayload for TypeParameterDeclaration {
 impl NodePayload for SyntheticReferenceExpression {
     const TAG: NodeDataTag = NodeDataTag::SyntheticReferenceExpression;
 }
-impl NodePayload for JSDocTypeLiteral {
+impl NodePayload for JSDocTypeLiteralStorage<'_> {
     const TAG: NodeDataTag = NodeDataTag::JSDocTypeLiteral;
 }
 impl NodePayload for JSDocParameterOrPropertyTag {
@@ -10924,9 +10981,11 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     pub fn new_private_identifier(&self, text: &'alloc str) -> P<Node> {
-        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
-        self.new_node(Kind::PrivateIdentifier, PrivateIdentifier { text: PackedStr::new(text) })
+        self.new_node(
+            Kind::PrivateIdentifier,
+            PrivateIdentifierStorage { text: self.pack_text(text) },
+        )
     }
 
     pub fn new_qualified_name(&self, left: P<Node>, right: P<Node>) -> P<Node> {
@@ -13187,13 +13246,12 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     pub fn new_string_literal(&self, text: &'alloc str, token_flags: TokenFlags) -> P<Node> {
-        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::StringLiteral,
-            StringLiteral {
-                literal_like_node_base: LiteralLikeNodeBase {
-                    text: PackedStr::new(text),
+            StringLiteralStorage {
+                literal_like_node_base: LiteralLikeNodeBaseStorage {
+                    text: self.pack_text(text),
                     token_flags: OwnedCell::new(token_flags & TokenFlags::StringLiteralFlags),
                 },
             },
@@ -13201,13 +13259,12 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     pub fn new_numeric_literal(&self, text: &'alloc str, token_flags: TokenFlags) -> P<Node> {
-        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::NumericLiteral,
-            NumericLiteral {
-                literal_like_node_base: LiteralLikeNodeBase {
-                    text: PackedStr::new(text),
+            NumericLiteralStorage {
+                literal_like_node_base: LiteralLikeNodeBaseStorage {
+                    text: self.pack_text(text),
                     token_flags: OwnedCell::new(token_flags & TokenFlags::NumericLiteralFlags),
                 },
             },
@@ -13215,13 +13272,12 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     pub fn new_big_int_literal(&self, text: &'alloc str, token_flags: TokenFlags) -> P<Node> {
-        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::BigIntLiteral,
-            BigIntLiteral {
-                literal_like_node_base: LiteralLikeNodeBase {
-                    text: PackedStr::new(text),
+            BigIntLiteralStorage {
+                literal_like_node_base: LiteralLikeNodeBaseStorage {
+                    text: self.pack_text(text),
                     token_flags: OwnedCell::new(token_flags & TokenFlags::NumericLiteralFlags),
                 },
             },
@@ -13233,13 +13289,12 @@ impl<'alloc> NodeFactory<'alloc> {
         text: &'alloc str,
         token_flags: TokenFlags,
     ) -> P<Node> {
-        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::RegularExpressionLiteral,
-            RegularExpressionLiteral {
-                literal_like_node_base: LiteralLikeNodeBase {
-                    text: PackedStr::new(text),
+            RegularExpressionLiteralStorage {
+                literal_like_node_base: LiteralLikeNodeBaseStorage {
+                    text: self.pack_text(text),
                     token_flags: OwnedCell::new(
                         token_flags & TokenFlags::RegularExpressionLiteralFlags,
                     ),
@@ -13253,14 +13308,13 @@ impl<'alloc> NodeFactory<'alloc> {
         text: &'alloc str,
         template_flags: TokenFlags,
     ) -> P<Node> {
-        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::NoSubstitutionTemplateLiteral,
-            NoSubstitutionTemplateLiteral {
-                template_literal_like_node_base: TemplateLiteralLikeNodeBase {
-                    literal_like_node_base: LiteralLikeNodeBase {
-                        text: PackedStr::new(text),
+            NoSubstitutionTemplateLiteralStorage {
+                template_literal_like_node_base: TemplateLiteralLikeNodeBaseStorage {
+                    literal_like_node_base: LiteralLikeNodeBaseStorage {
+                        text: self.pack_text(text),
                         token_flags: OwnedCell::new(TokenFlags::None),
                     },
                     raw_text: "",
@@ -14847,15 +14901,13 @@ impl<'alloc> NodeFactory<'alloc> {
         raw_text: &'alloc str,
         template_flags: TokenFlags,
     ) -> P<Node> {
-        let text = self.store_text(text);
-        let raw_text = self.store_text(raw_text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::TemplateHead,
-            TemplateHead {
-                template_literal_like_node_base: TemplateLiteralLikeNodeBase {
-                    literal_like_node_base: LiteralLikeNodeBase {
-                        text: PackedStr::new(text),
+            TemplateHeadStorage {
+                template_literal_like_node_base: TemplateLiteralLikeNodeBaseStorage {
+                    literal_like_node_base: LiteralLikeNodeBaseStorage {
+                        text: self.pack_text(text),
                         token_flags: OwnedCell::new(TokenFlags::None),
                     },
                     raw_text,
@@ -14871,15 +14923,13 @@ impl<'alloc> NodeFactory<'alloc> {
         raw_text: &'alloc str,
         template_flags: TokenFlags,
     ) -> P<Node> {
-        let text = self.store_text(text);
-        let raw_text = self.store_text(raw_text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::TemplateMiddle,
-            TemplateMiddle {
-                template_literal_like_node_base: TemplateLiteralLikeNodeBase {
-                    literal_like_node_base: LiteralLikeNodeBase {
-                        text: PackedStr::new(text),
+            TemplateMiddleStorage {
+                template_literal_like_node_base: TemplateLiteralLikeNodeBaseStorage {
+                    literal_like_node_base: LiteralLikeNodeBaseStorage {
+                        text: self.pack_text(text),
                         token_flags: OwnedCell::new(TokenFlags::None),
                     },
                     raw_text,
@@ -14895,15 +14945,13 @@ impl<'alloc> NodeFactory<'alloc> {
         raw_text: &'alloc str,
         template_flags: TokenFlags,
     ) -> P<Node> {
-        let text = self.store_text(text);
-        let raw_text = self.store_text(raw_text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::TemplateTail,
-            TemplateTail {
-                template_literal_like_node_base: TemplateLiteralLikeNodeBase {
-                    literal_like_node_base: LiteralLikeNodeBase {
-                        text: PackedStr::new(text),
+            TemplateTailStorage {
+                template_literal_like_node_base: TemplateLiteralLikeNodeBaseStorage {
+                    literal_like_node_base: LiteralLikeNodeBaseStorage {
+                        text: self.pack_text(text),
                         token_flags: OwnedCell::new(TokenFlags::None),
                     },
                     raw_text,
@@ -15273,13 +15321,12 @@ impl<'alloc> NodeFactory<'alloc> {
         text: &'alloc str,
         contains_only_trivia_white_spaces: bool,
     ) -> P<Node> {
-        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::JsxText,
-            JsxText {
-                literal_like_node_base: LiteralLikeNodeBase {
-                    text: PackedStr::new(text),
+            JsxTextStorage {
+                literal_like_node_base: LiteralLikeNodeBaseStorage {
+                    text: self.pack_text(text),
                     token_flags: OwnedCell::new(TokenFlags::None),
                 },
                 contains_only_trivia_white_spaces,
@@ -15288,11 +15335,10 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     pub fn new_syntax_list(&self, children: &'alloc [P<Node>]) -> P<Node> {
-        let children = self.store_slice(children);
-        self.new_node(Kind::SyntaxList, SyntaxList { children })
+        self.new_node(Kind::SyntaxList, SyntaxListStorage { children })
     }
 
-    pub fn update_syntax_list(&self, node: P<Node>, children: &'static [P<Node>]) -> P<Node> {
+    pub fn update_syntax_list(&self, node: P<Node>, children: &'alloc [P<Node>]) -> P<Node> {
         let data = node.as_syntax_list();
         if !same_slice(children, data.children()) {
             return update_node(self.new_syntax_list(children), node, &self.hooks);
@@ -16374,17 +16420,18 @@ impl<'alloc> NodeFactory<'alloc> {
     }
 
     pub fn new_jsdoc_text(&self, text: &'alloc [&'alloc str]) -> P<Node> {
-        let text = self.store_texts(text);
         self.text_count.set(self.text_count.get() + 1);
-        self.new_node(Kind::JSDocText, JSDocText { jsdoc_comment_base: JSDocCommentBase { text } })
+        self.new_node(
+            Kind::JSDocText,
+            JSDocTextStorage { jsdoc_comment_base: JSDocCommentBaseStorage { text } },
+        )
     }
 
     pub fn new_jsdoc_link(&self, name: Option<P<Node>>, text: &'alloc [&'alloc str]) -> P<Node> {
-        let text = self.store_texts(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::JSDocLink,
-            JSDocLink { jsdoc_comment_base: JSDocCommentBase { text }, name },
+            JSDocLinkStorage { jsdoc_comment_base: JSDocCommentBaseStorage { text }, name },
         )
     }
 
@@ -16392,7 +16439,7 @@ impl<'alloc> NodeFactory<'alloc> {
         &self,
         node: P<Node>,
         name: Option<P<Node>>,
-        text: &'static [&'static str],
+        text: &'alloc [&'alloc str],
     ) -> P<Node> {
         let data = node.as_jsdoc_link();
         if name != data.name() || !same_slice(text, data.text()) {
@@ -16406,11 +16453,10 @@ impl<'alloc> NodeFactory<'alloc> {
         name: Option<P<Node>>,
         text: &'alloc [&'alloc str],
     ) -> P<Node> {
-        let text = self.store_texts(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::JSDocLinkPlain,
-            JSDocLinkPlain { jsdoc_comment_base: JSDocCommentBase { text }, name },
+            JSDocLinkPlainStorage { jsdoc_comment_base: JSDocCommentBaseStorage { text }, name },
         )
     }
 
@@ -16418,7 +16464,7 @@ impl<'alloc> NodeFactory<'alloc> {
         &self,
         node: P<Node>,
         name: Option<P<Node>>,
-        text: &'static [&'static str],
+        text: &'alloc [&'alloc str],
     ) -> P<Node> {
         let data = node.as_jsdoc_link_plain();
         if name != data.name() || !same_slice(text, data.text()) {
@@ -16432,11 +16478,10 @@ impl<'alloc> NodeFactory<'alloc> {
         name: Option<P<Node>>,
         text: &'alloc [&'alloc str],
     ) -> P<Node> {
-        let text = self.store_texts(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::JSDocLinkCode,
-            JSDocLinkCode { jsdoc_comment_base: JSDocCommentBase { text }, name },
+            JSDocLinkCodeStorage { jsdoc_comment_base: JSDocCommentBaseStorage { text }, name },
         )
     }
 
@@ -16444,7 +16489,7 @@ impl<'alloc> NodeFactory<'alloc> {
         &self,
         node: P<Node>,
         name: Option<P<Node>>,
-        text: &'static [&'static str],
+        text: &'alloc [&'alloc str],
     ) -> P<Node> {
         let data = node.as_jsdoc_link_code();
         if name != data.name() || !same_slice(text, data.text()) {
@@ -16538,10 +16583,9 @@ impl<'alloc> NodeFactory<'alloc> {
         jsdoc_property_tags: &'alloc [P<Node>],
         is_array_type: bool,
     ) -> P<Node> {
-        let jsdoc_property_tags = self.store_slice(jsdoc_property_tags);
         self.new_node(
             Kind::JSDocTypeLiteral,
-            JSDocTypeLiteral {
+            JSDocTypeLiteralStorage {
                 declaration_base: DeclarationBase { symbol: OwnedCell::new(None) },
                 jsdoc_property_tags,
                 is_array_type,
@@ -16552,7 +16596,7 @@ impl<'alloc> NodeFactory<'alloc> {
     pub fn update_jsdoc_type_literal(
         &self,
         node: P<Node>,
-        jsdoc_property_tags: &'static [P<Node>],
+        jsdoc_property_tags: &'alloc [P<Node>],
         is_array_type: bool,
     ) -> P<Node> {
         let data = node.as_jsdoc_type_literal();

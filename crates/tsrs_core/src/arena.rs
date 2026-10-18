@@ -1095,12 +1095,24 @@ impl Allocator {
     /// allocator's backing region. The raw handle itself does not encode that lifetime.
     #[inline]
     pub unsafe fn alloc_legacy<T: 'static>(&self, value: T) -> crate::P<T> {
+        // SAFETY: the caller retains this region for all uses of the returned raw handle.
+        let ptr = unsafe { self.alloc_raw(value) };
+        // SAFETY: alloc_raw uses P's layout, and the caller retains the backing region.
+        unsafe { crate::P::from_raw(ptr) }
+    }
+
+    /// Allocates compiler storage without claiming that its borrowed fields are static.
+    ///
+    /// # Safety
+    /// The caller must keep the allocation and everything its destructor may read alive until
+    /// the region is reclaimed. Every use of the pointer and derived references must occur before
+    /// reclamation or rewind. This requirement also applies to data borrowed by `value`.
+    #[inline]
+    pub unsafe fn alloc_raw<T>(&self, value: T) -> NonNull<T> {
         let arena = self.arena();
         let value = arena.alloc_with(crate::ptr::p_layout::<T>(), value);
         arena.track_drop(std::ptr::from_mut(value), 1);
-        // SAFETY: the allocation has the alignment required by P. The caller retains its region
-        // for every use of the lifetime-erased handle, including references obtained from it.
-        unsafe { crate::P::from_arena(&*std::ptr::from_mut(value)) }
+        NonNull::from(value)
     }
 
     #[inline]

@@ -123,6 +123,22 @@ fn with_scratch_arena<R>(f: impl FnOnce(&'static Arena) -> R) -> R {
     f(unsafe { &*s })
 }
 
+/// Allocates borrowed compiler storage in the ambient region, with the layout required by `P`.
+///
+/// # Safety
+/// The caller must retain the region and any data that `value` or its destructor may read for
+/// every use of the allocation, including destruction. No derived reference may survive reclamation
+/// or rewind. `scratch` selects the current scratch region, as in `P::new_in`.
+#[inline]
+pub unsafe fn alloc_raw_in<T>(scratch: bool, value: T) -> std::ptr::NonNull<T> {
+    let allocate = |arena: &Arena| {
+        let value = arena.alloc_with(p_layout::<T>(), value);
+        arena.track_drop(std::ptr::from_mut(value), 1);
+        std::ptr::NonNull::from(value)
+    };
+    if scratch { with_scratch_arena(allocate) } else { with_arena(allocate) }
+}
+
 /// The layout `P::new` allocates for a `T`. Compressed handles count 8-byte units, so every `P` target is 8-aligned
 /// and padded to 8 (the padding keeps free-list classes, which assume 8-aligned blocks of `size` bytes, exact).
 #[inline]
@@ -176,6 +192,29 @@ pub struct P<T: ?Sized + 'static>(std::ptr::NonNull<T>, std::marker::PhantomData
 pub struct P<T: ?Sized + 'static>(std::num::NonZeroU32, std::marker::PhantomData<&'static T>);
 
 impl<T> P<T> {
+    /// Creates a raw compiler handle without manufacturing a static reference.
+    ///
+    /// # Safety
+    /// `ptr` must point to a live `T` in a block with `P`'s arena layout. The caller must retain
+    /// that storage for every use of the handle and all derived references.
+    #[inline]
+    pub unsafe fn from_raw(ptr: std::ptr::NonNull<T>) -> Self {
+        #[cfg(compressed_ptrs)]
+        {
+            let off = ptr.addr().get().wrapping_sub(crate::reserve::base().addr());
+            debug_assert!(off != 0 && off < crate::reserve::RESERVE && off.is_multiple_of(8));
+            // SAFETY: the arena address is nonzero and aligned as required by this function's contract.
+            P(
+                unsafe {
+                    std::num::NonZeroU32::new_unchecked((off >> crate::reserve::UNIT_SHIFT) as u32)
+                },
+                std::marker::PhantomData,
+            )
+        }
+        #[cfg(not(compressed_ptrs))]
+        P(ptr, std::marker::PhantomData)
+    }
+
     /// Allocates `value` in the current thread's leak arena. Destructors never run.
     #[inline]
     pub fn new(value: T) -> P<T> {
@@ -850,29 +889,29 @@ unsafe impl<T> Send for StaticSlicePtr<T> {}
 // SAFETY: as for `Send`; the slice is never written through.
 unsafe impl<T> Sync for StaticSlicePtr<T> {}
 
-/// A `&'static str` in 8 bytes: the data pointer in the low 48 bits and the length in the high 16.
+/// A `&'alloc str` in 8 bytes: the data pointer in the low 48 bits and the length in the high 16.
 ///
 /// A string of `u16::MAX` bytes or more (or one whose address does not fit in 48 bits) is copied into the
 /// arena after a `u32` length, and the length bits hold `u16::MAX`. `as_str` returns the same text (for short
 /// strings, the same slice).
 #[derive(Clone, Copy)]
 #[cfg(target_pointer_width = "64")]
-pub struct PackedStr(std::ptr::NonNull<u8>);
+pub struct PackedStr<'alloc>(std::ptr::NonNull<u8>, std::marker::PhantomData<&'alloc str>);
 
-/// 32-bit targets (wasm32): a fat `&'static str` is already 8 bytes, so `PackedStr` is the reference itself.
+/// 32-bit targets (wasm32): a fat `&'alloc str` is already 8 bytes, so `PackedStr` is the reference itself.
 #[derive(Clone, Copy)]
 #[cfg(target_pointer_width = "32")]
-pub struct PackedStr(&'static str);
+pub struct PackedStr<'alloc>(&'alloc str);
 
 #[cfg(target_pointer_width = "32")]
-impl PackedStr {
+impl<'alloc> PackedStr<'alloc> {
     #[inline]
-    pub fn new(s: &'static str) -> PackedStr {
+    fn new_with(s: &'alloc str, _: impl FnOnce() -> &'alloc Arena) -> Self {
         PackedStr(s)
     }
 
     #[inline]
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'alloc str {
         self.0
     }
 }
@@ -883,28 +922,34 @@ const PACKED_STR_LEN_SHIFT: u32 = 48;
 const PACKED_STR_LONG: usize = u16::MAX as usize;
 
 #[cfg(target_pointer_width = "64")]
-impl PackedStr {
+impl<'alloc> PackedStr<'alloc> {
     #[inline]
-    pub fn new(s: &'static str) -> PackedStr {
+    fn new_with(s: &'alloc str, arena: impl FnOnce() -> &'alloc Arena) -> Self {
         let p = std::ptr::NonNull::from(s).cast::<u8>();
         if s.len() < PACKED_STR_LONG && p.addr().get() >> PACKED_STR_LEN_SHIFT == 0 {
-            return PackedStr(p.map_addr(|a| a | (s.len() << PACKED_STR_LEN_SHIFT)));
+            return PackedStr(
+                p.map_addr(|a| a | (s.len() << PACKED_STR_LEN_SHIFT)),
+                std::marker::PhantomData,
+            );
         }
-        PackedStr::new_long(s)
+        Self::new_long(s, arena())
     }
 
     #[cold]
-    fn new_long(s: &str) -> PackedStr {
+    fn new_long(s: &str, arena: &'alloc Arena) -> Self {
         let len = u32::try_from(s.len()).expect("string longer than u32::MAX");
         let layout = std::alloc::Layout::from_size_align(4 + s.len(), 4).unwrap();
-        let p = with_arena(|a| a.alloc_layout(layout));
+        let p = arena.alloc_layout(layout);
         // SAFETY: `p` points to `4 + len` fresh bytes, 4-byte aligned.
         unsafe {
             p.cast::<u32>().as_ptr().write(len);
             std::ptr::copy_nonoverlapping(s.as_ptr(), p.as_ptr().add(4), s.len());
         }
         assert!(p.addr().get() >> PACKED_STR_LEN_SHIFT == 0, "arena address above 2^48");
-        PackedStr(p.map_addr(|a| a | (PACKED_STR_LONG << PACKED_STR_LEN_SHIFT)))
+        PackedStr(
+            p.map_addr(|a| a | (PACKED_STR_LONG << PACKED_STR_LEN_SHIFT)),
+            std::marker::PhantomData,
+        )
     }
 
     #[inline]
@@ -912,10 +957,10 @@ impl PackedStr {
         clippy::disallowed_methods,
         reason = "from_utf8 here and in OwnedStrCell::get: +5% instructions, one checker (notes/lint-paydown-compiler.md)"
     )]
-    pub fn as_str(self) -> &'static str {
+    pub fn as_str(self) -> &'alloc str {
         let len = self.0.addr().get() >> PACKED_STR_LEN_SHIFT;
         let p = self.0.as_ptr().map_addr(|a| a & ((1 << PACKED_STR_LEN_SHIFT) - 1));
-        // SAFETY: built by `new` from a `&'static str` of this length, or by `new_long` (length prefix + bytes).
+        // SAFETY: built by `new` from a `&'alloc str` of this length, or by `new_long` (length prefix + bytes).
         unsafe {
             let (p, len) = if len == PACKED_STR_LONG {
                 (p.add(4).cast_const(), p.cast::<u32>().read_unaligned() as usize)
@@ -927,53 +972,53 @@ impl PackedStr {
     }
 }
 
-// SAFETY: a `PackedStr` stands for a `&'static str` (immutable bytes), which is `Send`.
-unsafe impl Send for PackedStr {}
-// SAFETY: a `&'static str` is `Sync`.
-unsafe impl Sync for PackedStr {}
+// SAFETY: a `PackedStr` stands for a `&'alloc str` (immutable bytes), which is `Send`.
+unsafe impl Send for PackedStr<'_> {}
+// SAFETY: a `&'alloc str` is `Sync`.
+unsafe impl Sync for PackedStr<'_> {}
 
-impl fmt::Debug for PackedStr {
+impl fmt::Debug for PackedStr<'_> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.as_str().fmt(f)
     }
 }
 
-/// A `&'static [T]` in one word: the data pointer in the low 48 bits and the length in the high 16 (like
+/// A `&'alloc [T]` in one word: the data pointer in the low 48 bits and the length in the high 16 (like
 /// `PackedStr`).
 ///
 /// A slice of 2^16 elements or more (or one whose address does not fit in 48 bits) is kept as a pointer to an
-/// arena copy of the `&'static [T]` reference itself, tagged with bit 0 (`T` is at least 2-aligned, so a data
+/// arena copy of the `&'alloc [T]` reference itself, tagged with bit 0 (`T` is at least 2-aligned, so a data
 /// pointer never has it), so `get` returns exactly the slice that was packed (same pointer and length) in
 /// either form. The word is never zero (a slice's data pointer, even an empty one's, is non-null), so
-/// `Option<ThinSlice<T>>` is one word too.
+/// `Option<ThinSlice<'alloc, T>>` is one word too.
 #[cfg(target_pointer_width = "64")]
-pub struct ThinSlice<T: 'static>(std::ptr::NonNull<()>, std::marker::PhantomData<&'static [T]>);
+pub struct ThinSlice<'alloc, T>(std::ptr::NonNull<()>, std::marker::PhantomData<&'alloc [T]>);
 
-/// 32-bit targets (wasm32): the data pointer and the length, 8 bytes like a fat `&'static [T]` (and `Option` of it
+/// 32-bit targets (wasm32): the data pointer and the length, 8 bytes like a fat `&'alloc [T]` (and `Option` of it
 /// uses the non-null niche).
 ///
-/// Every slice fits, so the only long form is `from_ref`'s: the address of the `&'static [T]`
+/// Every slice fits, so the only long form is `from_ref`'s: the address of the `&'alloc [T]`
 /// it reads, tagged with bit 0 (`T` is at least 2-aligned, so a data pointer never has it).
 #[cfg(target_pointer_width = "32")]
-pub struct ThinSlice<T: 'static>(
+pub struct ThinSlice<'alloc, T>(
     std::ptr::NonNull<()>,
     usize,
-    std::marker::PhantomData<&'static [T]>,
+    std::marker::PhantomData<&'alloc [T]>,
 );
 
 #[cfg(target_pointer_width = "32")]
-impl<T> ThinSlice<T> {
+impl<'alloc, T> ThinSlice<'alloc, T> {
     const ALIGNED: () =
         assert!(std::mem::align_of::<T>() >= 2, "ThinSlice needs bit 0 of the data pointer");
 
     #[inline]
-    pub fn new(s: &'static [T]) -> Self {
+    fn new_with(s: &'alloc [T], _: impl FnOnce() -> &'alloc Arena) -> Self {
         let () = Self::ALIGNED;
         ThinSlice(std::ptr::NonNull::from(s).cast::<()>(), s.len(), std::marker::PhantomData)
     }
 
     /// A long-form slice that reads `*r` (as on 64-bit targets).
-    pub fn from_ref(r: &'static &'static [T]) -> Self {
+    pub fn from_ref(r: &'alloc &'alloc [T]) -> Self {
         let () = Self::ALIGNED;
         ThinSlice(
             std::ptr::NonNull::from(r).cast::<()>().map_addr(|a| a | THIN_LONG_TAG),
@@ -988,21 +1033,21 @@ impl<T> ThinSlice<T> {
         self.0.addr().get() & THIN_LONG_TAG != 0
     }
 
-    /// The `&'static [T]` a long-form slice reads (`None` for the short form).
+    /// The `&'alloc [T]` a long-form slice reads (`None` for the short form).
     #[inline]
-    pub fn long_ref(self) -> Option<&'static &'static [T]> {
-        // SAFETY: a long form was built by `from_ref` from a `&'static &'static [T]`.
+    pub fn long_ref(self) -> Option<&'alloc &'alloc [T]> {
+        // SAFETY: a long form was built by `from_ref` from a `&'alloc &'alloc [T]`.
         self.is_long().then(|| unsafe {
-            &*(self.0.as_ptr().map_addr(|a| a & !THIN_LONG_TAG) as *const &'static [T])
+            &*(self.0.as_ptr().map_addr(|a| a & !THIN_LONG_TAG) as *const &'alloc [T])
         })
     }
 
     #[inline]
-    pub fn get(self) -> &'static [T] {
+    pub fn get(self) -> &'alloc [T] {
         if let Some(r) = self.long_ref() {
             return r;
         }
-        // SAFETY: built by `new` from a `&'static [T]` of this length.
+        // SAFETY: built by `new` from a `&'alloc [T]` of this length.
         unsafe { std::slice::from_raw_parts(self.0.as_ptr() as *const T, self.1) }
     }
 }
@@ -1013,16 +1058,16 @@ const THIN_LEN_SHIFT: u32 = 48;
 const THIN_ADDR_MASK: usize = (1 << THIN_LEN_SHIFT) - 1;
 const THIN_LONG_TAG: usize = 1;
 
-impl<T> Clone for ThinSlice<T> {
+impl<T> Clone for ThinSlice<'_, T> {
     #[inline]
     fn clone(&self) -> Self {
         *self
     }
 }
-impl<T> Copy for ThinSlice<T> {}
+impl<T> Copy for ThinSlice<'_, T> {}
 
 /// Identity: the same pointer and length (the shared-graph overlay's "unset" test).
-impl<T> PartialEq for ThinSlice<T> {
+impl<T> PartialEq for ThinSlice<'_, T> {
     fn eq(&self, other: &Self) -> bool {
         #[cfg(target_pointer_width = "64")]
         return self.0 == other.0;
@@ -1031,19 +1076,19 @@ impl<T> PartialEq for ThinSlice<T> {
     }
 }
 
-impl<T> Default for ThinSlice<T> {
+impl<T> Default for ThinSlice<'_, T> {
     fn default() -> Self {
-        ThinSlice::new(&[])
+        Self::new_with(&[], || own_arena())
     }
 }
 
 #[cfg(target_pointer_width = "64")]
-impl<T> ThinSlice<T> {
+impl<'alloc, T> ThinSlice<'alloc, T> {
     const ALIGNED: () =
         assert!(std::mem::align_of::<T>() >= 2, "ThinSlice needs bit 0 of the data pointer");
 
     #[inline]
-    pub fn new(s: &'static [T]) -> Self {
+    fn new_with(s: &'alloc [T], arena: impl FnOnce() -> &'alloc Arena) -> Self {
         let () = Self::ALIGNED;
         let p = std::ptr::NonNull::from(s).cast::<()>();
         if (p.addr().get() >> THIN_LEN_SHIFT) | (s.len() >> (usize::BITS - THIN_LEN_SHIFT)) == 0 {
@@ -1052,20 +1097,20 @@ impl<T> ThinSlice<T> {
                 std::marker::PhantomData,
             );
         }
-        Self::new_long(s)
+        Self::new_long(s, arena())
     }
 
     #[cold]
-    fn new_long(s: &'static [T]) -> Self {
-        let r = P::new(s);
-        let p = std::ptr::NonNull::from(r.get()).cast::<()>();
+    fn new_long(s: &'alloc [T], arena: &'alloc Arena) -> Self {
+        let r = arena.alloc_with(p_layout::<&[T]>(), s);
+        let p = std::ptr::NonNull::from(r).cast::<()>();
         assert!(p.addr().get() >> THIN_LEN_SHIFT == 0, "arena address above 2^48");
         ThinSlice(p.map_addr(|a| a | THIN_LONG_TAG), std::marker::PhantomData)
     }
 
-    /// A long-form slice that reads `*r` (a `&'static [T]` at a stable address that the owner may give a special
+    /// A long-form slice that reads `*r` (a `&'alloc [T]` at a stable address that the owner may give a special
     /// meaning, such as `tsrs_ast`'s lazily parsed node lists, which check `is_long` before `get`).
-    pub fn from_ref(r: &'static &'static [T]) -> Self {
+    pub fn from_ref(r: &'alloc &'alloc [T]) -> Self {
         let p = std::ptr::NonNull::from(r).cast::<()>();
         assert!(p.addr().get() >> THIN_LEN_SHIFT == 0, "arena address above 2^48");
         ThinSlice(p.map_addr(|a| a | THIN_LONG_TAG), std::marker::PhantomData)
@@ -1077,47 +1122,101 @@ impl<T> ThinSlice<T> {
         self.0.addr().get() & THIN_LONG_TAG != 0
     }
 
-    /// The `&'static [T]` a long-form slice reads (`None` for the short form).
+    /// The `&'alloc [T]` a long-form slice reads (`None` for the short form).
     #[inline]
-    pub fn long_ref(self) -> Option<&'static &'static [T]> {
-        // SAFETY: a long form was built by `new_long` or `from_ref` from a `&'static &'static [T]`.
+    pub fn long_ref(self) -> Option<&'alloc &'alloc [T]> {
+        // SAFETY: a long form was built by `new_long` or `from_ref` from a `&'alloc &'alloc [T]`.
         self.is_long().then(|| unsafe {
-            &*(self.0.as_ptr().map_addr(|a| a & !THIN_LONG_TAG) as *const &'static [T])
+            &*(self.0.as_ptr().map_addr(|a| a & !THIN_LONG_TAG) as *const &'alloc [T])
         })
     }
 
     #[inline]
-    pub fn get(self) -> &'static [T] {
+    pub fn get(self) -> &'alloc [T] {
         let w = self.0.addr().get();
         if w & THIN_LONG_TAG != 0 {
             return self.get_long();
         }
         let p = self.0.as_ptr().map_addr(|a| a & THIN_ADDR_MASK);
-        // SAFETY: built by `new` from a `&'static [T]` of this length.
+        // SAFETY: built by `new` from a `&'alloc [T]` of this length.
         unsafe { std::slice::from_raw_parts(p as *const T, w >> THIN_LEN_SHIFT) }
     }
 
     #[cold]
-    fn get_long(self) -> &'static [T] {
-        // SAFETY: built by `new_long`: a tagged pointer to the `&'static [T]` itself.
-        unsafe { *(self.0.as_ptr().map_addr(|a| a & !THIN_LONG_TAG) as *const &'static [T]) }
+    fn get_long(self) -> &'alloc [T] {
+        // SAFETY: built by `new_long`: a tagged pointer to the `&'alloc [T]` itself.
+        unsafe { *(self.0.as_ptr().map_addr(|a| a & !THIN_LONG_TAG) as *const &'alloc [T]) }
     }
 }
 
-// SAFETY: a `ThinSlice` stands for a `&'static [T]` of arena or static data, under `P`'s threading contract.
-unsafe impl<T> Send for ThinSlice<T> {}
+// SAFETY: the lifetime retains the borrowed slice, and shared access requires `T: Sync`.
+unsafe impl<T: Sync> Send for ThinSlice<'_, T> {}
 // SAFETY: as for `Send`; the slice is never written through.
-unsafe impl<T> Sync for ThinSlice<T> {}
+unsafe impl<T: Sync> Sync for ThinSlice<'_, T> {}
 
-impl<T: fmt::Debug> fmt::Debug for ThinSlice<T> {
+impl<T: fmt::Debug> fmt::Debug for ThinSlice<'_, T> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         self.get().fmt(f)
     }
 }
 
+impl PackedStr<'static> {
+    /// Packs text under the compiler's ambient-region ownership contract.
+    #[inline]
+    pub fn new(text: &'static str) -> Self {
+        // SAFETY: legacy compiler callers retain the ambient region for all uses of this storage.
+        unsafe { Self::new_unchecked(text) }
+    }
+}
+
+impl<'alloc> PackedStr<'alloc> {
+    /// Packs text, keeping any long-string allocation in the captured allocator.
+    #[inline]
+    pub fn new_in(allocator: &'alloc crate::Allocator, text: &'alloc str) -> Self {
+        Self::new_with(text, || allocator.arena())
+    }
+
+    /// Packs text using the current compiler allocation region.
+    ///
+    /// # Safety
+    /// The current region must outlive every use of the returned storage, including when a
+    /// long string is copied into it. The text borrow alone does not retain that region.
+    #[inline]
+    pub unsafe fn new_unchecked(text: &'alloc str) -> Self {
+        Self::new_with(text, || with_arena(|arena| arena))
+    }
+}
+
+impl<T> ThinSlice<'static, T> {
+    /// Packs a slice under the compiler's ambient-region ownership contract.
+    #[inline]
+    pub fn new(items: &'static [T]) -> Self {
+        // SAFETY: legacy compiler callers retain the ambient region for all uses of this storage.
+        unsafe { Self::new_unchecked(items) }
+    }
+}
+
+impl<'alloc, T> ThinSlice<'alloc, T> {
+    /// Packs a slice, allocating its long-form header in the captured allocator when needed.
+    #[inline]
+    pub fn new_in(allocator: &'alloc crate::Allocator, items: &'alloc [T]) -> Self {
+        Self::new_with(items, || allocator.arena())
+    }
+
+    /// Packs a slice using the current compiler allocation region.
+    ///
+    /// # Safety
+    /// The current region must outlive every use of the returned storage, including its
+    /// long-form header. The slice borrow alone does not retain that region.
+    #[inline]
+    pub unsafe fn new_unchecked(items: &'alloc [T]) -> Self {
+        Self::new_with(items, || with_arena(|arena| arena))
+    }
+}
+
 /// A `Cell<&'static [T]>` in one word (a `ThinSlice`). `get` returns exactly the slice last `set` (same pointer and
 /// length).
-pub struct ThinSliceCell<T: 'static>(std::cell::Cell<ThinSlice<T>>);
+pub struct ThinSliceCell<T: 'static>(std::cell::Cell<ThinSlice<'static, T>>);
 
 impl<T> ThinSliceCell<T> {
     #[inline]
@@ -1141,7 +1240,7 @@ impl<T> Default for ThinSliceCell<T> {
 }
 
 /// A `Cell<Option<&'static [T]>>` in one word, like `ThinSliceCell` (for Go slices whose nil differs from empty).
-pub struct OptionThinSliceCell<T: 'static>(std::cell::Cell<Option<ThinSlice<T>>>);
+pub struct OptionThinSliceCell<T: 'static>(std::cell::Cell<Option<ThinSlice<'static, T>>>);
 
 impl<T> OptionThinSliceCell<T> {
     #[inline]
@@ -1281,7 +1380,7 @@ pub type PSliceCell<T> = SliceCell<T>;
 pub type PSliceCell<T> = ThinSliceCell<T>;
 
 /// A `Cell<&'static str>` in 8 bytes (a `PackedStr`).
-pub struct StrCell(std::cell::Cell<PackedStr>);
+pub struct StrCell(std::cell::Cell<PackedStr<'static>>);
 
 impl StrCell {
     #[inline]
