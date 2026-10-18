@@ -318,11 +318,18 @@ pub fn parse_test_ts_config(
     // none are configured here.
     let config_file_name = tspath::get_normalized_absolute_path(&data.name, current_directory);
     let path = tspath::to_path(&data.name, current_directory, true);
-    let config_json = tsrs_parser::parse_source_file(
-        SourceFileParseOptions { file_name: config_file_name.clone(), path, ..Default::default() },
-        &data.content,
-        ScriptKind::JSON,
-    );
+    // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+    let config_json = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: config_file_name.clone(),
+                path,
+                ..Default::default()
+            },
+            &data.content,
+            ScriptKind::JSON,
+        )
+    };
     let ts_config_source_file = tsoptions::TsConfigSourceFile::new(config_json);
     let config_dir = tspath::get_directory_path(&config_file_name);
     Some(P::new(tsoptions::parse_json_source_file_config_file_content(

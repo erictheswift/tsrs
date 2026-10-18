@@ -10,16 +10,19 @@ use tsrs_ast::NodeFactory;
 
 fn parse_type_script(text: &str, jsx: bool) -> P<SourceFile> {
     let file_name = if jsx { "/main.tsx" } else { "/main.ts" };
-    tsrs_parser::parse_source_file(
-        SourceFileParseOptions {
-            file_name: file_name.to_string(),
-            path: Path::new(file_name.to_string()),
-            external_module_indicator_options:
-                tsrs_ast::parseoptions::ExternalModuleIndicatorOptions::default(),
-        },
-        text,
-        get_script_kind_from_file_name(file_name),
-    )
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: file_name.to_string(),
+                path: Path::new(file_name.to_string()),
+                external_module_indicator_options:
+                    tsrs_ast::parseoptions::ExternalModuleIndicatorOptions::default(),
+            },
+            text,
+            get_script_kind_from_file_name(file_name),
+        )
+    }
 }
 
 // Go emittestutil.CheckEmit: prints with LF newlines, trims the trailing newline, and checks that the output reparses
@@ -936,7 +939,7 @@ fn test_node_visitor_environment_hooks() {
     // hooks must be re-entrant (a RefCell borrow held across the visit callback panics here).
     let ec = new_emit_context();
     let file = parse_type_script("function f(a = 1, { b } = {}) {\n    return a;\n}", false);
-    let visit: VisitFn = std::rc::Rc::new(move |v, n| {
+    let visit: VisitFn<'static> = std::rc::Rc::new(move |v, n| {
         if n.kind() == Kind::NumericLiteral {
             ec.add_variable_declaration(ec.factory.new_temp_variable());
             return Some(n);

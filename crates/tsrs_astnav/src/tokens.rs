@@ -305,7 +305,8 @@ pub(crate) fn get_token_at_position_worker(
                 return current;
             }
             let mut left = st.left.get();
-            let mut scanner = scanner::get_scanner_for_source_file(source_file, left);
+            let allocator = tsrs_core::Allocator::current();
+            let mut scanner = scanner::get_scanner_for_source_file(&allocator, source_file, left);
             let mut end = current.end().expect_source("parsed nodes have source positions");
             // We should only scan up to the start of the next node in the AST after the node ending at position `left`.
             // It is necessary to enforce this invariant in cases where `position` occurs in between two node/tokens,
@@ -788,7 +789,9 @@ fn find_rightmost_valid_token(
                 Some(r) => r.end().expect_source("parsed nodes have source positions"),
                 None => n.pos().expect_source("parsed nodes have source positions"),
             };
-            let mut scanner = scanner::get_scanner_for_source_file(source_file, start_pos);
+            let allocator = tsrs_core::Allocator::current();
+            let mut scanner =
+                scanner::get_scanner_for_source_file(&allocator, source_file, start_pos);
             let mut tokens: Vec<P<Node>> = Vec::new();
             let visited: Vec<P<Node>> = rightmost_visited_nodes.borrow().clone();
             for visited_node in visited {
@@ -947,7 +950,8 @@ pub fn find_next_token(
         if start_pos >= n.pos().expect_source("parsed nodes have source positions")
             && start_pos < n.end().expect_source("parsed nodes have source positions")
         {
-            let scanner = scanner::get_scanner_for_source_file(file, start_pos);
+            let allocator = tsrs_core::Allocator::current();
+            let scanner = scanner::get_scanner_for_source_file(&allocator, file, start_pos);
             let token = scanner.token();
             let token_full_start = scanner.token_full_start();
             let token_end = scanner.token_end();
@@ -978,7 +982,7 @@ pub fn find_next_token(
 fn get_node_visitor(
     visit_node: Option<VisitNodeFn>,
     visit_nodes: Option<VisitNodesFn>,
-) -> NodeVisitor {
+) -> NodeVisitor<'static> {
     let wrapped_visit_node: Option<VisitNodeFn> = visit_node.map(|visit_node| -> VisitNodeFn {
         Rc::new(move |n: Option<P<Node>>, v: &mut NodeVisitor| {
             if ast::is_jsdoc_single_comment_node_comment(n) {
@@ -1041,7 +1045,8 @@ pub fn find_child_of_kind(
 ) -> Option<P<Node>> {
     let mut last_node_pos =
         containing_node.pos().expect_source("parsed nodes have source positions");
-    let mut scan = scanner::get_scanner_for_source_file(source_file, last_node_pos);
+    let allocator = tsrs_core::Allocator::current();
+    let mut scan = scanner::get_scanner_for_source_file(&allocator, source_file, last_node_pos);
 
     let mut found_child: Option<P<Node>> = None;
     let mut visit_node = |node: P<Node>| -> bool {

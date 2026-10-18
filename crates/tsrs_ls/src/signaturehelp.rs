@@ -1867,7 +1867,8 @@ fn get_token_from_node_list(
             left = nodes[node_list_index].end().expect_source("parsed nodes have source positions");
             node_list_index += 1;
         } else {
-            let scanner = scanner::get_scanner_for_source_file(source_file, left);
+            let allocator = tsrs_core::Allocator::current();
+            let scanner = scanner::get_scanner_for_source_file(&allocator, source_file, left);
             let token = scanner.token();
             let token_full_start = scanner.token_full_start();
             let token_end = scanner.token_end();

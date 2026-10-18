@@ -5,26 +5,30 @@ use tsrs_core::{P, undefined_text_range};
 use crate::*;
 
 // Ideally, this would get cached on the node factory so there's only ever one set of closures made per factory
-fn get_deep_clone_visitor(f: NodeFactory, synthetic_location: bool) -> NodeVisitor {
-    let visit: VisitFn = Rc::new(move |visitor: &mut NodeVisitor, node: P<Node>| {
-        let visited = visitor.visit_each_child(Some(node)).unwrap();
-        if visited != node {
-            if synthetic_location {
-                visited.set_loc(undefined_text_range());
+fn get_deep_clone_visitor<'alloc>(
+    f: NodeFactory<'alloc>,
+    synthetic_location: bool,
+) -> NodeVisitor<'alloc> {
+    let visit: VisitFn<'alloc> =
+        Rc::new(move |visitor: &mut NodeVisitor<'alloc>, node: P<Node>| {
+            let visited = visitor.visit_each_child(Some(node)).unwrap();
+            if visited != node {
+                if synthetic_location {
+                    visited.set_loc(undefined_text_range());
+                }
+                return Some(visited);
             }
-            return Some(visited);
-        }
-        let c = node.clone_node(&visitor.factory); // forcibly clone leaf nodes, which will then cascade new nodes/arrays upwards via `update` calls
-        // In strada, `factory.cloneNode` was dynamic and did _not_ clone positions for any "special cases", meanwhile
-        // Node.Clone in corsa reliably uses `Update` calls for all nodes and so copies locations by default.
-        // Deep clones are done to copy a node across files, so here, we explicitly make the location range synthetic on all cloned nodes
-        if synthetic_location {
-            c.set_loc(undefined_text_range());
-        }
-        Some(c)
-    });
-    let visit_nodes: VisitNodesHook =
-        Rc::new(move |nodes: Option<P<NodeList>>, v: &mut NodeVisitor| {
+            let c = node.clone_node(&visitor.factory); // forcibly clone leaf nodes, which will then cascade new nodes/arrays upwards via `update` calls
+            // In strada, `factory.cloneNode` was dynamic and did _not_ clone positions for any "special cases", meanwhile
+            // Node.Clone in corsa reliably uses `Update` calls for all nodes and so copies locations by default.
+            // Deep clones are done to copy a node across files, so here, we explicitly make the location range synthetic on all cloned nodes
+            if synthetic_location {
+                c.set_loc(undefined_text_range());
+            }
+            Some(c)
+        });
+    let visit_nodes: VisitNodesHook<'alloc> =
+        Rc::new(move |nodes: Option<P<NodeList>>, v: &mut NodeVisitor<'alloc>| {
             let nodes = nodes?;
             let visited = v.visit_nodes(Some(nodes)).unwrap();
             let new_list = if visited != nodes { visited } else { nodes.clone_list(&v.factory) };
@@ -36,8 +40,8 @@ fn get_deep_clone_visitor(f: NodeFactory, synthetic_location: bool) -> NodeVisit
             }
             Some(new_list)
         });
-    let visit_modifiers: VisitModifiersHook =
-        Rc::new(move |nodes: Option<P<ModifierList>>, v: &mut NodeVisitor| {
+    let visit_modifiers: VisitModifiersHook<'alloc> =
+        Rc::new(move |nodes: Option<P<ModifierList>>, v: &mut NodeVisitor<'alloc>| {
             let nodes = nodes?;
             let visited = v.visit_modifiers(Some(nodes)).unwrap();
             let new_list = if visited != nodes { visited } else { nodes.clone_list(&v.factory) };
@@ -50,9 +54,9 @@ fn get_deep_clone_visitor(f: NodeFactory, synthetic_location: bool) -> NodeVisit
             }
             Some(new_list)
         });
-    new_node_visitor(
+    new_node_visitor_in(
         Some(visit),
-        Some(f),
+        f,
         NodeVisitorHooks {
             visit_nodes: Some(visit_nodes),
             visit_modifiers: Some(visit_modifiers),
@@ -62,11 +66,11 @@ fn get_deep_clone_visitor(f: NodeFactory, synthetic_location: bool) -> NodeVisit
 }
 
 // The visitor owns a handle to this factory (`NodeFactory::clone` shares hooks and counters).
-impl NodeFactory {
+impl<'alloc> NodeFactory<'alloc> {
     fn with_deep_clone_visitor<R>(
         &self,
         synthetic_location: bool,
-        f: impl FnOnce(&mut NodeVisitor) -> R,
+        f: impl FnOnce(&mut NodeVisitor<'alloc>) -> R,
     ) -> R {
         let mut visitor = get_deep_clone_visitor(self.clone(), synthetic_location);
         f(&mut visitor)

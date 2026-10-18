@@ -176,7 +176,7 @@ pub(crate) fn prepare_range_contains_error_function(
 }
 
 // span.go:155
-pub(crate) struct FormatSpanWorker {
+pub(crate) struct FormatSpanWorker<'alloc> {
     original_range: TextRange,
     enclosing_node: P<Node>,
     initial_indentation: i32,
@@ -187,7 +187,7 @@ pub(crate) struct FormatSpanWorker {
 
     ctx: FormatContext,
 
-    pub(crate) formatting_scanner: Option<FormattingScanner>,
+    pub(crate) formatting_scanner: Option<FormattingScanner<'alloc>>,
     formatting_context: Option<FormattingContext>,
 
     edits: Vec<TextChange>,
@@ -209,7 +209,7 @@ pub(crate) struct FormatSpanWorker {
 }
 
 // span.go:188
-pub(crate) fn new_format_span_worker(
+pub(crate) fn new_format_span_worker<'alloc>(
     ctx: &FormatContext,
     original_range: TextRange,
     enclosing_node: P<Node>,
@@ -218,7 +218,7 @@ pub(crate) fn new_format_span_worker(
     request_kind: FormatRequestKind,
     range_contains_error: RangeContainsError,
     source_file: P<SourceFile>,
-) -> FormatSpanWorker {
+) -> FormatSpanWorker<'alloc> {
     FormatSpanWorker {
         ctx: ctx.clone(),
         original_range,
@@ -302,12 +302,12 @@ fn collect_visited_children(node: P<Node>) -> Vec<VisitedChild> {
     items.take()
 }
 
-impl FormatSpanWorker {
-    fn fs(&mut self) -> &mut FormattingScanner {
+impl<'alloc> FormatSpanWorker<'alloc> {
+    fn fs(&mut self) -> &mut FormattingScanner<'alloc> {
         self.formatting_scanner.as_mut().unwrap()
     }
 
-    fn fs_ref(&self) -> &FormattingScanner {
+    fn fs_ref(&self) -> &FormattingScanner<'alloc> {
         self.formatting_scanner.as_ref().unwrap()
     }
 
@@ -316,7 +316,7 @@ impl FormatSpanWorker {
     }
 
     // span.go:225
-    pub(crate) fn execute(&mut self, s: FormattingScanner) -> Vec<TextChange> {
+    pub(crate) fn execute(&mut self, s: FormattingScanner<'alloc>) -> Vec<TextChange> {
         self.formatting_scanner = Some(s);
         self.indentation_on_last_indented_line = None;
         self.last_indented_line = None;
@@ -375,7 +375,7 @@ impl FormatSpanWorker {
                 &remaining_trivia,
                 indentation,
                 true,
-                &mut |w: &mut FormatSpanWorker, item: TextRangeWithKind| {
+                &mut |w: &mut FormatSpanWorker<'alloc>, item: TextRangeWithKind| {
                     let (start_line, start_char) =
                         scanner::get_ecma_line_and_byte_offset_of_position(
                             w.source_file.get(),
@@ -1249,7 +1249,7 @@ pub enum LineAction {
     LineRemoved,
 }
 
-impl FormatSpanWorker {
+impl FormatSpanWorker<'_> {
     // span.go:762
     fn process_range(
         &mut self,
@@ -1478,7 +1478,7 @@ fn is_comment(kind: Kind) -> bool {
     kind == Kind::SingleLineCommentTrivia || kind == Kind::MultiLineCommentTrivia
 }
 
-impl FormatSpanWorker {
+impl<'alloc> FormatSpanWorker<'alloc> {
     // span.go:878
     fn insert_indentation(&mut self, pos: u32, indentation: i32, line_added: bool) {
         let indentation_string = get_indentation_string(indentation, &self.fc().options);
@@ -1536,7 +1536,7 @@ impl FormatSpanWorker {
         trivia: &[TextRangeWithKind],
         comment_indentation: i32,
         mut indent_next_token_or_trivia: bool,
-        indent_single_line: &mut dyn FnMut(&mut FormatSpanWorker, TextRangeWithKind),
+        indent_single_line: &mut dyn FnMut(&mut FormatSpanWorker<'alloc>, TextRangeWithKind),
     ) -> bool {
         for &trivia_item in trivia {
             let trivia_in_range = trivia_item.loc.contained_by(self.original_range);
@@ -1699,7 +1699,7 @@ fn create_text_change_from_start_length(start: u32, length: u32, new_text: &str)
     }
 }
 
-impl FormatSpanWorker {
+impl<'alloc> FormatSpanWorker<'alloc> {
     // span.go:1024
     fn record_delete(&mut self, start: u32, length: u32) {
         if length != 0 {
@@ -1840,7 +1840,7 @@ impl FormatSpanWorker {
                     &current_token_info.leading_trivia,
                     comment_indentation,
                     indent_next_token_or_trivia,
-                    &mut |w: &mut FormatSpanWorker, item: TextRangeWithKind| {
+                    &mut |w: &mut FormatSpanWorker<'alloc>, item: TextRangeWithKind| {
                         w.insert_indentation(
                             item.loc.pos().expect_source("formatting ranges have source positions"),
                             comment_indentation,
@@ -2047,7 +2047,7 @@ fn get_first_non_decorator_token_of_node(node: P<Node>) -> Kind {
     Kind::Unknown
 }
 
-impl FormatSpanWorker {
+impl FormatSpanWorker<'_> {
     // span.go:1251
     fn get_dynamic_indentation(
         &self,

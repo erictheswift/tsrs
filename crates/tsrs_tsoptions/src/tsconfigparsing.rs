@@ -423,15 +423,18 @@ pub fn new_tsconfig_source_file_from_file_path(
     config_path: Path,
     config_source_text: &str,
 ) -> P<TsConfigSourceFile> {
-    let source_file = tsrs_parser::parse_source_file(
-        SourceFileParseOptions {
-            file_name: config_file_name.to_string(),
-            path: config_path,
-            ..Default::default()
-        },
-        config_source_text,
-        ScriptKind::JSON,
-    );
+    // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+    let source_file = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: config_file_name.to_string(),
+                path: config_path,
+                ..Default::default()
+            },
+            config_source_text,
+            ScriptKind::JSON,
+        )
+    };
     TsConfigSourceFile::new(source_file)
 }
 
@@ -1030,11 +1033,14 @@ pub fn parse_config_file_text_to_json(
     path: Path,
     json_text: &str,
 ) -> (CompilerOptionsValue, Vec<P<Diagnostic>>) {
-    let json_source_file = tsrs_parser::parse_source_file(
-        SourceFileParseOptions { file_name: file_name.to_string(), path, ..Default::default() },
-        json_text,
-        ScriptKind::JSON,
-    );
+    // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+    let json_source_file = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions { file_name: file_name.to_string(), path, ..Default::default() },
+            json_text,
+            ScriptKind::JSON,
+        )
+    };
     let (config, mut errors) =
         convert_config_file_to_object(json_source_file, /*jsonConversionNotifier*/ None);
     let parse_diagnostics = json_source_file.diagnostics();
@@ -1481,15 +1487,18 @@ fn read_json_config_file(
     let (text, diagnostic) = try_read_file(file_name, read_file, Vec::new());
     if !text.is_empty() {
         (
-            TsConfigSourceFile::new(tsrs_parser::parse_source_file(
-                SourceFileParseOptions {
-                    file_name: file_name.to_string(),
-                    path,
-                    ..Default::default()
-                },
-                &text,
-                ScriptKind::JSON,
-            )),
+            // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+            TsConfigSourceFile::new(unsafe {
+                tsrs_parser::raw::parse_source_file(
+                    SourceFileParseOptions {
+                        file_name: file_name.to_string(),
+                        path,
+                        ..Default::default()
+                    },
+                    &text,
+                    ScriptKind::JSON,
+                )
+            }),
             diagnostic,
         )
     } else {

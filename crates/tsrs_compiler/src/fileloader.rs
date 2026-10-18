@@ -73,7 +73,7 @@ pub(crate) struct fileLoader {
     pub(crate) total_file_count: usize,
     pub(crate) lib_file_count: usize,
 
-    pub(crate) factory: NodeFactory,
+    pub(crate) factory: NodeFactory<'static>,
 
     pub(crate) project_references: projectReferenceFileMapperBuilder,
 
@@ -908,7 +908,9 @@ impl sourceFileParser<'_> {
     ) -> P<SourceFile> {
         let content = self.host.fs().read_file(&opts.file_name).unwrap_or_default();
         let virtual_file_name = alloc_str(&format!("{}{}", opts.file_name, tspath::EXTENSION_TS));
-        let source_file = tsrs_parser::parse_source_file(opts.clone(), "", ScriptKind::TS);
+        // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+        let source_file =
+            unsafe { tsrs_parser::raw::parse_source_file(opts.clone(), "", ScriptKind::TS) };
         source_file.set_content_mapper_info(ContentMapperSourceFileInfo {
             content_mapper: alloc_str(mapper_identity),
             transform_identity: alloc_str(transform_identity),

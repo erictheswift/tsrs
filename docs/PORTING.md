@@ -77,16 +77,20 @@ programs and file versions ([LSP.md](LSP.md#memory-management)). The rules are:
   Rust `static` is an `SP<T>`. Packed words store `p.to_bits()` / `p.key()`, never addresses.
 - Go `*T` that can be nil -> `Option<P<T>>`. Go `*T` that is never nil -> `P<T>`.
   Decide from the Go code (nil checks, `return nil`). When unsure, use `Option`.
-- Parser and scanner state borrow an explicit `Allocator`: `Parser<'alloc>`, `Scanner<'alloc>`, their
-  snapshots and computed text cannot outlive that guard. The guard keeps its captured allocation target
-  alive and allocates into it even inside another region scope. Scoped string builders carry the same
-  lifetime. Other arena data still uses the legacy `'static` contract.
-- AST storage (`P<T>`, node fields, source-text registration) has not migrated to lifetimes. Public parse
-  functions keep their existing signatures and region ownership requirements; private adapters in
-  `tsrs_parser::legacy` erase the lifetime only when storing region-backed data in that AST. Parser input
-  must be copied into the allocator, process-lifetime text, or an existing source file's text before it
-  reaches those adapters. `Scanner::new()` remains the legacy ambient-allocation path for checker and
-  language-service callers; new scoped callers use `Scanner::new_in(&allocator)`.
+- Parser, scanner, and parser factory state borrow an explicit `Allocator`: `Parser<'alloc>`,
+  `Scanner<'alloc>`, `NodeFactory<'alloc>`, snapshots, and computed text cannot outlive that guard.
+  Allocations keep using the captured target inside nested region scopes. Every scanner caller,
+  including the checker and language service, uses `Scanner::new_in(&allocator)`; there is no ambient fallback.
+- `tsrs_parser::parse_source_file_in` copies input into the allocator and returns `ParsedFile<'alloc>`.
+  Its read-only node, list, text, and diagnostic views preserve the borrow and expose no raw `P<T>`
+  or lifetime-erased references. Scoped parsing keeps metadata and diagnostics with the tree and makes
+  lazy declaration members readable without binding. Source-text registrations are cleared on region release.
+- The compiler's object graph still uses raw `P<T>` and lifetime-erased AST storage. Its parse entry points
+  are explicitly unsafe in `tsrs_parser::raw`; callers must retain the relevant file/program regions.
+  `NodeFactory::new_in` is unsafe for the same reason: it exposes raw handles. The factory accepts scoped
+  text/slices and performs storage conversion internally; the parser has no lifetime-erasure adapters.
+  Its invariant lifetime prevents an unbound `NodeFactory<'static>` from accepting temporary input.
+  Compiler parsing preserves separate lifetimes for scratch trees and escaping source-file metadata/diagnostics.
 - Scoped `Allocator::rewind` is unsafe: restoring parser/scanner state and pinning retained cache entries
   must prove no discarded allocation remains reachable. Lifetimes alone do not prove rollback safety;
   legacy allocation and rewind entry points retain their manual contracts.

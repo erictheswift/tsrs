@@ -21,11 +21,14 @@ fn main() {
             force: false,
         },
     };
-    let file = tsrs_parser::parse_source_file(
-        opts,
-        &text,
-        tsrs_core::ensure_script_kind_from_file_name(path),
-    );
+    // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+    let file = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            opts,
+            &text,
+            tsrs_core::ensure_script_kind_from_file_name(path),
+        )
+    };
     let base = tspath::get_base_file_name(path);
     let js_file_path = tspath::combine_paths(out_dir, &[&base]);
     let mut generator = tsrs_sourcemap::new_generator(

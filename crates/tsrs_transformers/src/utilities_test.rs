@@ -9,16 +9,19 @@ use crate::is_original_node_single_line;
 #[test]
 fn a_synthesized_original_node_is_single_line() {
     let file_name = "/a.ts";
-    let file = tsrs_parser::parse_source_file(
-        SourceFileParseOptions {
-            file_name: file_name.to_string(),
-            path: Path::new(file_name.to_string()),
-            external_module_indicator_options:
-                tsrs_ast::parseoptions::ExternalModuleIndicatorOptions::default(),
-        },
-        "const a = 1;\nconst b = 2;\n",
-        get_script_kind_from_file_name(file_name),
-    );
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    let file = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: file_name.to_string(),
+                path: Path::new(file_name.to_string()),
+                external_module_indicator_options:
+                    tsrs_ast::parseoptions::ExternalModuleIndicatorOptions::default(),
+            },
+            "const a = 1;\nconst b = 2;\n",
+            get_script_kind_from_file_name(file_name),
+        )
+    };
     let emit_context = tsrs_printer::new_emit_context();
     // A node a transformer made and placed in the file: it has no original and no source position.
     let node: P<tsrs_ast::Node> = emit_context.factory.new_identifier("x");

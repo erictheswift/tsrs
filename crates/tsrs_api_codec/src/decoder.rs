@@ -105,7 +105,7 @@ pub fn decode_source_file(data: &[u8]) -> Result<DecodedNode, DecodeError> {
 /// lifetime of the result).
 pub fn decode_nodes_in_current_region(
     data: &[u8],
-    factory: &NodeFactory,
+    factory: &NodeFactory<'static>,
 ) -> Result<P<Node>, DecodeError> {
     let mut d = Decoder::new(data, factory.clone())?;
     d.decode()
@@ -118,7 +118,7 @@ pub(crate) struct Decoder<'a> {
     ext_data: u32,
     node_off: u32,
     node_count: usize,
-    pub(crate) factory: NodeFactory,
+    pub(crate) factory: NodeFactory<'static>,
     nodes: Vec<Option<P<Node>>>,
     lists: Vec<Option<P<NodeList>>>,
     is_list: Vec<bool>,
@@ -167,7 +167,7 @@ pub fn is_wtf8(bytes: &[u8]) -> bool {
 }
 
 impl<'a> Decoder<'a> {
-    fn new(data: &'a [u8], factory: NodeFactory) -> Result<Decoder<'a>, DecodeError> {
+    fn new(data: &'a [u8], factory: NodeFactory<'static>) -> Result<Decoder<'a>, DecodeError> {
         if data.len() < HEADER_SIZE {
             return Err(DecodeError::TooShort(data.len()));
         }

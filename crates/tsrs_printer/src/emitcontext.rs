@@ -116,7 +116,7 @@ impl EmitContext {
 
     // emitcontext.go:90
     // Creates a new NodeVisitor attached to this EmitContext
-    pub fn new_node_visitor(&self, visit: VisitFn) -> NodeVisitor {
+    pub fn new_node_visitor(&self, visit: VisitFn<'static>) -> NodeVisitor<'static> {
         // SAFETY: an EmitContext is only created by `new_emit_context_in` (`new_emit_context` /
         // `new_scratch_emit_context`), which allocates it with `P::new_in` in the process-lifetime arena or the
         // thread's scratch region; the visitor (and the `P<EmitContext>` its hooks capture) must not outlive that

@@ -302,7 +302,7 @@ function w(s = "") {
 const HAND_WRITTEN_DATA = new Set(["Identifier"]);
 
 // Identifier and literal text is stored as a `PackedStr` (8 bytes: pointer and length in one word, tsrs_core::ptr); the getter
-// and the factory parameter stay `&'static str`.
+// getter retains the raw AST contract; factory parameters borrow the factory's allocator lifetime.
 const PACKED_STR_FIELDS = new Set(["Identifier.Text", "PrivateIdentifier.Text", "LiteralLikeNodeBase.Text"]);
 
 function isPackedStr(f: { owner: string; name: string; }): boolean {
@@ -485,7 +485,12 @@ function genNewFactory(node: NodeType) {
     const kindMember = params.find(p => p.m.isKindParam());
     const flagsMembers = params.filter(p => isNodeFlagsMember(p.m));
     const emit = (fnName: string, kindName: string) => {
-        w(`    pub fn ${fnName}(&self${params.map(p => `, ${p.name}: ${p.ty}`).join("")}) -> P<Node> {`);
+        w(`    pub fn ${fnName}(&self${params.map(p => `, ${p.name}: ${(p.ty.includes("dyn Any") ? p.ty : p.ty.replaceAll("'static", "'alloc"))}`).join("")}) -> P<Node> {`);
+        for (const p of params) {
+            if (p.ty === "&'static str") w(`        let ${p.name} = self.store_text(${p.name});`);
+            else if (p.ty === "&'static [&'static str]") w(`        let ${p.name} = self.store_texts(${p.name});`);
+            else if (p.ty.startsWith("&'static [")) w(`        let ${p.name} = self.store_slice(${p.name});`);
+        }
         const values = new Map<string, string>();
         for (const p of params) {
             if (p.m.isKindParam() || isNodeFlagsMember(p.m)) continue;
@@ -599,7 +604,7 @@ function genVisitEachChild(node: NodeType) {
     const children = members.filter(m => m.isChild());
     if (children.length === 0) return;
     w(`impl ${node.name} {`);
-    w(`    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {`);
+    w(`    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {`);
     if (node.handWrittenVisitor) {
         w(`        visit_each_child_${snake(node.name)}(self, node, v)`);
         w(`    }`);
@@ -618,7 +623,8 @@ function genVisitEachChild(node: NodeType) {
         const access = `self.${f.rust}()`;
         const opt = f.ty.startsWith("Option");
         if (m.type.kind === "list" && m.type.listKind === "raw") {
-            w(`        let ${paramName(m)} = same_map_nodes(${access}, |n| v.visit_node_hooked(Some(n)).expect("visitor removed a raw list element"));`);
+            w(`        let factory = v.factory.clone();`);
+            w(`        let ${paramName(m)} = same_map_nodes(&factory, ${access}, |n| v.visit_node_hooked(Some(n)).expect("visitor removed a raw list element"));`);
             args.push(paramName(m));
             continue;
         }
@@ -648,7 +654,7 @@ function genClone(node: NodeType) {
     if (!args.includes("self.")) {
         w(`    #[expect(clippy::unused_self, reason = "Empty node data uses the same cloning interface as nodes with stored fields.")]`);
     }
-    w(`    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {`);
+    w(`    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {`);
     if (node.kindAliases.length > 0) {
         w(`        let updated = match node.kind() {`);
         w(`            Kind::${node.syntaxKindName} => f.new_${snake(node.name)}(${args}),`);
@@ -792,7 +798,7 @@ function genNodeImpl() {
     w();
 
     // visit_each_child dispatch
-    w(`    pub fn visit_each_child(&self, v: &mut NodeVisitor) -> P<Node> {`);
+    w(`    pub fn visit_each_child(&self, v: &mut NodeVisitor<'_>) -> P<Node> {`);
     w(`        let node = self.as_p();`);
     w(`        match self.data_tag() {`);
     for (const n of nodes) {
@@ -805,7 +811,7 @@ function genNodeImpl() {
     w();
 
     // clone_node dispatch
-    w(`    pub fn clone_node(&self, f: &NodeFactory) -> P<Node> {`);
+    w(`    pub fn clone_node(&self, f: &NodeFactory<'_>) -> P<Node> {`);
     w(`        let node = self.as_p();`);
     w(`        match self.data_tag() {`);
     for (const n of nodes) {
@@ -905,7 +911,7 @@ function genNodeImpl() {
 function genFactory() {
     w("// ── NodeFactory constructors ─────────────────────────────────────────────");
     w();
-    w("impl NodeFactory {");
+    w("impl<'alloc> NodeFactory<'alloc> {");
     for (const n of nodes) {
         if (n.handWritten) continue;
         genNewFactory(n);

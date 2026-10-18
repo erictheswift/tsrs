@@ -161,7 +161,7 @@ pub struct NodeBuilderImpl {
     // host members
     /// Go `f = e.Factory.AsNodeFactory()`: a handle to the emit context's factory (same hooks, so created nodes are
     /// marked synthesized). All factory methods take `&self`, so calls nest: `b.f.new_x(b.f.new_y())`.
-    pub f: NodeFactory,
+    pub f: NodeFactory<'static>,
     pub e: P<EmitContext>,
     pub pc: P<PseudoChecker>,
 
@@ -177,7 +177,7 @@ pub struct NodeBuilderImpl {
     /// holds nothing but the callback, the factory and hooks, and a visit re-enters it, so `clone_binding_name` builds
     /// `new_node_visitor(Some(visit.clone()), Some(b.f.clone()), NodeVisitorHooks::default())` per call and runs it
     /// under `b.checker_slot.lend(c, ..)`. Set by `new_node_builder_impl`.
-    pub clone_binding_name_visitor: OnceCell<VisitFn>,
+    pub clone_binding_name_visitor: OnceCell<VisitFn<'static>>,
 
     // symbols for synthesized identifiers, needed for e.g. inlay hints
     pub id_to_symbol: P<RefCell<FxHashMap<P<Node>, P<Symbol>>>>,

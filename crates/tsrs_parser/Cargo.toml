@@ -23,4 +23,4 @@ mimalloc-safe.workspace = true
 
 [lib]
 test = false
-doctest = false
+doctest = true

@@ -6,10 +6,10 @@ use super::*;
 // commonjsmodule.go:15
 pub struct CommonJSModuleTransformer {
     pub base: Transformer,
-    pub(crate) top_level_visitor: OnceCell<NodeVisitor>, // visits statements at top level of a module
-    pub(crate) top_level_nested_visitor: OnceCell<NodeVisitor>, // visits nested statements at top level of a module
-    pub(crate) discarded_value_visitor: OnceCell<NodeVisitor>, // visits expressions whose values would be discarded at runtime
-    pub(crate) assignment_pattern_visitor: OnceCell<NodeVisitor>, // visits assignment patterns in a destructuring assignment
+    pub(crate) top_level_visitor: OnceCell<NodeVisitor<'static>>, // visits statements at top level of a module
+    pub(crate) top_level_nested_visitor: OnceCell<NodeVisitor<'static>>, // visits nested statements at top level of a module
+    pub(crate) discarded_value_visitor: OnceCell<NodeVisitor<'static>>, // visits expressions whose values would be discarded at runtime
+    pub(crate) assignment_pattern_visitor: OnceCell<NodeVisitor<'static>>, // visits assignment patterns in a destructuring assignment
     pub compiler_options: P<CompilerOptions>,
     pub resolver: ReferenceResolverRef,
     pub get_emit_module_format_of_file: Rc<dyn Fn(P<SourceFile>) -> ModuleKind>,
@@ -73,23 +73,23 @@ impl CommonJSModuleTransformer {
         self.base.factory()
     }
 
-    pub(crate) fn visitor(&self) -> NodeVisitor {
+    pub(crate) fn visitor(&self) -> NodeVisitor<'static> {
         self.base.visitor()
     }
 
-    pub(crate) fn top_level_visitor(&self) -> NodeVisitor {
+    pub(crate) fn top_level_visitor(&self) -> NodeVisitor<'static> {
         self.top_level_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn top_level_nested_visitor(&self) -> NodeVisitor {
+    pub(crate) fn top_level_nested_visitor(&self) -> NodeVisitor<'static> {
         self.top_level_nested_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn discarded_value_visitor(&self) -> NodeVisitor {
+    pub(crate) fn discarded_value_visitor(&self) -> NodeVisitor<'static> {
         self.discarded_value_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn assignment_pattern_visitor(&self) -> NodeVisitor {
+    pub(crate) fn assignment_pattern_visitor(&self) -> NodeVisitor<'static> {
         self.assignment_pattern_visitor.get().unwrap().clone()
     }
 

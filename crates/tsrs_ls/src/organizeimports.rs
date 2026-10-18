@@ -537,7 +537,8 @@ pub(crate) fn group_by_newline_contiguous(
     source_file: P<SourceFile>,
     decls: &[P<Node>],
 ) -> Vec<Vec<P<Node>>> {
-    let mut s = scanner::Scanner::new();
+    let allocator = tsrs_core::Allocator::current();
+    let mut s = scanner::Scanner::new_in(&allocator);
     s.set_skip_trivia(false); // Must not skip trivia to detect newlines
     let mut groups: Vec<Vec<P<Node>>> = Vec::new();
     let mut current_group: Vec<P<Node>> = Vec::new();

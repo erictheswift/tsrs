@@ -2256,7 +2256,10 @@ impl Program {
                     options.jsx.string()
                 );
             }
-            if tsrs_parser::parse_isolated_entity_name(&options.jsx_factory).is_none() {
+            // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+            if unsafe { tsrs_parser::raw::parse_isolated_entity_name(&options.jsx_factory) }
+                .is_none()
+            {
                 create_option_value_diagnostic!(
                     "jsxFactory",
                     &diagnostics::Invalid_value_for_jsxFactory_0_is_not_a_valid_identifier_or_qualified_name,
@@ -2291,7 +2294,12 @@ impl Program {
                     options.jsx.string()
                 );
             }
-            if tsrs_parser::parse_isolated_entity_name(&options.jsx_fragment_factory).is_none() {
+            // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+            if unsafe {
+                tsrs_parser::raw::parse_isolated_entity_name(&options.jsx_fragment_factory)
+            }
+            .is_none()
+            {
                 create_option_value_diagnostic!(
                     "jsxFragmentFactory",
                     &diagnostics::Invalid_value_for_jsxFragmentFactory_0_is_not_a_valid_identifier_or_qualified_name,

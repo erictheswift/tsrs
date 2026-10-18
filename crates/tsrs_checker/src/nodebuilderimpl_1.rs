@@ -50,7 +50,7 @@ pub(crate) fn new_node_builder_impl(
     let _ = b.this.set(b);
     // Go: b.cloneBindingNameVisitor = ast.NewNodeVisitor(b.cloneBindingName, b.f, ast.NodeVisitorHooks{})
     let slot = b.checker_slot;
-    let visit: VisitFn = Rc::new(move |_v: &mut NodeVisitor, node: P<Node>| {
+    let visit: VisitFn<'static> = Rc::new(move |_v: &mut NodeVisitor, node: P<Node>| {
         Some(slot.with(|c| b.clone_binding_name(c, node)))
     });
     let _ = b.clone_binding_name_visitor.set(visit);

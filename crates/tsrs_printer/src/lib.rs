@@ -36,7 +36,7 @@
 //!   auto-generated names (`has_auto_generate_info`, `get_auto_generate_info`, `get_node_for_generated_name`),
 //!   `is_file_level_unique_name`, helpers bookkeeping (`get_emit_helpers`, `has_recorded_external_helpers`, …),
 //!   `new_not_emitted_statement`, `reset`.
-//!   Transform support: `new_node_visitor(visit: VisitFn) -> NodeVisitor` (Go `NewNodeVisitor`: shares `factory`,
+//!   Transform support: `new_node_visitor(visit: VisitFn<'static>) -> NodeVisitor` (Go `NewNodeVisitor`: shares `factory`,
 //!   installs the environment hooks below), environments (`start_/end_variable_environment`,
 //!   `start_/end_lexical_environment`, `end_and_merge_{variable,lexical}_environment(&[P<Node>]) -> Vec<P<Node>>` and
 //!   `_list(Option<P<NodeList>>)`, `add_variable_declaration`, `add_hoisted_function_declaration`,

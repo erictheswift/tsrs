@@ -9211,7 +9211,7 @@ impl Node {
         }
     }
 
-    pub fn visit_each_child(&self, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, v: &mut NodeVisitor<'_>) -> P<Node> {
         let node = self.as_p();
         match self.data_tag() {
             NodeDataTag::QualifiedName => self.payload::<QualifiedName>().visit_each_child(node, v),
@@ -9637,7 +9637,7 @@ impl Node {
         }
     }
 
-    pub fn clone_node(&self, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, f: &NodeFactory<'_>) -> P<Node> {
         let node = self.as_p();
         match self.data_tag() {
             NodeDataTag::Token => Token.clone_node(node, f),
@@ -10918,12 +10918,13 @@ impl Node {
 
 // ── NodeFactory constructors ─────────────────────────────────────────────
 
-impl NodeFactory {
+impl<'alloc> NodeFactory<'alloc> {
     pub fn new_token(&self, kind: Kind) -> P<Node> {
         self.new_empty_node(kind, NodeDataTag::Token)
     }
 
-    pub fn new_private_identifier(&self, text: &'static str) -> P<Node> {
+    pub fn new_private_identifier(&self, text: &'alloc str) -> P<Node> {
+        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(Kind::PrivateIdentifier, PrivateIdentifier { text: PackedStr::new(text) })
     }
@@ -13185,7 +13186,8 @@ impl NodeFactory {
         )
     }
 
-    pub fn new_string_literal(&self, text: &'static str, token_flags: TokenFlags) -> P<Node> {
+    pub fn new_string_literal(&self, text: &'alloc str, token_flags: TokenFlags) -> P<Node> {
+        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::StringLiteral,
@@ -13198,7 +13200,8 @@ impl NodeFactory {
         )
     }
 
-    pub fn new_numeric_literal(&self, text: &'static str, token_flags: TokenFlags) -> P<Node> {
+    pub fn new_numeric_literal(&self, text: &'alloc str, token_flags: TokenFlags) -> P<Node> {
+        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::NumericLiteral,
@@ -13211,7 +13214,8 @@ impl NodeFactory {
         )
     }
 
-    pub fn new_big_int_literal(&self, text: &'static str, token_flags: TokenFlags) -> P<Node> {
+    pub fn new_big_int_literal(&self, text: &'alloc str, token_flags: TokenFlags) -> P<Node> {
+        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::BigIntLiteral,
@@ -13226,9 +13230,10 @@ impl NodeFactory {
 
     pub fn new_regular_expression_literal(
         &self,
-        text: &'static str,
+        text: &'alloc str,
         token_flags: TokenFlags,
     ) -> P<Node> {
+        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::RegularExpressionLiteral,
@@ -13245,9 +13250,10 @@ impl NodeFactory {
 
     pub fn new_no_substitution_template_literal(
         &self,
-        text: &'static str,
+        text: &'alloc str,
         template_flags: TokenFlags,
     ) -> P<Node> {
+        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::NoSubstitutionTemplateLiteral,
@@ -14837,10 +14843,12 @@ impl NodeFactory {
 
     pub fn new_template_head(
         &self,
-        text: &'static str,
-        raw_text: &'static str,
+        text: &'alloc str,
+        raw_text: &'alloc str,
         template_flags: TokenFlags,
     ) -> P<Node> {
+        let text = self.store_text(text);
+        let raw_text = self.store_text(raw_text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::TemplateHead,
@@ -14859,10 +14867,12 @@ impl NodeFactory {
 
     pub fn new_template_middle(
         &self,
-        text: &'static str,
-        raw_text: &'static str,
+        text: &'alloc str,
+        raw_text: &'alloc str,
         template_flags: TokenFlags,
     ) -> P<Node> {
+        let text = self.store_text(text);
+        let raw_text = self.store_text(raw_text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::TemplateMiddle,
@@ -14881,10 +14891,12 @@ impl NodeFactory {
 
     pub fn new_template_tail(
         &self,
-        text: &'static str,
-        raw_text: &'static str,
+        text: &'alloc str,
+        raw_text: &'alloc str,
         template_flags: TokenFlags,
     ) -> P<Node> {
+        let text = self.store_text(text);
+        let raw_text = self.store_text(raw_text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::TemplateTail,
@@ -15258,9 +15270,10 @@ impl NodeFactory {
 
     pub fn new_jsx_text(
         &self,
-        text: &'static str,
+        text: &'alloc str,
         contains_only_trivia_white_spaces: bool,
     ) -> P<Node> {
+        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::JsxText,
@@ -15274,7 +15287,8 @@ impl NodeFactory {
         )
     }
 
-    pub fn new_syntax_list(&self, children: &'static [P<Node>]) -> P<Node> {
+    pub fn new_syntax_list(&self, children: &'alloc [P<Node>]) -> P<Node> {
+        let children = self.store_slice(children);
         self.new_node(Kind::SyntaxList, SyntaxList { children })
     }
 
@@ -16359,12 +16373,14 @@ impl NodeFactory {
         node
     }
 
-    pub fn new_jsdoc_text(&self, text: &'static [&'static str]) -> P<Node> {
+    pub fn new_jsdoc_text(&self, text: &'alloc [&'alloc str]) -> P<Node> {
+        let text = self.store_texts(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(Kind::JSDocText, JSDocText { jsdoc_comment_base: JSDocCommentBase { text } })
     }
 
-    pub fn new_jsdoc_link(&self, name: Option<P<Node>>, text: &'static [&'static str]) -> P<Node> {
+    pub fn new_jsdoc_link(&self, name: Option<P<Node>>, text: &'alloc [&'alloc str]) -> P<Node> {
+        let text = self.store_texts(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::JSDocLink,
@@ -16388,8 +16404,9 @@ impl NodeFactory {
     pub fn new_jsdoc_link_plain(
         &self,
         name: Option<P<Node>>,
-        text: &'static [&'static str],
+        text: &'alloc [&'alloc str],
     ) -> P<Node> {
+        let text = self.store_texts(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::JSDocLinkPlain,
@@ -16413,8 +16430,9 @@ impl NodeFactory {
     pub fn new_jsdoc_link_code(
         &self,
         name: Option<P<Node>>,
-        text: &'static [&'static str],
+        text: &'alloc [&'alloc str],
     ) -> P<Node> {
+        let text = self.store_texts(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::JSDocLinkCode,
@@ -16517,9 +16535,10 @@ impl NodeFactory {
 
     pub fn new_jsdoc_type_literal(
         &self,
-        jsdoc_property_tags: &'static [P<Node>],
+        jsdoc_property_tags: &'alloc [P<Node>],
         is_array_type: bool,
     ) -> P<Node> {
+        let jsdoc_property_tags = self.store_slice(jsdoc_property_tags);
         self.new_node(
             Kind::JSDocTypeLiteral,
             JSDocTypeLiteral {
@@ -16612,13 +16631,13 @@ impl Token {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_token(node.kind()), node, &f.hooks)
     }
 }
 
 impl PrivateIdentifier {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_private_identifier(self.text()), node, &f.hooks)
     }
 }
@@ -16630,7 +16649,7 @@ impl QualifiedName {
 }
 
 impl QualifiedName {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let left_ = required_child(v.visit_node_hooked(Some(self.left())), self.left());
         let right_ = required_child(v.visit_node_hooked(Some(self.right())), self.right());
         v.factory.update_qualified_name(node, left_, right_)
@@ -16638,7 +16657,7 @@ impl QualifiedName {
 }
 
 impl QualifiedName {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_qualified_name(self.left(), self.right()), node, &f.hooks)
     }
 }
@@ -16650,7 +16669,7 @@ impl ComputedPropertyName {
 }
 
 impl ComputedPropertyName {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_computed_property_name(node, expression_)
@@ -16658,7 +16677,7 @@ impl ComputedPropertyName {
 }
 
 impl ComputedPropertyName {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_computed_property_name(self.expression()), node, &f.hooks)
     }
 }
@@ -16670,7 +16689,7 @@ impl Decorator {
 }
 
 impl Decorator {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_decorator(node, expression_)
@@ -16678,7 +16697,7 @@ impl Decorator {
 }
 
 impl Decorator {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_decorator(self.expression()), node, &f.hooks)
     }
 }
@@ -16688,7 +16707,7 @@ impl EmptyStatement {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_empty_statement(), node, &f.hooks)
     }
 }
@@ -16700,7 +16719,7 @@ impl IfStatement {
 }
 
 impl IfStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let then_statement_ = required_child(
@@ -16713,7 +16732,7 @@ impl IfStatement {
 }
 
 impl IfStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_if_statement(self.expression(), self.then_statement(), self.else_statement()),
             node,
@@ -16729,7 +16748,7 @@ impl DoStatement {
 }
 
 impl DoStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let statement_ =
             required_child(v.visit_iteration_body_hooked(Some(self.statement())), self.statement());
         let expression_ =
@@ -16739,7 +16758,7 @@ impl DoStatement {
 }
 
 impl DoStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_do_statement(self.statement(), self.expression()), node, &f.hooks)
     }
 }
@@ -16751,7 +16770,7 @@ impl WhileStatement {
 }
 
 impl WhileStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let statement_ =
@@ -16761,7 +16780,7 @@ impl WhileStatement {
 }
 
 impl WhileStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_while_statement(self.expression(), self.statement()), node, &f.hooks)
     }
 }
@@ -16776,7 +16795,7 @@ impl ForStatement {
 }
 
 impl ForStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let initializer_ = v.visit_node_hooked(self.initializer());
         let condition_ = v.visit_node_hooked(self.condition());
         let incrementor_ = v.visit_node_hooked(self.incrementor());
@@ -16787,7 +16806,7 @@ impl ForStatement {
 }
 
 impl ForStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_for_statement(
                 self.initializer(),
@@ -16811,7 +16830,7 @@ impl ForInOrOfStatement {
 }
 
 impl ForInOrOfStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let await_modifier_ = v.visit_node_hooked(self.await_modifier());
         let initializer_ =
             required_child(v.visit_node_hooked(Some(self.initializer())), self.initializer());
@@ -16830,7 +16849,7 @@ impl ForInOrOfStatement {
 }
 
 impl ForInOrOfStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_for_in_or_of_statement(
                 node.kind(),
@@ -16852,14 +16871,14 @@ impl BreakStatement {
 }
 
 impl BreakStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let label_ = v.visit_node_hooked(self.label());
         v.factory.update_break_statement(node, label_)
     }
 }
 
 impl BreakStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_break_statement(self.label()), node, &f.hooks)
     }
 }
@@ -16871,14 +16890,14 @@ impl ContinueStatement {
 }
 
 impl ContinueStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let label_ = v.visit_node_hooked(self.label());
         v.factory.update_continue_statement(node, label_)
     }
 }
 
 impl ContinueStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_continue_statement(self.label()), node, &f.hooks)
     }
 }
@@ -16890,14 +16909,14 @@ impl ReturnStatement {
 }
 
 impl ReturnStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ = v.visit_node_hooked(self.expression());
         v.factory.update_return_statement(node, expression_)
     }
 }
 
 impl ReturnStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_return_statement(self.expression()), node, &f.hooks)
     }
 }
@@ -16909,7 +16928,7 @@ impl WithStatement {
 }
 
 impl WithStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let statement_ = required_child(
@@ -16921,7 +16940,7 @@ impl WithStatement {
 }
 
 impl WithStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_with_statement(self.expression(), self.statement()), node, &f.hooks)
     }
 }
@@ -16933,7 +16952,7 @@ impl SwitchStatement {
 }
 
 impl SwitchStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let case_block_ =
@@ -16943,7 +16962,7 @@ impl SwitchStatement {
 }
 
 impl SwitchStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_switch_statement(self.expression(), self.case_block()), node, &f.hooks)
     }
 }
@@ -16955,14 +16974,14 @@ impl CaseBlock {
 }
 
 impl CaseBlock {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let clauses_ = required_child(v.visit_nodes_hooked(Some(self.clauses())), self.clauses());
         v.factory.update_case_block(node, clauses_)
     }
 }
 
 impl CaseBlock {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_case_block(self.clauses()), node, &f.hooks)
     }
 }
@@ -16974,7 +16993,7 @@ impl CaseOrDefaultClause {
 }
 
 impl CaseOrDefaultClause {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ = v.visit_node_hooked(self.expression());
         let statements_ =
             required_child(v.visit_nodes_hooked(Some(self.statements())), self.statements());
@@ -16983,7 +17002,7 @@ impl CaseOrDefaultClause {
 }
 
 impl CaseOrDefaultClause {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_case_or_default_clause(node.kind(), self.expression(), self.statements()),
             node,
@@ -16999,7 +17018,7 @@ impl ThrowStatement {
 }
 
 impl ThrowStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_throw_statement(node, expression_)
@@ -17007,7 +17026,7 @@ impl ThrowStatement {
 }
 
 impl ThrowStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_throw_statement(self.expression()), node, &f.hooks)
     }
 }
@@ -17019,7 +17038,7 @@ impl TryStatement {
 }
 
 impl TryStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let try_block_ =
             required_child(v.visit_node_hooked(Some(self.try_block())), self.try_block());
         let catch_clause_ = v.visit_node_hooked(self.catch_clause());
@@ -17029,7 +17048,7 @@ impl TryStatement {
 }
 
 impl TryStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_try_statement(self.try_block(), self.catch_clause(), self.finally_block()),
             node,
@@ -17045,7 +17064,7 @@ impl CatchClause {
 }
 
 impl CatchClause {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let variable_declaration_ = v.visit_node_hooked(self.variable_declaration());
         let block_ = required_child(v.visit_node_hooked(Some(self.block())), self.block());
         v.factory.update_catch_clause(node, variable_declaration_, block_)
@@ -17053,7 +17072,7 @@ impl CatchClause {
 }
 
 impl CatchClause {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_catch_clause(self.variable_declaration(), self.block()), node, &f.hooks)
     }
 }
@@ -17063,7 +17082,7 @@ impl DebuggerStatement {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_debugger_statement(), node, &f.hooks)
     }
 }
@@ -17075,7 +17094,7 @@ impl LabeledStatement {
 }
 
 impl LabeledStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let label_ = required_child(v.visit_node_hooked(Some(self.label())), self.label());
         let statement_ = required_child(
             v.visit_embedded_statement_hooked(Some(self.statement())),
@@ -17086,7 +17105,7 @@ impl LabeledStatement {
 }
 
 impl LabeledStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_labeled_statement(self.label(), self.statement()), node, &f.hooks)
     }
 }
@@ -17098,7 +17117,7 @@ impl ExpressionStatement {
 }
 
 impl ExpressionStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_expression_statement(node, expression_)
@@ -17106,7 +17125,7 @@ impl ExpressionStatement {
 }
 
 impl ExpressionStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_expression_statement(self.expression()), node, &f.hooks)
     }
 }
@@ -17118,7 +17137,7 @@ impl Block {
 }
 
 impl Block {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let statements_ =
             required_child(v.visit_nodes_hooked(Some(self.statements())), self.statements());
         v.factory.update_block(node, statements_, self.multi_line())
@@ -17126,7 +17145,7 @@ impl Block {
 }
 
 impl Block {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_block(self.statements(), self.multi_line()), node, &f.hooks)
     }
 }
@@ -17138,7 +17157,7 @@ impl VariableStatement {
 }
 
 impl VariableStatement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let declaration_list_ = required_child(
             v.visit_node_hooked(Some(self.declaration_list())),
@@ -17149,7 +17168,7 @@ impl VariableStatement {
 }
 
 impl VariableStatement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_variable_statement(self.modifiers(), self.declaration_list()),
             node,
@@ -17168,7 +17187,7 @@ impl VariableDeclaration {
 }
 
 impl VariableDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let exclamation_token_ = v.visit_node_hooked(self.exclamation_token());
         let type_node_ = v.visit_node_hooked(self.type_());
@@ -17184,7 +17203,7 @@ impl VariableDeclaration {
 }
 
 impl VariableDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_variable_declaration(
                 self.name(),
@@ -17205,7 +17224,7 @@ impl VariableDeclarationList {
 }
 
 impl VariableDeclarationList {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let declarations_ =
             required_child(v.visit_nodes_hooked(Some(self.declarations())), self.declarations());
         v.factory.update_variable_declaration_list(node, declarations_, node.flags.get())
@@ -17213,7 +17232,7 @@ impl VariableDeclarationList {
 }
 
 impl VariableDeclarationList {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_variable_declaration_list(self.declarations(), node.flags.get()),
             node,
@@ -17229,7 +17248,7 @@ impl BindingPattern {
 }
 
 impl BindingPattern {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let elements_ =
             required_child(v.visit_nodes_hooked(Some(self.elements())), self.elements());
         v.factory.update_binding_pattern(node, elements_)
@@ -17237,7 +17256,7 @@ impl BindingPattern {
 }
 
 impl BindingPattern {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_binding_pattern(node.kind(), self.elements()), node, &f.hooks)
     }
 }
@@ -17254,7 +17273,7 @@ impl ParameterDeclaration {
 }
 
 impl ParameterDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let dot_dot_dot_token_ = v.visit_node_hooked(self.dot_dot_dot_token());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
@@ -17274,7 +17293,7 @@ impl ParameterDeclaration {
 }
 
 impl ParameterDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_parameter_declaration(
                 self.modifiers(),
@@ -17300,7 +17319,7 @@ impl BindingElement {
 }
 
 impl BindingElement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let dot_dot_dot_token_ = v.visit_node_hooked(self.dot_dot_dot_token());
         let property_name_ = v.visit_node_hooked(self.property_name());
         let name_ = v.visit_node_hooked(self.name());
@@ -17316,7 +17335,7 @@ impl BindingElement {
 }
 
 impl BindingElement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_binding_element(
                 self.dot_dot_dot_token(),
@@ -17337,14 +17356,14 @@ impl MissingDeclaration {
 }
 
 impl MissingDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         v.factory.update_missing_declaration(node, modifiers_)
     }
 }
 
 impl MissingDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_missing_declaration(self.modifiers()), node, &f.hooks)
     }
 }
@@ -17363,7 +17382,7 @@ impl FunctionDeclaration {
 }
 
 impl FunctionDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let asterisk_token_ = v.visit_node_hooked(self.asterisk_token());
         let name_ = v.visit_node_hooked(self.name());
@@ -17387,7 +17406,7 @@ impl FunctionDeclaration {
 }
 
 impl FunctionDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_function_declaration(
                 self.modifiers(),
@@ -17416,7 +17435,7 @@ impl ClassDeclaration {
 }
 
 impl ClassDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = v.visit_node_hooked(self.name());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
@@ -17434,7 +17453,7 @@ impl ClassDeclaration {
 }
 
 impl ClassDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_class_declaration(
                 self.modifiers(),
@@ -17460,7 +17479,7 @@ impl ClassExpression {
 }
 
 impl ClassExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = v.visit_node_hooked(self.name());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
@@ -17478,7 +17497,7 @@ impl ClassExpression {
 }
 
 impl ClassExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_class_expression(
                 self.modifiers(),
@@ -17500,14 +17519,14 @@ impl HeritageClause {
 }
 
 impl HeritageClause {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let types_ = required_child(v.visit_nodes_hooked(Some(self.types())), self.types());
         v.factory.update_heritage_clause(node, self.token(), types_)
     }
 }
 
 impl HeritageClause {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_heritage_clause(self.token(), self.types()), node, &f.hooks)
     }
 }
@@ -17523,7 +17542,7 @@ impl InterfaceDeclaration {
 }
 
 impl InterfaceDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
@@ -17541,7 +17560,7 @@ impl InterfaceDeclaration {
 }
 
 impl InterfaceDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_interface_declaration(
                 self.modifiers(),
@@ -17566,7 +17585,7 @@ impl TypeAliasDeclaration {
 }
 
 impl TypeAliasDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
@@ -17582,7 +17601,7 @@ impl TypeAliasDeclaration {
 }
 
 impl TypeAliasDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         let updated = match node.kind() {
             Kind::TypeAliasDeclaration => f.new_type_alias_declaration(
                 self.modifiers(),
@@ -17609,7 +17628,7 @@ impl EnumMember {
 }
 
 impl EnumMember {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let initializer_ = v.visit_node_hooked(self.initializer());
         v.factory.update_enum_member(node, name_, initializer_)
@@ -17617,7 +17636,7 @@ impl EnumMember {
 }
 
 impl EnumMember {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_enum_member(self.name(), self.initializer()), node, &f.hooks)
     }
 }
@@ -17631,7 +17650,7 @@ impl EnumDeclaration {
 }
 
 impl EnumDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let members_ = required_child(v.visit_nodes_hooked(Some(self.members())), self.members());
@@ -17640,7 +17659,7 @@ impl EnumDeclaration {
 }
 
 impl EnumDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_enum_declaration(self.modifiers(), self.name(), self.members()),
             node,
@@ -17656,7 +17675,7 @@ impl ModuleBlock {
 }
 
 impl ModuleBlock {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let statements_ =
             required_child(v.visit_nodes_hooked(Some(self.statements())), self.statements());
         v.factory.update_module_block(node, statements_)
@@ -17664,7 +17683,7 @@ impl ModuleBlock {
 }
 
 impl ModuleBlock {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_module_block(self.statements()), node, &f.hooks)
     }
 }
@@ -17674,7 +17693,7 @@ impl NotEmittedStatement {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_not_emitted_statement(), node, &f.hooks)
     }
 }
@@ -17684,7 +17703,7 @@ impl NotEmittedTypeElement {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_not_emitted_type_element(), node, &f.hooks)
     }
 }
@@ -17699,7 +17718,7 @@ impl ImportDeclaration {
 }
 
 impl ImportDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let import_clause_ = v.visit_node_hooked(self.import_clause());
         let module_specifier_ = required_child(
@@ -17718,7 +17737,7 @@ impl ImportDeclaration {
 }
 
 impl ImportDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         let updated = match node.kind() {
             Kind::ImportDeclaration => f.new_import_declaration(
                 self.modifiers(),
@@ -17745,7 +17764,7 @@ impl ExternalModuleReference {
 }
 
 impl ExternalModuleReference {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_external_module_reference(node, expression_)
@@ -17753,7 +17772,7 @@ impl ExternalModuleReference {
 }
 
 impl ExternalModuleReference {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_external_module_reference(self.expression()), node, &f.hooks)
     }
 }
@@ -17765,14 +17784,14 @@ impl NamespaceImport {
 }
 
 impl NamespaceImport {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         v.factory.update_namespace_import(node, name_)
     }
 }
 
 impl NamespaceImport {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_namespace_import(self.name()), node, &f.hooks)
     }
 }
@@ -17784,7 +17803,7 @@ impl NamedImports {
 }
 
 impl NamedImports {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let elements_ =
             required_child(v.visit_nodes_hooked(Some(self.elements())), self.elements());
         v.factory.update_named_imports(node, elements_)
@@ -17792,7 +17811,7 @@ impl NamedImports {
 }
 
 impl NamedImports {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_named_imports(self.elements()), node, &f.hooks)
     }
 }
@@ -17804,7 +17823,7 @@ impl ExportAssignment {
 }
 
 impl ExportAssignment {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let type_node_ = v.visit_node_hooked(self.type_());
         let expression_ =
@@ -17820,7 +17839,7 @@ impl ExportAssignment {
 }
 
 impl ExportAssignment {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_export_assignment(
                 self.modifiers(),
@@ -17841,7 +17860,7 @@ impl NamespaceExportDeclaration {
 }
 
 impl NamespaceExportDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         v.factory.update_namespace_export_declaration(node, modifiers_, name_)
@@ -17849,7 +17868,7 @@ impl NamespaceExportDeclaration {
 }
 
 impl NamespaceExportDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_namespace_export_declaration(self.modifiers(), self.name()),
             node,
@@ -17865,14 +17884,14 @@ impl NamespaceExport {
 }
 
 impl NamespaceExport {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         v.factory.update_namespace_export(node, name_)
     }
 }
 
 impl NamespaceExport {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_namespace_export(self.name()), node, &f.hooks)
     }
 }
@@ -17884,7 +17903,7 @@ impl NamedExports {
 }
 
 impl NamedExports {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let elements_ =
             required_child(v.visit_nodes_hooked(Some(self.elements())), self.elements());
         v.factory.update_named_exports(node, elements_)
@@ -17892,7 +17911,7 @@ impl NamedExports {
 }
 
 impl NamedExports {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_named_exports(self.elements()), node, &f.hooks)
     }
 }
@@ -17904,7 +17923,7 @@ impl ExportSpecifier {
 }
 
 impl ExportSpecifier {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let property_name_ = v.visit_node_hooked(self.property_name());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         v.factory.update_export_specifier(node, self.is_type_only(), property_name_, name_)
@@ -17912,7 +17931,7 @@ impl ExportSpecifier {
 }
 
 impl ExportSpecifier {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_export_specifier(self.is_type_only(), self.property_name(), self.name()),
             node,
@@ -17930,7 +17949,7 @@ impl CallSignatureDeclaration {
 }
 
 impl CallSignatureDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
         let parameters_ = v.visit_nodes_hooked(self.parameters());
         let type_node_ = v.visit_node_hooked(self.type_());
@@ -17939,7 +17958,7 @@ impl CallSignatureDeclaration {
 }
 
 impl CallSignatureDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_call_signature_declaration(
                 self.type_parameters(),
@@ -17961,7 +17980,7 @@ impl ConstructSignatureDeclaration {
 }
 
 impl ConstructSignatureDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
         let parameters_ = v.visit_nodes_hooked(self.parameters());
         let type_node_ = v.visit_node_hooked(self.type_());
@@ -17975,7 +17994,7 @@ impl ConstructSignatureDeclaration {
 }
 
 impl ConstructSignatureDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_construct_signature_declaration(
                 self.type_parameters(),
@@ -18000,7 +18019,7 @@ impl ConstructorDeclaration {
 }
 
 impl ConstructorDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
         let parameters_ = v.visit_parameters_hooked(self.parameters());
@@ -18020,7 +18039,7 @@ impl ConstructorDeclaration {
 }
 
 impl ConstructorDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_constructor_declaration(
                 self.modifiers(),
@@ -18049,7 +18068,7 @@ impl GetAccessorDeclaration {
 }
 
 impl GetAccessorDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
@@ -18071,7 +18090,7 @@ impl GetAccessorDeclaration {
 }
 
 impl GetAccessorDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_get_accessor_declaration(
                 self.modifiers(),
@@ -18101,7 +18120,7 @@ impl SetAccessorDeclaration {
 }
 
 impl SetAccessorDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
@@ -18123,7 +18142,7 @@ impl SetAccessorDeclaration {
 }
 
 impl SetAccessorDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_set_accessor_declaration(
                 self.modifiers(),
@@ -18149,7 +18168,7 @@ impl IndexSignatureDeclaration {
 }
 
 impl IndexSignatureDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let parameters_ = v.visit_nodes_hooked(self.parameters());
         let type_node_ = v.visit_node_hooked(self.type_());
@@ -18158,7 +18177,7 @@ impl IndexSignatureDeclaration {
 }
 
 impl IndexSignatureDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_index_signature_declaration(self.modifiers(), self.parameters(), self.type_()),
             node,
@@ -18179,7 +18198,7 @@ impl MethodSignatureDeclaration {
 }
 
 impl MethodSignatureDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let postfix_token_ = v.visit_node_hooked(self.postfix_token());
@@ -18199,7 +18218,7 @@ impl MethodSignatureDeclaration {
 }
 
 impl MethodSignatureDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_method_signature_declaration(
                 self.modifiers(),
@@ -18230,7 +18249,7 @@ impl MethodDeclaration {
 }
 
 impl MethodDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let asterisk_token_ = v.visit_node_hooked(self.asterisk_token());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
@@ -18256,7 +18275,7 @@ impl MethodDeclaration {
 }
 
 impl MethodDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_method_declaration(
                 self.modifiers(),
@@ -18286,7 +18305,7 @@ impl PropertySignatureDeclaration {
 }
 
 impl PropertySignatureDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let postfix_token_ = v.visit_node_hooked(self.postfix_token());
@@ -18304,7 +18323,7 @@ impl PropertySignatureDeclaration {
 }
 
 impl PropertySignatureDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_property_signature_declaration(
                 self.modifiers(),
@@ -18330,7 +18349,7 @@ impl PropertyDeclaration {
 }
 
 impl PropertyDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let postfix_token_ = v.visit_node_hooked(self.postfix_token());
@@ -18348,7 +18367,7 @@ impl PropertyDeclaration {
 }
 
 impl PropertyDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_property_declaration(
                 self.modifiers(),
@@ -18368,7 +18387,7 @@ impl SemicolonClassElement {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_semicolon_class_element(), node, &f.hooks)
     }
 }
@@ -18380,7 +18399,7 @@ impl ClassStaticBlockDeclaration {
 }
 
 impl ClassStaticBlockDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let body_ = required_child(v.visit_node_hooked(Some(self.body())), self.body());
         v.factory.update_class_static_block_declaration(node, modifiers_, body_)
@@ -18388,7 +18407,7 @@ impl ClassStaticBlockDeclaration {
 }
 
 impl ClassStaticBlockDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_class_static_block_declaration(self.modifiers(), self.body()),
             node,
@@ -18402,7 +18421,7 @@ impl OmittedExpression {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_omitted_expression(), node, &f.hooks)
     }
 }
@@ -18412,31 +18431,31 @@ impl KeywordExpression {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_keyword_expression(node.kind()), node, &f.hooks)
     }
 }
 
 impl StringLiteral {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_string_literal(self.text(), self.token_flags()), node, &f.hooks)
     }
 }
 
 impl NumericLiteral {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_numeric_literal(self.text(), self.token_flags()), node, &f.hooks)
     }
 }
 
 impl BigIntLiteral {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_big_int_literal(self.text(), self.token_flags()), node, &f.hooks)
     }
 }
 
 impl RegularExpressionLiteral {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_regular_expression_literal(self.text(), self.token_flags()),
             node,
@@ -18446,7 +18465,7 @@ impl RegularExpressionLiteral {
 }
 
 impl NoSubstitutionTemplateLiteral {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_no_substitution_template_literal(self.text(), self.template_flags()),
             node,
@@ -18466,7 +18485,7 @@ impl BinaryExpression {
 }
 
 impl BinaryExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let left_ = required_child(v.visit_node_hooked(Some(self.left())), self.left());
         let type_node_ = v.visit_node_hooked(self.type_());
@@ -18485,7 +18504,7 @@ impl BinaryExpression {
 }
 
 impl BinaryExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_binary_expression(
                 self.modifiers(),
@@ -18507,14 +18526,14 @@ impl PrefixUnaryExpression {
 }
 
 impl PrefixUnaryExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let operand_ = required_child(v.visit_node_hooked(Some(self.operand())), self.operand());
         v.factory.update_prefix_unary_expression(node, self.operator(), operand_)
     }
 }
 
 impl PrefixUnaryExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_prefix_unary_expression(self.operator(), self.operand()), node, &f.hooks)
     }
 }
@@ -18526,14 +18545,14 @@ impl PostfixUnaryExpression {
 }
 
 impl PostfixUnaryExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let operand_ = required_child(v.visit_node_hooked(Some(self.operand())), self.operand());
         v.factory.update_postfix_unary_expression(node, operand_, self.operator())
     }
 }
 
 impl PostfixUnaryExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_postfix_unary_expression(self.operand(), self.operator()), node, &f.hooks)
     }
 }
@@ -18545,7 +18564,7 @@ impl YieldExpression {
 }
 
 impl YieldExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let asterisk_token_ = v.visit_node_hooked(self.asterisk_token());
         let expression_ = v.visit_node_hooked(self.expression());
         v.factory.update_yield_expression(node, asterisk_token_, expression_)
@@ -18553,7 +18572,7 @@ impl YieldExpression {
 }
 
 impl YieldExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_yield_expression(self.asterisk_token(), self.expression()), node, &f.hooks)
     }
 }
@@ -18571,7 +18590,7 @@ impl ArrowFunction {
 }
 
 impl ArrowFunction {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
         let parameters_ = v.visit_parameters_hooked(self.parameters());
@@ -18593,7 +18612,7 @@ impl ArrowFunction {
 }
 
 impl ArrowFunction {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_arrow_function(
                 self.modifiers(),
@@ -18624,7 +18643,7 @@ impl FunctionExpression {
 }
 
 impl FunctionExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let asterisk_token_ = v.visit_node_hooked(self.asterisk_token());
         let name_ = v.visit_node_hooked(self.name());
@@ -18648,7 +18667,7 @@ impl FunctionExpression {
 }
 
 impl FunctionExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_function_expression(
                 self.modifiers(),
@@ -18673,7 +18692,7 @@ impl AsExpression {
 }
 
 impl AsExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
@@ -18682,7 +18701,7 @@ impl AsExpression {
 }
 
 impl AsExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_as_expression(self.expression(), self.type_()), node, &f.hooks)
     }
 }
@@ -18694,7 +18713,7 @@ impl SatisfiesExpression {
 }
 
 impl SatisfiesExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
@@ -18703,7 +18722,7 @@ impl SatisfiesExpression {
 }
 
 impl SatisfiesExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_satisfies_expression(self.expression(), self.type_()), node, &f.hooks)
     }
 }
@@ -18719,7 +18738,7 @@ impl ConditionalExpression {
 }
 
 impl ConditionalExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let condition_ =
             required_child(v.visit_node_hooked(Some(self.condition())), self.condition());
         let question_token_ =
@@ -18742,7 +18761,7 @@ impl ConditionalExpression {
 }
 
 impl ConditionalExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_conditional_expression(
                 self.condition(),
@@ -18764,7 +18783,7 @@ impl PropertyAccessExpression {
 }
 
 impl PropertyAccessExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let question_dot_token_ = v.visit_node_hooked(self.question_dot_token());
@@ -18780,7 +18799,7 @@ impl PropertyAccessExpression {
 }
 
 impl PropertyAccessExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_property_access_expression(
                 self.expression(),
@@ -18801,7 +18820,7 @@ impl ElementAccessExpression {
 }
 
 impl ElementAccessExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let question_dot_token_ = v.visit_node_hooked(self.question_dot_token());
@@ -18820,7 +18839,7 @@ impl ElementAccessExpression {
 }
 
 impl ElementAccessExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_element_access_expression(
                 self.expression(),
@@ -18844,7 +18863,7 @@ impl CallExpression {
 }
 
 impl CallExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let question_dot_token_ = v.visit_node_hooked(self.question_dot_token());
@@ -18863,7 +18882,7 @@ impl CallExpression {
 }
 
 impl CallExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_call_expression(
                 self.expression(),
@@ -18887,7 +18906,7 @@ impl NewExpression {
 }
 
 impl NewExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let type_arguments_ = v.visit_nodes_hooked(self.type_arguments());
@@ -18897,7 +18916,7 @@ impl NewExpression {
 }
 
 impl NewExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_new_expression(self.expression(), self.type_arguments(), self.arguments()),
             node,
@@ -18913,14 +18932,14 @@ impl MetaProperty {
 }
 
 impl MetaProperty {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         v.factory.update_meta_property(node, self.keyword_token(), name_)
     }
 }
 
 impl MetaProperty {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_meta_property(self.keyword_token(), self.name()), node, &f.hooks)
     }
 }
@@ -18932,7 +18951,7 @@ impl NonNullExpression {
 }
 
 impl NonNullExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_non_null_expression(node, expression_, node.flags.get())
@@ -18940,7 +18959,7 @@ impl NonNullExpression {
 }
 
 impl NonNullExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_non_null_expression(self.expression(), node.flags.get()), node, &f.hooks)
     }
 }
@@ -18952,7 +18971,7 @@ impl SpreadElement {
 }
 
 impl SpreadElement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_spread_element(node, expression_)
@@ -18960,7 +18979,7 @@ impl SpreadElement {
 }
 
 impl SpreadElement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_spread_element(self.expression()), node, &f.hooks)
     }
 }
@@ -18972,7 +18991,7 @@ impl TemplateExpression {
 }
 
 impl TemplateExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let head_ = required_child(v.visit_node_hooked(Some(self.head())), self.head());
         let template_spans_ = required_child(
             v.visit_nodes_hooked(Some(self.template_spans())),
@@ -18983,7 +19002,7 @@ impl TemplateExpression {
 }
 
 impl TemplateExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_template_expression(self.head(), self.template_spans()), node, &f.hooks)
     }
 }
@@ -18995,7 +19014,7 @@ impl TemplateSpan {
 }
 
 impl TemplateSpan {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let literal_ = required_child(v.visit_node_hooked(Some(self.literal())), self.literal());
@@ -19004,7 +19023,7 @@ impl TemplateSpan {
 }
 
 impl TemplateSpan {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_template_span(self.expression(), self.literal()), node, &f.hooks)
     }
 }
@@ -19019,7 +19038,7 @@ impl TaggedTemplateExpression {
 }
 
 impl TaggedTemplateExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_ = required_child(v.visit_node_hooked(Some(self.tag())), self.tag());
         let question_dot_token_ = v.visit_node_hooked(self.question_dot_token());
         let type_arguments_ = v.visit_nodes_hooked(self.type_arguments());
@@ -19036,7 +19055,7 @@ impl TaggedTemplateExpression {
 }
 
 impl TaggedTemplateExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_tagged_template_expression(
                 self.tag(),
@@ -19058,7 +19077,7 @@ impl ParenthesizedExpression {
 }
 
 impl ParenthesizedExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_parenthesized_expression(node, expression_)
@@ -19066,7 +19085,7 @@ impl ParenthesizedExpression {
 }
 
 impl ParenthesizedExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_parenthesized_expression(self.expression()), node, &f.hooks)
     }
 }
@@ -19078,7 +19097,7 @@ impl ArrayLiteralExpression {
 }
 
 impl ArrayLiteralExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let elements_ =
             required_child(v.visit_nodes_hooked(Some(self.elements())), self.elements());
         v.factory.update_array_literal_expression(node, elements_, self.multi_line())
@@ -19086,7 +19105,7 @@ impl ArrayLiteralExpression {
 }
 
 impl ArrayLiteralExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_array_literal_expression(self.elements(), self.multi_line()),
             node,
@@ -19102,7 +19121,7 @@ impl ObjectLiteralExpression {
 }
 
 impl ObjectLiteralExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let properties_ =
             required_child(v.visit_nodes_hooked(Some(self.properties())), self.properties());
         v.factory.update_object_literal_expression(node, properties_, self.multi_line())
@@ -19110,7 +19129,7 @@ impl ObjectLiteralExpression {
 }
 
 impl ObjectLiteralExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_object_literal_expression(self.properties(), self.multi_line()),
             node,
@@ -19126,7 +19145,7 @@ impl SpreadAssignment {
 }
 
 impl SpreadAssignment {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_spread_assignment(node, expression_)
@@ -19134,7 +19153,7 @@ impl SpreadAssignment {
 }
 
 impl SpreadAssignment {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_spread_assignment(self.expression()), node, &f.hooks)
     }
 }
@@ -19150,7 +19169,7 @@ impl PropertyAssignment {
 }
 
 impl PropertyAssignment {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let postfix_token_ = v.visit_node_hooked(self.postfix_token());
@@ -19169,7 +19188,7 @@ impl PropertyAssignment {
 }
 
 impl PropertyAssignment {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_property_assignment(
                 self.modifiers(),
@@ -19196,7 +19215,7 @@ impl ShorthandPropertyAssignment {
 }
 
 impl ShorthandPropertyAssignment {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let postfix_token_ = v.visit_node_hooked(self.postfix_token());
@@ -19217,7 +19236,7 @@ impl ShorthandPropertyAssignment {
 }
 
 impl ShorthandPropertyAssignment {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_shorthand_property_assignment(
                 self.modifiers(),
@@ -19240,7 +19259,7 @@ impl DeleteExpression {
 }
 
 impl DeleteExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_delete_expression(node, expression_)
@@ -19248,7 +19267,7 @@ impl DeleteExpression {
 }
 
 impl DeleteExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_delete_expression(self.expression()), node, &f.hooks)
     }
 }
@@ -19260,7 +19279,7 @@ impl TypeOfExpression {
 }
 
 impl TypeOfExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_type_of_expression(node, expression_)
@@ -19268,7 +19287,7 @@ impl TypeOfExpression {
 }
 
 impl TypeOfExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_type_of_expression(self.expression()), node, &f.hooks)
     }
 }
@@ -19280,7 +19299,7 @@ impl VoidExpression {
 }
 
 impl VoidExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_void_expression(node, expression_)
@@ -19288,7 +19307,7 @@ impl VoidExpression {
 }
 
 impl VoidExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_void_expression(self.expression()), node, &f.hooks)
     }
 }
@@ -19300,7 +19319,7 @@ impl AwaitExpression {
 }
 
 impl AwaitExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_await_expression(node, expression_)
@@ -19308,7 +19327,7 @@ impl AwaitExpression {
 }
 
 impl AwaitExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_await_expression(self.expression()), node, &f.hooks)
     }
 }
@@ -19320,7 +19339,7 @@ impl TypeAssertion {
 }
 
 impl TypeAssertion {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
@@ -19329,7 +19348,7 @@ impl TypeAssertion {
 }
 
 impl TypeAssertion {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_type_assertion(self.type_(), self.expression()), node, &f.hooks)
     }
 }
@@ -19339,7 +19358,7 @@ impl KeywordTypeNode {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_keyword_type_node(node.kind()), node, &f.hooks)
     }
 }
@@ -19351,14 +19370,14 @@ impl UnionTypeNode {
 }
 
 impl UnionTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let types_ = required_child(v.visit_nodes_hooked(Some(self.types())), self.types());
         v.factory.update_union_type_node(node, types_)
     }
 }
 
 impl UnionTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_union_type_node(self.types()), node, &f.hooks)
     }
 }
@@ -19370,14 +19389,14 @@ impl IntersectionTypeNode {
 }
 
 impl IntersectionTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let types_ = required_child(v.visit_nodes_hooked(Some(self.types())), self.types());
         v.factory.update_intersection_type_node(node, types_)
     }
 }
 
 impl IntersectionTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_intersection_type_node(self.types()), node, &f.hooks)
     }
 }
@@ -19392,7 +19411,7 @@ impl ConditionalTypeNode {
 }
 
 impl ConditionalTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let check_type_ =
             required_child(v.visit_node_hooked(Some(self.check_type())), self.check_type());
         let extends_type_ =
@@ -19412,7 +19431,7 @@ impl ConditionalTypeNode {
 }
 
 impl ConditionalTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_conditional_type_node(
                 self.check_type(),
@@ -19433,14 +19452,14 @@ impl TypeOperatorNode {
 }
 
 impl TypeOperatorNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_type_operator_node(node, self.operator(), type_node_)
     }
 }
 
 impl TypeOperatorNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_type_operator_node(self.operator(), self.type_()), node, &f.hooks)
     }
 }
@@ -19452,7 +19471,7 @@ impl InferTypeNode {
 }
 
 impl InferTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_parameter_ =
             required_child(v.visit_node_hooked(Some(self.type_parameter())), self.type_parameter());
         v.factory.update_infer_type_node(node, type_parameter_)
@@ -19460,7 +19479,7 @@ impl InferTypeNode {
 }
 
 impl InferTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_infer_type_node(self.type_parameter()), node, &f.hooks)
     }
 }
@@ -19472,7 +19491,7 @@ impl ArrayTypeNode {
 }
 
 impl ArrayTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let element_type_ =
             required_child(v.visit_node_hooked(Some(self.element_type())), self.element_type());
         v.factory.update_array_type_node(node, element_type_)
@@ -19480,7 +19499,7 @@ impl ArrayTypeNode {
 }
 
 impl ArrayTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_array_type_node(self.element_type()), node, &f.hooks)
     }
 }
@@ -19492,7 +19511,7 @@ impl IndexedAccessTypeNode {
 }
 
 impl IndexedAccessTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let object_type_ =
             required_child(v.visit_node_hooked(Some(self.object_type())), self.object_type());
         let index_type_ =
@@ -19502,7 +19521,7 @@ impl IndexedAccessTypeNode {
 }
 
 impl IndexedAccessTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_indexed_access_type_node(self.object_type(), self.index_type()),
             node,
@@ -19518,7 +19537,7 @@ impl TypeReferenceNode {
 }
 
 impl TypeReferenceNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_name_ =
             required_child(v.visit_node_hooked(Some(self.type_name())), self.type_name());
         let type_arguments_ = v.visit_nodes_hooked(self.type_arguments());
@@ -19527,7 +19546,7 @@ impl TypeReferenceNode {
 }
 
 impl TypeReferenceNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_type_reference_node(self.type_name(), self.type_arguments()),
             node,
@@ -19543,7 +19562,7 @@ impl ExpressionWithTypeArguments {
 }
 
 impl ExpressionWithTypeArguments {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let type_arguments_ = v.visit_nodes_hooked(self.type_arguments());
@@ -19552,7 +19571,7 @@ impl ExpressionWithTypeArguments {
 }
 
 impl ExpressionWithTypeArguments {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_expression_with_type_arguments(self.expression(), self.type_arguments()),
             node,
@@ -19568,14 +19587,14 @@ impl LiteralTypeNode {
 }
 
 impl LiteralTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let literal_ = required_child(v.visit_node_hooked(Some(self.literal())), self.literal());
         v.factory.update_literal_type_node(node, literal_)
     }
 }
 
 impl LiteralTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_literal_type_node(self.literal()), node, &f.hooks)
     }
 }
@@ -19585,7 +19604,7 @@ impl ThisTypeNode {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_this_type_node(), node, &f.hooks)
     }
 }
@@ -19597,7 +19616,7 @@ impl TypePredicateNode {
 }
 
 impl TypePredicateNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let asserts_modifier_ = v.visit_node_hooked(self.asserts_modifier());
         let parameter_name_ =
             required_child(v.visit_node_hooked(Some(self.parameter_name())), self.parameter_name());
@@ -19607,7 +19626,7 @@ impl TypePredicateNode {
 }
 
 impl TypePredicateNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_type_predicate_node(self.asserts_modifier(), self.parameter_name(), self.type_()),
             node,
@@ -19623,7 +19642,7 @@ impl ImportAttribute {
 }
 
 impl ImportAttribute {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = v.visit_node_hooked(self.name());
         let value_ = required_child(v.visit_node_hooked(Some(self.value())), self.value());
         v.factory.update_import_attribute(node, name_, value_)
@@ -19631,7 +19650,7 @@ impl ImportAttribute {
 }
 
 impl ImportAttribute {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_import_attribute(self.name(), self.value()), node, &f.hooks)
     }
 }
@@ -19643,7 +19662,7 @@ impl ImportAttributes {
 }
 
 impl ImportAttributes {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let attributes_ =
             required_child(v.visit_nodes_hooked(Some(self.attributes())), self.attributes());
         v.factory.update_import_attributes(node, self.token(), attributes_, self.multi_line())
@@ -19651,7 +19670,7 @@ impl ImportAttributes {
 }
 
 impl ImportAttributes {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_import_attributes(self.token(), self.attributes(), self.multi_line()),
             node,
@@ -19667,7 +19686,7 @@ impl TypeQueryNode {
 }
 
 impl TypeQueryNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expr_name_ =
             required_child(v.visit_node_hooked(Some(self.expr_name())), self.expr_name());
         let type_arguments_ = v.visit_nodes_hooked(self.type_arguments());
@@ -19676,7 +19695,7 @@ impl TypeQueryNode {
 }
 
 impl TypeQueryNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_type_query_node(self.expr_name(), self.type_arguments()), node, &f.hooks)
     }
 }
@@ -19693,7 +19712,7 @@ impl MappedTypeNode {
 }
 
 impl MappedTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let readonly_token_ = v.visit_node_hooked(self.readonly_token());
         let type_parameter_ =
             required_child(v.visit_node_hooked(Some(self.type_parameter())), self.type_parameter());
@@ -19714,7 +19733,7 @@ impl MappedTypeNode {
 }
 
 impl MappedTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_mapped_type_node(
                 self.readonly_token(),
@@ -19737,14 +19756,14 @@ impl TypeLiteralNode {
 }
 
 impl TypeLiteralNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let members_ = required_child(v.visit_nodes_hooked(Some(self.members())), self.members());
         v.factory.update_type_literal_node(node, members_)
     }
 }
 
 impl TypeLiteralNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_type_literal_node(self.members()), node, &f.hooks)
     }
 }
@@ -19756,7 +19775,7 @@ impl TupleTypeNode {
 }
 
 impl TupleTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let elements_ =
             required_child(v.visit_nodes_hooked(Some(self.elements())), self.elements());
         v.factory.update_tuple_type_node(node, elements_)
@@ -19764,7 +19783,7 @@ impl TupleTypeNode {
 }
 
 impl TupleTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_tuple_type_node(self.elements()), node, &f.hooks)
     }
 }
@@ -19779,7 +19798,7 @@ impl NamedTupleMember {
 }
 
 impl NamedTupleMember {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let dot_dot_dot_token_ = v.visit_node_hooked(self.dot_dot_dot_token());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let question_token_ = v.visit_node_hooked(self.question_token());
@@ -19795,7 +19814,7 @@ impl NamedTupleMember {
 }
 
 impl NamedTupleMember {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_named_tuple_member(
                 self.dot_dot_dot_token(),
@@ -19816,14 +19835,14 @@ impl OptionalTypeNode {
 }
 
 impl OptionalTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_optional_type_node(node, type_node_)
     }
 }
 
 impl OptionalTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_optional_type_node(self.type_()), node, &f.hooks)
     }
 }
@@ -19835,14 +19854,14 @@ impl RestTypeNode {
 }
 
 impl RestTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_rest_type_node(node, type_node_)
     }
 }
 
 impl RestTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_rest_type_node(self.type_()), node, &f.hooks)
     }
 }
@@ -19854,14 +19873,14 @@ impl ParenthesizedTypeNode {
 }
 
 impl ParenthesizedTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_parenthesized_type_node(node, type_node_)
     }
 }
 
 impl ParenthesizedTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_parenthesized_type_node(self.type_()), node, &f.hooks)
     }
 }
@@ -19875,7 +19894,7 @@ impl FunctionTypeNode {
 }
 
 impl FunctionTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
         let parameters_ = v.visit_nodes_hooked(self.parameters());
         let type_node_ = v.visit_node_hooked(self.type_());
@@ -19884,7 +19903,7 @@ impl FunctionTypeNode {
 }
 
 impl FunctionTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_function_type_node(self.type_parameters(), self.parameters(), self.type_()),
             node,
@@ -19903,7 +19922,7 @@ impl ConstructorTypeNode {
 }
 
 impl ConstructorTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
         let parameters_ = v.visit_nodes_hooked(self.parameters());
@@ -19919,7 +19938,7 @@ impl ConstructorTypeNode {
 }
 
 impl ConstructorTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_constructor_type_node(
                 self.modifiers(),
@@ -19934,7 +19953,7 @@ impl ConstructorTypeNode {
 }
 
 impl TemplateHead {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_template_head(self.text(), self.raw_text(), self.template_flags()),
             node,
@@ -19944,7 +19963,7 @@ impl TemplateHead {
 }
 
 impl TemplateMiddle {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_template_middle(self.text(), self.raw_text(), self.template_flags()),
             node,
@@ -19954,7 +19973,7 @@ impl TemplateMiddle {
 }
 
 impl TemplateTail {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_template_tail(self.text(), self.raw_text(), self.template_flags()),
             node,
@@ -19970,7 +19989,7 @@ impl TemplateLiteralTypeNode {
 }
 
 impl TemplateLiteralTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let head_ = required_child(v.visit_node_hooked(Some(self.head())), self.head());
         let template_spans_ = required_child(
             v.visit_nodes_hooked(Some(self.template_spans())),
@@ -19981,7 +20000,7 @@ impl TemplateLiteralTypeNode {
 }
 
 impl TemplateLiteralTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_template_literal_type_node(self.head(), self.template_spans()),
             node,
@@ -19997,7 +20016,7 @@ impl TemplateLiteralTypeSpan {
 }
 
 impl TemplateLiteralTypeSpan {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         let literal_ = required_child(v.visit_node_hooked(Some(self.literal())), self.literal());
         v.factory.update_template_literal_type_span(node, type_node_, literal_)
@@ -20005,7 +20024,7 @@ impl TemplateLiteralTypeSpan {
 }
 
 impl TemplateLiteralTypeSpan {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_template_literal_type_span(self.type_(), self.literal()), node, &f.hooks)
     }
 }
@@ -20017,7 +20036,7 @@ impl SyntheticExpression {
 }
 
 impl SyntheticExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tuple_name_source_ = v.visit_node_hooked(self.tuple_name_source());
         v.factory.update_synthetic_expression(
             node,
@@ -20029,7 +20048,7 @@ impl SyntheticExpression {
 }
 
 impl SyntheticExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_synthetic_expression(self.type_(), self.is_spread(), self.tuple_name_source()),
             node,
@@ -20045,7 +20064,7 @@ impl PartiallyEmittedExpression {
 }
 
 impl PartiallyEmittedExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_partially_emitted_expression(node, expression_)
@@ -20053,7 +20072,7 @@ impl PartiallyEmittedExpression {
 }
 
 impl PartiallyEmittedExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_partially_emitted_expression(self.expression()), node, &f.hooks)
     }
 }
@@ -20067,7 +20086,7 @@ impl JsxElement {
 }
 
 impl JsxElement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let opening_element_ = required_child(
             v.visit_node_hooked(Some(self.opening_element())),
             self.opening_element(),
@@ -20083,7 +20102,7 @@ impl JsxElement {
 }
 
 impl JsxElement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsx_element(self.opening_element(), self.children(), self.closing_element()),
             node,
@@ -20099,7 +20118,7 @@ impl JsxAttributes {
 }
 
 impl JsxAttributes {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let properties_ =
             required_child(v.visit_nodes_hooked(Some(self.properties())), self.properties());
         v.factory.update_jsx_attributes(node, properties_)
@@ -20107,7 +20126,7 @@ impl JsxAttributes {
 }
 
 impl JsxAttributes {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsx_attributes(self.properties()), node, &f.hooks)
     }
 }
@@ -20119,7 +20138,7 @@ impl JsxNamespacedName {
 }
 
 impl JsxNamespacedName {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let namespace_ =
             required_child(v.visit_node_hooked(Some(self.namespace())), self.namespace());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
@@ -20128,7 +20147,7 @@ impl JsxNamespacedName {
 }
 
 impl JsxNamespacedName {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsx_namespaced_name(self.namespace(), self.name()), node, &f.hooks)
     }
 }
@@ -20140,7 +20159,7 @@ impl JsxOpeningElement {
 }
 
 impl JsxOpeningElement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_arguments_ = v.visit_nodes_hooked(self.type_arguments());
         let attributes_ =
@@ -20150,7 +20169,7 @@ impl JsxOpeningElement {
 }
 
 impl JsxOpeningElement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsx_opening_element(self.tag_name(), self.type_arguments(), self.attributes()),
             node,
@@ -20166,7 +20185,7 @@ impl JsxSelfClosingElement {
 }
 
 impl JsxSelfClosingElement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_arguments_ = v.visit_nodes_hooked(self.type_arguments());
         let attributes_ =
@@ -20176,7 +20195,7 @@ impl JsxSelfClosingElement {
 }
 
 impl JsxSelfClosingElement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsx_self_closing_element(
                 self.tag_name(),
@@ -20198,7 +20217,7 @@ impl JsxFragment {
 }
 
 impl JsxFragment {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let opening_fragment_ = required_child(
             v.visit_node_hooked(Some(self.opening_fragment())),
             self.opening_fragment(),
@@ -20214,7 +20233,7 @@ impl JsxFragment {
 }
 
 impl JsxFragment {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsx_fragment(self.opening_fragment(), self.children(), self.closing_fragment()),
             node,
@@ -20228,7 +20247,7 @@ impl JsxOpeningFragment {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsx_opening_fragment(), node, &f.hooks)
     }
 }
@@ -20238,7 +20257,7 @@ impl JsxClosingFragment {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsx_closing_fragment(), node, &f.hooks)
     }
 }
@@ -20250,7 +20269,7 @@ impl JsxAttribute {
 }
 
 impl JsxAttribute {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let initializer_ = v.visit_node_hooked(self.initializer());
         v.factory.update_jsx_attribute(node, name_, initializer_)
@@ -20258,7 +20277,7 @@ impl JsxAttribute {
 }
 
 impl JsxAttribute {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsx_attribute(self.name(), self.initializer()), node, &f.hooks)
     }
 }
@@ -20270,7 +20289,7 @@ impl JsxSpreadAttribute {
 }
 
 impl JsxSpreadAttribute {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         v.factory.update_jsx_spread_attribute(node, expression_)
@@ -20278,7 +20297,7 @@ impl JsxSpreadAttribute {
 }
 
 impl JsxSpreadAttribute {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsx_spread_attribute(self.expression()), node, &f.hooks)
     }
 }
@@ -20290,14 +20309,14 @@ impl JsxClosingElement {
 }
 
 impl JsxClosingElement {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         v.factory.update_jsx_closing_element(node, tag_name_)
     }
 }
 
 impl JsxClosingElement {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsx_closing_element(self.tag_name()), node, &f.hooks)
     }
 }
@@ -20309,7 +20328,7 @@ impl JsxExpression {
 }
 
 impl JsxExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let dot_dot_dot_token_ = v.visit_node_hooked(self.dot_dot_dot_token());
         let expression_ = v.visit_node_hooked(self.expression());
         v.factory.update_jsx_expression(node, dot_dot_dot_token_, expression_)
@@ -20317,7 +20336,7 @@ impl JsxExpression {
 }
 
 impl JsxExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsx_expression(self.dot_dot_dot_token(), self.expression()),
             node,
@@ -20327,7 +20346,7 @@ impl JsxExpression {
 }
 
 impl JsxText {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsx_text(self.text(), self.contains_only_trivia_white_spaces()),
             node,
@@ -20343,8 +20362,9 @@ impl SyntaxList {
 }
 
 impl SyntaxList {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
-        let children = same_map_nodes(self.children(), |n| {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
+        let factory = v.factory.clone();
+        let children = same_map_nodes(&factory, self.children(), |n| {
             v.visit_node_hooked(Some(n)).expect("visitor removed a raw list element")
         });
         v.factory.update_syntax_list(node, children)
@@ -20352,7 +20372,7 @@ impl SyntaxList {
 }
 
 impl SyntaxList {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_syntax_list(self.children()), node, &f.hooks)
     }
 }
@@ -20364,7 +20384,7 @@ impl JSDoc {
 }
 
 impl JSDoc {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let comment_ = required_child(v.visit_nodes_hooked(Some(self.comment())), self.comment());
         let tags_ = v.visit_nodes_hooked(self.tags());
         v.factory.update_jsdoc(node, comment_, tags_)
@@ -20372,7 +20392,7 @@ impl JSDoc {
 }
 
 impl JSDoc {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc(self.comment(), self.tags()), node, &f.hooks)
     }
 }
@@ -20384,14 +20404,14 @@ impl JSDocTypeExpression {
 }
 
 impl JSDocTypeExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_jsdoc_type_expression(node, type_node_)
     }
 }
 
 impl JSDocTypeExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_type_expression(self.type_()), node, &f.hooks)
     }
 }
@@ -20403,14 +20423,14 @@ impl JSDocNonNullableType {
 }
 
 impl JSDocNonNullableType {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_jsdoc_non_nullable_type(node, type_node_)
     }
 }
 
 impl JSDocNonNullableType {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_non_nullable_type(self.type_()), node, &f.hooks)
     }
 }
@@ -20422,14 +20442,14 @@ impl JSDocNullableType {
 }
 
 impl JSDocNullableType {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_jsdoc_nullable_type(node, type_node_)
     }
 }
 
 impl JSDocNullableType {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_nullable_type(self.type_()), node, &f.hooks)
     }
 }
@@ -20439,7 +20459,7 @@ impl JSDocAllType {
         clippy::unused_self,
         reason = "Empty node data uses the same cloning interface as nodes with stored fields."
     )]
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_all_type(), node, &f.hooks)
     }
 }
@@ -20451,14 +20471,14 @@ impl JSDocVariadicType {
 }
 
 impl JSDocVariadicType {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_jsdoc_variadic_type(node, type_node_)
     }
 }
 
 impl JSDocVariadicType {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_variadic_type(self.type_()), node, &f.hooks)
     }
 }
@@ -20470,14 +20490,14 @@ impl JSDocOptionalType {
 }
 
 impl JSDocOptionalType {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_node_ = required_child(v.visit_node_hooked(Some(self.type_())), self.type_());
         v.factory.update_jsdoc_optional_type(node, type_node_)
     }
 }
 
 impl JSDocOptionalType {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_optional_type(self.type_()), node, &f.hooks)
     }
 }
@@ -20489,7 +20509,7 @@ impl JSDocTypeTag {
 }
 
 impl JSDocTypeTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_expression_ = required_child(
             v.visit_node_hooked(Some(self.type_expression())),
@@ -20501,7 +20521,7 @@ impl JSDocTypeTag {
 }
 
 impl JSDocTypeTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_type_tag(self.tag_name(), self.type_expression(), self.comment()),
             node,
@@ -20517,7 +20537,7 @@ impl JSDocUnknownTag {
 }
 
 impl JSDocUnknownTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let comment_ = v.visit_nodes_hooked(self.comment());
         v.factory.update_jsdoc_unknown_tag(node, tag_name_, comment_)
@@ -20525,7 +20545,7 @@ impl JSDocUnknownTag {
 }
 
 impl JSDocUnknownTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_unknown_tag(self.tag_name(), self.comment()), node, &f.hooks)
     }
 }
@@ -20540,7 +20560,7 @@ impl JSDocTemplateTag {
 }
 
 impl JSDocTemplateTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let constraint_ = v.visit_node_hooked(self.constraint());
         let type_parameters_ = required_child(
@@ -20559,7 +20579,7 @@ impl JSDocTemplateTag {
 }
 
 impl JSDocTemplateTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_template_tag(
                 self.tag_name(),
@@ -20580,7 +20600,7 @@ impl JSDocReturnTag {
 }
 
 impl JSDocReturnTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_expression_ = v.visit_node_hooked(self.type_expression());
         let comment_ = v.visit_nodes_hooked(self.comment());
@@ -20589,7 +20609,7 @@ impl JSDocReturnTag {
 }
 
 impl JSDocReturnTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_return_tag(self.tag_name(), self.type_expression(), self.comment()),
             node,
@@ -20605,7 +20625,7 @@ impl JSDocPublicTag {
 }
 
 impl JSDocPublicTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let comment_ = v.visit_nodes_hooked(self.comment());
         v.factory.update_jsdoc_public_tag(node, tag_name_, comment_)
@@ -20613,7 +20633,7 @@ impl JSDocPublicTag {
 }
 
 impl JSDocPublicTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_public_tag(self.tag_name(), self.comment()), node, &f.hooks)
     }
 }
@@ -20625,7 +20645,7 @@ impl JSDocPrivateTag {
 }
 
 impl JSDocPrivateTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let comment_ = v.visit_nodes_hooked(self.comment());
         v.factory.update_jsdoc_private_tag(node, tag_name_, comment_)
@@ -20633,7 +20653,7 @@ impl JSDocPrivateTag {
 }
 
 impl JSDocPrivateTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_private_tag(self.tag_name(), self.comment()), node, &f.hooks)
     }
 }
@@ -20645,7 +20665,7 @@ impl JSDocProtectedTag {
 }
 
 impl JSDocProtectedTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let comment_ = v.visit_nodes_hooked(self.comment());
         v.factory.update_jsdoc_protected_tag(node, tag_name_, comment_)
@@ -20653,7 +20673,7 @@ impl JSDocProtectedTag {
 }
 
 impl JSDocProtectedTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_protected_tag(self.tag_name(), self.comment()), node, &f.hooks)
     }
 }
@@ -20665,7 +20685,7 @@ impl JSDocReadonlyTag {
 }
 
 impl JSDocReadonlyTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let comment_ = v.visit_nodes_hooked(self.comment());
         v.factory.update_jsdoc_readonly_tag(node, tag_name_, comment_)
@@ -20673,7 +20693,7 @@ impl JSDocReadonlyTag {
 }
 
 impl JSDocReadonlyTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_readonly_tag(self.tag_name(), self.comment()), node, &f.hooks)
     }
 }
@@ -20685,7 +20705,7 @@ impl JSDocOverrideTag {
 }
 
 impl JSDocOverrideTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let comment_ = v.visit_nodes_hooked(self.comment());
         v.factory.update_jsdoc_override_tag(node, tag_name_, comment_)
@@ -20693,7 +20713,7 @@ impl JSDocOverrideTag {
 }
 
 impl JSDocOverrideTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_override_tag(self.tag_name(), self.comment()), node, &f.hooks)
     }
 }
@@ -20705,7 +20725,7 @@ impl JSDocDeprecatedTag {
 }
 
 impl JSDocDeprecatedTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let comment_ = v.visit_nodes_hooked(self.comment());
         v.factory.update_jsdoc_deprecated_tag(node, tag_name_, comment_)
@@ -20713,7 +20733,7 @@ impl JSDocDeprecatedTag {
 }
 
 impl JSDocDeprecatedTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_deprecated_tag(self.tag_name(), self.comment()), node, &f.hooks)
     }
 }
@@ -20725,7 +20745,7 @@ impl JSDocSeeTag {
 }
 
 impl JSDocSeeTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let name_expression_ = v.visit_node_hooked(self.name_expression());
         let comment_ = v.visit_nodes_hooked(self.comment());
@@ -20734,7 +20754,7 @@ impl JSDocSeeTag {
 }
 
 impl JSDocSeeTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_see_tag(self.tag_name(), self.name_expression(), self.comment()),
             node,
@@ -20750,7 +20770,7 @@ impl JSDocImplementsTag {
 }
 
 impl JSDocImplementsTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let class_name_ =
             required_child(v.visit_node_hooked(Some(self.class_name())), self.class_name());
@@ -20760,7 +20780,7 @@ impl JSDocImplementsTag {
 }
 
 impl JSDocImplementsTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_implements_tag(self.tag_name(), self.class_name(), self.comment()),
             node,
@@ -20776,7 +20796,7 @@ impl JSDocAugmentsTag {
 }
 
 impl JSDocAugmentsTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let class_name_ =
             required_child(v.visit_node_hooked(Some(self.class_name())), self.class_name());
@@ -20786,7 +20806,7 @@ impl JSDocAugmentsTag {
 }
 
 impl JSDocAugmentsTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_augments_tag(self.tag_name(), self.class_name(), self.comment()),
             node,
@@ -20802,7 +20822,7 @@ impl JSDocSatisfiesTag {
 }
 
 impl JSDocSatisfiesTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_expression_ = required_child(
             v.visit_node_hooked(Some(self.type_expression())),
@@ -20814,7 +20834,7 @@ impl JSDocSatisfiesTag {
 }
 
 impl JSDocSatisfiesTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_satisfies_tag(self.tag_name(), self.type_expression(), self.comment()),
             node,
@@ -20830,7 +20850,7 @@ impl JSDocThrowsTag {
 }
 
 impl JSDocThrowsTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_expression_ = v.visit_node_hooked(self.type_expression());
         let comment_ = v.visit_nodes_hooked(self.comment());
@@ -20839,7 +20859,7 @@ impl JSDocThrowsTag {
 }
 
 impl JSDocThrowsTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_throws_tag(self.tag_name(), self.type_expression(), self.comment()),
             node,
@@ -20855,7 +20875,7 @@ impl JSDocThisTag {
 }
 
 impl JSDocThisTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_expression_ = required_child(
             v.visit_node_hooked(Some(self.type_expression())),
@@ -20867,7 +20887,7 @@ impl JSDocThisTag {
 }
 
 impl JSDocThisTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_this_tag(self.tag_name(), self.type_expression(), self.comment()),
             node,
@@ -20887,7 +20907,7 @@ impl JSDocImportTag {
 }
 
 impl JSDocImportTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let import_clause_ = v.visit_node_hooked(self.import_clause());
         let module_specifier_ = required_child(
@@ -20908,7 +20928,7 @@ impl JSDocImportTag {
 }
 
 impl JSDocImportTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_import_tag(
                 self.tag_name(),
@@ -20933,7 +20953,7 @@ impl JSDocCallbackTag {
 }
 
 impl JSDocCallbackTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_expression_ = required_child(
             v.visit_node_hooked(Some(self.type_expression())),
@@ -20946,7 +20966,7 @@ impl JSDocCallbackTag {
 }
 
 impl JSDocCallbackTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_callback_tag(
                 self.tag_name(),
@@ -20967,7 +20987,7 @@ impl JSDocOverloadTag {
 }
 
 impl JSDocOverloadTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_expression_ = required_child(
             v.visit_node_hooked(Some(self.type_expression())),
@@ -20979,7 +20999,7 @@ impl JSDocOverloadTag {
 }
 
 impl JSDocOverloadTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_overload_tag(self.tag_name(), self.type_expression(), self.comment()),
             node,
@@ -20998,7 +21018,7 @@ impl JSDocTypedefTag {
 }
 
 impl JSDocTypedefTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let tag_name_ = required_child(v.visit_node_hooked(Some(self.tag_name())), self.tag_name());
         let type_expression_ = v.visit_node_hooked(self.type_expression());
         let name_ = v.visit_node_hooked(self.name());
@@ -21008,7 +21028,7 @@ impl JSDocTypedefTag {
 }
 
 impl JSDocTypedefTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_typedef_tag(
                 self.tag_name(),
@@ -21031,7 +21051,7 @@ impl JSDocSignature {
 }
 
 impl JSDocSignature {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let type_parameters_ = v.visit_nodes_hooked(self.type_parameters());
         let parameters_ = v.visit_nodes_hooked(self.parameters());
         let type_node_ = v.visit_node_hooked(self.type_());
@@ -21040,7 +21060,7 @@ impl JSDocSignature {
 }
 
 impl JSDocSignature {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_signature(self.type_parameters(), self.parameters(), self.type_()),
             node,
@@ -21056,14 +21076,14 @@ impl JSDocNameReference {
 }
 
 impl JSDocNameReference {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         v.factory.update_jsdoc_name_reference(node, name_)
     }
 }
 
 impl JSDocNameReference {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_name_reference(self.name()), node, &f.hooks)
     }
 }
@@ -21078,7 +21098,7 @@ impl ModuleDeclaration {
 }
 
 impl ModuleDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let attributes_ = v.visit_node_hooked(self.attributes());
@@ -21095,7 +21115,7 @@ impl ModuleDeclaration {
 }
 
 impl ModuleDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_module_declaration(
                 self.modifiers(),
@@ -21117,7 +21137,7 @@ impl ImportEqualsDeclaration {
 }
 
 impl ImportEqualsDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let module_reference_ = required_child(
@@ -21135,7 +21155,7 @@ impl ImportEqualsDeclaration {
 }
 
 impl ImportEqualsDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_import_equals_declaration(
                 self.modifiers(),
@@ -21159,7 +21179,7 @@ impl ExportDeclaration {
 }
 
 impl ExportDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let export_clause_ = v.visit_node_hooked(self.export_clause());
         let module_specifier_ = v.visit_node_hooked(self.module_specifier());
@@ -21176,7 +21196,7 @@ impl ExportDeclaration {
 }
 
 impl ExportDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_export_declaration(
                 self.modifiers(),
@@ -21201,7 +21221,7 @@ impl ImportTypeNode {
 }
 
 impl ImportTypeNode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let argument_ = required_child(v.visit_node_hooked(Some(self.argument())), self.argument());
         let attributes_ = v.visit_node_hooked(self.attributes());
         let qualifier_ = v.visit_node_hooked(self.qualifier());
@@ -21218,7 +21238,7 @@ impl ImportTypeNode {
 }
 
 impl ImportTypeNode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_import_type_node(
                 self.is_type_of(),
@@ -21240,7 +21260,7 @@ impl ImportClause {
 }
 
 impl ImportClause {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = v.visit_node_hooked(self.name());
         let named_bindings_ = v.visit_node_hooked(self.named_bindings());
         v.factory.update_import_clause(node, self.phase_modifier(), name_, named_bindings_)
@@ -21248,7 +21268,7 @@ impl ImportClause {
 }
 
 impl ImportClause {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_import_clause(self.phase_modifier(), self.name(), self.named_bindings()),
             node,
@@ -21264,7 +21284,7 @@ impl ImportSpecifier {
 }
 
 impl ImportSpecifier {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let property_name_ = v.visit_node_hooked(self.property_name());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         v.factory.update_import_specifier(node, self.is_type_only(), property_name_, name_)
@@ -21272,7 +21292,7 @@ impl ImportSpecifier {
 }
 
 impl ImportSpecifier {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_import_specifier(self.is_type_only(), self.property_name(), self.name()),
             node,
@@ -21282,7 +21302,7 @@ impl ImportSpecifier {
 }
 
 impl JSDocText {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_text(self.text()), node, &f.hooks)
     }
 }
@@ -21294,14 +21314,14 @@ impl JSDocLink {
 }
 
 impl JSDocLink {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = v.visit_node_hooked(self.name());
         v.factory.update_jsdoc_link(node, name_, self.text())
     }
 }
 
 impl JSDocLink {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_link(self.name(), self.text()), node, &f.hooks)
     }
 }
@@ -21313,14 +21333,14 @@ impl JSDocLinkPlain {
 }
 
 impl JSDocLinkPlain {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = v.visit_node_hooked(self.name());
         v.factory.update_jsdoc_link_plain(node, name_, self.text())
     }
 }
 
 impl JSDocLinkPlain {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_link_plain(self.name(), self.text()), node, &f.hooks)
     }
 }
@@ -21332,14 +21352,14 @@ impl JSDocLinkCode {
 }
 
 impl JSDocLinkCode {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let name_ = v.visit_node_hooked(self.name());
         v.factory.update_jsdoc_link_code(node, name_, self.text())
     }
 }
 
 impl JSDocLinkCode {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_jsdoc_link_code(self.name(), self.text()), node, &f.hooks)
     }
 }
@@ -21355,7 +21375,7 @@ impl TypeParameterDeclaration {
 }
 
 impl TypeParameterDeclaration {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let modifiers_ = v.visit_modifiers_hooked(self.modifiers());
         let name_ = required_child(v.visit_node_hooked(Some(self.name())), self.name());
         let constraint_ = v.visit_node_hooked(self.constraint());
@@ -21373,7 +21393,7 @@ impl TypeParameterDeclaration {
 }
 
 impl TypeParameterDeclaration {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_type_parameter_declaration(
                 self.modifiers(),
@@ -21395,7 +21415,7 @@ impl SyntheticReferenceExpression {
 }
 
 impl SyntheticReferenceExpression {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let expression_ =
             required_child(v.visit_node_hooked(Some(self.expression())), self.expression());
         let this_arg_ = required_child(v.visit_node_hooked(Some(self.this_arg())), self.this_arg());
@@ -21404,7 +21424,7 @@ impl SyntheticReferenceExpression {
 }
 
 impl SyntheticReferenceExpression {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_synthetic_reference_expression(self.expression(), self.this_arg()),
             node,
@@ -21420,8 +21440,9 @@ impl JSDocTypeLiteral {
 }
 
 impl JSDocTypeLiteral {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
-        let jsdoc_property_tags = same_map_nodes(self.jsdoc_property_tags(), |n| {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
+        let factory = v.factory.clone();
+        let jsdoc_property_tags = same_map_nodes(&factory, self.jsdoc_property_tags(), |n| {
             v.visit_node_hooked(Some(n)).expect("visitor removed a raw list element")
         });
         v.factory.update_jsdoc_type_literal(node, jsdoc_property_tags, self.is_array_type())
@@ -21429,7 +21450,7 @@ impl JSDocTypeLiteral {
 }
 
 impl JSDocTypeLiteral {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_type_literal(self.jsdoc_property_tags(), self.is_array_type()),
             node,
@@ -21445,13 +21466,13 @@ impl JSDocParameterOrPropertyTag {
 }
 
 impl JSDocParameterOrPropertyTag {
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         visit_each_child_jsdoc_parameter_or_property_tag(self, node, v)
     }
 }
 
 impl JSDocParameterOrPropertyTag {
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(
             f.new_jsdoc_parameter_or_property_tag(
                 node.kind(),

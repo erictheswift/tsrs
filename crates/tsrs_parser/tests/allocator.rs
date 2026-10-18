@@ -1,7 +1,7 @@
 use tsrs_ast::{Kind, Node, SourceFileParseOptions};
 use tsrs_core::arena::Region;
 use tsrs_core::{P, ScriptKind, TextRange};
-use tsrs_parser::{parse_source_file, parse_source_file_embedded, parse_source_file_owned};
+use tsrs_parser::raw::{parse_source_file, parse_source_file_embedded, parse_source_file_owned};
 
 fn tree(node: P<Node>) -> Vec<(Kind, TextRange, String)> {
     fn visit(node: P<Node>, result: &mut Vec<(Kind, TextRange, String)>) {
@@ -52,10 +52,13 @@ fn parse_entry_points_preserve_text_and_tree_after_parser_drop() {
         let _scope = region.enter();
         let opts = SourceFileParseOptions { file_name: name.into(), ..Default::default() };
         let input = text.to_owned();
-        let borrowed = parse_source_file(opts.clone(), &input, kind);
+        // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+        let borrowed = unsafe { parse_source_file(opts.clone(), &input, kind) };
         drop(input);
-        let owned = parse_source_file_owned(opts.clone(), text.to_owned(), kind);
-        let embedded = parse_source_file_embedded(opts, text, kind);
+        // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+        let owned = unsafe { parse_source_file_owned(opts.clone(), text.to_owned(), kind) };
+        // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+        let embedded = unsafe { parse_source_file_embedded(opts, text, kind) };
         for file in [borrowed, owned, embedded] {
             assert_eq!(file.text(), text);
             assert_eq!(tree(file.as_node()), tree(borrowed.as_node()), "{name}");
@@ -68,11 +71,14 @@ fn parse_entry_points_preserve_text_and_tree_after_parser_drop() {
 fn lazy_jsdoc_uses_the_file_region_after_the_initial_parser_is_gone() {
     let region = Region::new(4096);
     let scope = region.enter();
-    let file = parse_source_file_owned(
-        SourceFileParseOptions { file_name: "/src/a.ts".into(), ..Default::default() },
-        "/** Description with text. @param x the value */\nfunction f(x: number) {}".into(),
-        ScriptKind::TS,
-    );
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    let file = unsafe {
+        parse_source_file_owned(
+            SourceFileParseOptions { file_name: "/src/a.ts".into(), ..Default::default() },
+            "/** Description with text. @param x the value */\nfunction f(x: number) {}".into(),
+            ScriptKind::TS,
+        )
+    };
     drop(scope);
     let docs = {
         let nested = Region::new(4096);
@@ -89,11 +95,14 @@ fn lazy_members_reparse_with_a_new_allocator_guard() {
     tsrs_parser::enable_lazy_dts();
     let region = Region::new(4096);
     let _scope = region.enter();
-    let file = parse_source_file_owned(
-        SourceFileParseOptions { file_name: "/src/a.d.ts".into(), ..Default::default() },
-        "interface I { value: string; method(x: number): number; }".into(),
-        ScriptKind::TS,
-    );
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    let file = unsafe {
+        parse_source_file_owned(
+            SourceFileParseOptions { file_name: "/src/a.d.ts".into(), ..Default::default() },
+            "interface I { value: string; method(x: number): number; }".into(),
+            ScriptKind::TS,
+        )
+    };
     assert_eq!(file.lazy_lists.get().len(), 1);
     for record in file.lazy_lists.get() {
         let members = record.parse_now(file);

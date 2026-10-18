@@ -132,10 +132,8 @@ impl Checker {
         let source_file = ast::get_source_file_of_node(node).unwrap();
         if !Self::has_parse_diagnostics(source_file) {
             let mut last_error: Option<P<Diagnostic>> = None;
-            if self.reg_exp_scanner.is_none() {
-                self.reg_exp_scanner = Some(Box::new(Scanner::new()));
-            }
-            let mut s = self.reg_exp_scanner.take().unwrap();
+            let allocator = tsrs_core::Allocator::current();
+            let mut s = Scanner::new_in(&allocator);
             s.set_script_target(self.language_version);
             s.set_language_variant(source_file.language_variant());
             s.set_on_error(true);
@@ -146,9 +144,6 @@ impl Checker {
             let token_is_regular_expression_literal =
                 s.re_scan_slash_token(true) == Kind::RegularExpressionLiteral;
             on_reg_exp_scanner_errors(self, &mut s, source_file, &mut last_error);
-            s.set_text("");
-            s.set_on_error(false);
-            self.reg_exp_scanner = Some(s);
             assert!(token_is_regular_expression_literal);
             return last_error.is_some();
         }

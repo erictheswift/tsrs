@@ -58,15 +58,18 @@ fn test_alias_resolver_get_diagnostics_does_not_panic() {
     let fs = vfstest::from_map([(file_name, text)], true /*useCaseSensitiveFileNames*/);
     let host: &'static fakeCloneHost = Box::leak(Box::new(fakeCloneHost { fs: Box::new(fs) }));
 
-    let source_file = tsrs_parser::parse_source_file(
-        SourceFileParseOptions {
-            file_name: file_name.to_string(),
-            path: Path::new(file_name.to_string()),
-            ..Default::default()
-        },
-        text,
-        ScriptKind::TS,
-    );
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    let source_file = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: file_name.to_string(),
+                path: Path::new(file_name.to_string()),
+                ..Default::default()
+            },
+            text,
+            ScriptKind::TS,
+        )
+    };
     tsrs_binder::bind_source_file(source_file);
 
     let resolver = Box::leak(Box::new(tsrs_module::new_resolver(ResolverOptions::new(

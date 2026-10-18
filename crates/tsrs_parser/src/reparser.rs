@@ -283,9 +283,7 @@ impl Parser<'_> {
                         result.push('_');
                         result.push_str(&pi.to_string());
                     }
-                    let identifier = self
-                        .factory
-                        .new_identifier(self.legacy_text(self.allocator.alloc_str(&result)));
+                    let identifier = self.factory.new_identifier(self.allocator.alloc_str(&result));
                     name = self.add_transformed_reparse(identifier, name);
                 } else {
                     name = self.add_deep_clone_reparse(Some(name)).unwrap();

@@ -251,11 +251,14 @@ fn parse_options(path: &str, flags: &str) -> SourceFileParseOptions {
 
 fn dump(path: &str, flags: &str) -> Result<String, String> {
     let text = read(path).ok_or_else(|| format!("cannot read {path}"))?;
-    let file = tsrs_parser::parse_source_file(
-        parse_options(path, flags),
-        &text,
-        tsrs_core::ensure_script_kind_from_file_name(path),
-    );
+    // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+    let file = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            parse_options(path, flags),
+            &text,
+            tsrs_core::ensure_script_kind_from_file_name(path),
+        )
+    };
     let file: &'static SourceFile = file.get();
     let mut d = Dumper { sb: String::new(), file };
     let _ = writeln!(
@@ -412,11 +415,14 @@ fn run() {
                 let start = std::time::Instant::now();
                 let mut nodes = 0usize;
                 for (path, text, opts) in &inputs {
-                    let f = tsrs_parser::parse_source_file(
-                        opts.clone(),
-                        text,
-                        tsrs_core::ensure_script_kind_from_file_name(path),
-                    );
+                    // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+                    let f = unsafe {
+                        tsrs_parser::raw::parse_source_file(
+                            opts.clone(),
+                            text,
+                            tsrs_core::ensure_script_kind_from_file_name(path),
+                        )
+                    };
                     nodes += f.node_count.get();
                 }
                 let el = start.elapsed().as_secs_f64();

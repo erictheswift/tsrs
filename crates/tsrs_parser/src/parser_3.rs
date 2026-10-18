@@ -1176,9 +1176,7 @@ impl<'alloc> Parser<'alloc> {
     pub(crate) fn parse_jsx_text(&mut self) -> P<Node> {
         let pos = self.node_pos();
         let text = self.scanner.token_value();
-        let result = self
-            .factory
-            .new_jsx_text(self.legacy_text(text), self.token == Kind::JsxTextAllWhiteSpaces);
+        let result = self.factory.new_jsx_text(text, self.token == Kind::JsxTextAllWhiteSpaces);
         self.scan_jsx_text();
         self.finish_node(result, pos)
     }
@@ -2527,7 +2525,7 @@ impl<'alloc> Parser<'alloc> {
 
     pub(crate) fn parse_literal_expression(&mut self) -> P<Node> {
         let pos = self.node_pos();
-        let text = self.legacy_text(self.scanner.token_value());
+        let text = self.scanner.token_value();
         let token_flags = self.scanner.token_flags();
         let result = match self.token {
             Kind::StringLiteral => self.factory.new_string_literal(text, token_flags),
@@ -3397,26 +3395,32 @@ impl<'alloc> Parser<'alloc> {
                                     .expect_source("pragma ranges have source positions"),
                             );
                         }
-                        type_reference_directives.push(P::new(ast::FileReference {
-                            text_range: types.text_range,
-                            file_name: types.value.clone(),
-                            resolution_mode: parsed,
-                            preserve: preserve.is_some_and(|preserve| preserve.value == "true"),
-                        }));
+                        type_reference_directives.push(self.factory.new_file_reference(
+                            ast::FileReference {
+                                text_range: types.text_range,
+                                file_name: types.value.clone(),
+                                resolution_mode: parsed,
+                                preserve: preserve.is_some_and(|preserve| preserve.value == "true"),
+                            },
+                        ));
                     } else if let Some(lib) = lib {
-                        lib_reference_directives.push(P::new(ast::FileReference {
-                            text_range: lib.text_range,
-                            file_name: lib.value.clone(),
-                            resolution_mode: tsrs_core::ResolutionMode::default(),
-                            preserve: preserve.is_some_and(|preserve| preserve.value == "true"),
-                        }));
+                        lib_reference_directives.push(self.factory.new_file_reference(
+                            ast::FileReference {
+                                text_range: lib.text_range,
+                                file_name: lib.value.clone(),
+                                resolution_mode: tsrs_core::ResolutionMode::default(),
+                                preserve: preserve.is_some_and(|preserve| preserve.value == "true"),
+                            },
+                        ));
                     } else if let Some(path) = path {
-                        referenced_files.push(P::new(ast::FileReference {
-                            text_range: path.text_range,
-                            file_name: path.value.clone(),
-                            resolution_mode: tsrs_core::ResolutionMode::default(),
-                            preserve: preserve.is_some_and(|preserve| preserve.value == "true"),
-                        }));
+                        referenced_files.push(self.factory.new_file_reference(
+                            ast::FileReference {
+                                text_range: path.text_range,
+                                file_name: path.value.clone(),
+                                resolution_mode: tsrs_core::ResolutionMode::default(),
+                                preserve: preserve.is_some_and(|preserve| preserve.value == "true"),
+                            },
+                        ));
                     } else {
                         self.parse_error_at_range(
                             pragma.comment_range.text_range,
@@ -3430,10 +3434,11 @@ impl<'alloc> Parser<'alloc> {
                     if check_js_directive.is_none_or(|directive| {
                         pragma.comment_range.text_range.pos() > directive.range.text_range.pos()
                     }) {
-                        check_js_directive = Some(P::new(ast::CheckJsDirective {
-                            enabled: &*pragma.name == "ts-check",
-                            range: pragma.comment_range,
-                        }));
+                        check_js_directive =
+                            Some(self.factory.new_check_js_directive(ast::CheckJsDirective {
+                                enabled: &*pragma.name == "ts-check",
+                                range: pragma.comment_range,
+                            }));
                     }
                 }
                 "jsx" | "jsxfrag" | "jsximportsource" | "jsxruntime" => {
@@ -3443,13 +3448,15 @@ impl<'alloc> Parser<'alloc> {
             }
         }
         context.check_js_directive.set(check_js_directive);
-        context.referenced_files.set(self.legacy_slice(self.allocator.alloc_vec(referenced_files)));
-        context
-            .type_reference_directives
-            .set(self.legacy_slice(self.allocator.alloc_vec(type_reference_directives)));
-        context
-            .lib_reference_directives
-            .set(self.legacy_slice(self.allocator.alloc_vec(lib_reference_directives)));
+        self.factory.set_referenced_files(context, self.allocator.alloc_vec(referenced_files));
+        self.factory.set_type_reference_directives(
+            context,
+            self.allocator.alloc_vec(type_reference_directives),
+        );
+        self.factory.set_lib_reference_directives(
+            context,
+            self.allocator.alloc_vec(lib_reference_directives),
+        );
     }
 
     pub(crate) fn parse_resolution_mode(

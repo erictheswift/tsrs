@@ -417,7 +417,7 @@ pub(crate) fn get_existing_node_tree_visitor(
     c: &Checker,
     b: P<NodeBuilderImpl>,
     bound: P<recoveryBoundary>,
-) -> NodeVisitor {
+) -> NodeVisitor<'static> {
     // TODO: wrap all these closures into methods on an object so we can guarantee we reuse the same memory on each invocation by reusing/resetting the object
     // instead of re-closing-over all of these each time we need a visitor. In theory the compiler could handle this, but in practice closure inlining hasn't been reliable
     //
@@ -428,9 +428,9 @@ pub(crate) fn get_existing_node_tree_visitor(
     let t = ExistingNodeTree { b, bound };
     let slot = b.checker_slot;
     let non_local_node = Rc::new(Cell::new(true));
-    let visit: VisitFn =
+    let visit: VisitFn<'static> =
         Rc::new(move |v: &mut NodeVisitor, node: P<Node>| slot.with(|c| t.visit(c, v, node)));
-    let visit_nodes: VisitNodesHook = {
+    let visit_nodes: VisitNodesHook<'static> = {
         let non_local_node = Rc::clone(&non_local_node);
         Rc::new(move |nodes: Option<P<NodeList>>, v: &mut NodeVisitor| {
             let mut res = v.visit_nodes(nodes);
@@ -445,18 +445,19 @@ pub(crate) fn get_existing_node_tree_visitor(
             res
         })
     };
-    let visit_node: VisitNodeHook = Rc::new(move |node: Option<P<Node>>, v: &mut NodeVisitor| {
-        // Capture if the current node is in the current file so node lists knoww if they can keep positions or not
-        let old_non_local_node = non_local_node.get();
-        let enclosing_file = b.ctx().enclosing_file.get();
-        non_local_node.set(
-            enclosing_file.is_none()
-                || enclosing_file != ast::get_source_file_of_node(b.e.most_original(node)),
-        );
-        let res = v.visit_node(node);
-        non_local_node.set(old_non_local_node);
-        res
-    });
+    let visit_node: VisitNodeHook<'static> =
+        Rc::new(move |node: Option<P<Node>>, v: &mut NodeVisitor| {
+            // Capture if the current node is in the current file so node lists knoww if they can keep positions or not
+            let old_non_local_node = non_local_node.get();
+            let enclosing_file = b.ctx().enclosing_file.get();
+            non_local_node.set(
+                enclosing_file.is_none()
+                    || enclosing_file != ast::get_source_file_of_node(b.e.most_original(node)),
+            );
+            let res = v.visit_node(node);
+            non_local_node.set(old_non_local_node);
+            res
+        });
     new_node_visitor(
         Some(visit),
         Some(b.f.clone()),
@@ -531,9 +532,10 @@ impl ExistingNodeTree {
         sym: Option<P<Symbol>>,
     ) -> P<Node> {
         let slot = self.b.checker_slot;
-        let visitor_func: VisitFn = Rc::new(move |vis: &mut NodeVisitor, node: P<Node>| {
-            slot.with(|c| Some(self.attach_symbol_visitor_func(c, vis, leftmost, sym, node)))
-        });
+        let visitor_func: VisitFn<'static> =
+            Rc::new(move |vis: &mut NodeVisitor, node: P<Node>| {
+                slot.with(|c| Some(self.attach_symbol_visitor_func(c, vis, leftmost, sym, node)))
+            });
         let mut vis = new_node_visitor(
             Some(visitor_func),
             Some(self.b.f.clone()),

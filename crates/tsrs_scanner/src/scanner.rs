@@ -9,9 +9,8 @@
 //! normalized numbers, and templates containing `\r`) use the captured allocator, even when another
 //! region is entered. Snapshots and numeric caches carry the same lifetime. Reset preserves the allocator.
 //!
-//! Compatibility. `Scanner::new()` creates a legacy `Scanner<'static>` whose computed values use
-//! the current allocation target. Its caller must still keep all referenced regions alive. The parser
-//! uses the scoped path and explicitly adapts its output to the AST's legacy ownership contract.
+//! Every scanner borrows an explicit allocator. Text, snapshots, and computed values cannot outlive
+//! that borrow; changing the ambient allocation scope never changes the scanner's allocation target.
 //!
 //! Errors (Go `ErrorCallback` / `SetOnError`). Go's scanner calls a callback synchronously. In
 //! Rust the parser owns the scanner and is itself a `&mut self` state machine, so the scanner
@@ -43,8 +42,7 @@ use tsrs_ast::{
     SourceFileLike, TokenFlags,
 };
 use tsrs_core::{
-    Allocator, ArenaStringBuilder, LanguageVariant, P, ScriptTarget, TextRange, UTF16Offset,
-    alloc_str, jsnum,
+    Allocator, ArenaStringBuilder, LanguageVariant, P, ScriptTarget, TextRange, UTF16Offset, jsnum,
     stringutil::{self, Rune},
 };
 use tsrs_diagnostics as diagnostics;
@@ -371,7 +369,7 @@ pub struct ScannerState<'alloc> {
 /// scanner.scan();
 /// ```
 pub struct Scanner<'alloc> {
-    allocator: Option<&'alloc Allocator>,
+    allocator: &'alloc Allocator,
     pub(crate) text: &'alloc str,
     pub(crate) end: u32,
     language_variant: LanguageVariant,
@@ -572,26 +570,8 @@ pub(crate) fn rune_string(r: Rune) -> String {
     rune_to_char(r).to_string()
 }
 
-impl Scanner<'static> {
-    /// Legacy scanner using the ambient allocation target. Its text, snapshots, and token values
-    /// must not outlive their regions. Use `new_in` for allocator-bound data.
-    pub fn new() -> Self {
-        Self::default_scanner(None)
-    }
-}
-
-#[expect(
-    clippy::derivable_impls,
-    reason = "only the legacy Scanner<'static> has a default allocator; scoped scanners require new_in"
-)]
-impl Default for Scanner<'static> {
-    fn default() -> Self {
-        Self { skip_trivia: false, ..Self::default_scanner(None) }
-    }
-}
-
 impl<'alloc> Scanner<'alloc> {
-    fn default_scanner(allocator: Option<&'alloc Allocator>) -> Self {
+    fn default_scanner(allocator: &'alloc Allocator) -> Self {
         Self {
             allocator,
             text: "",
@@ -609,28 +589,19 @@ impl<'alloc> Scanner<'alloc> {
     }
 
     pub fn new_in(allocator: &'alloc Allocator) -> Self {
-        Self::default_scanner(Some(allocator))
+        Self::default_scanner(allocator)
     }
 
     fn alloc_str(&self, text: &str) -> &'alloc str {
-        match self.allocator {
-            Some(allocator) => allocator.alloc_str(text),
-            None => alloc_str(text),
-        }
+        self.allocator.alloc_str(text)
     }
 
     fn string_builder(&self, capacity: usize) -> ArenaStringBuilder<'alloc> {
-        match self.allocator {
-            Some(allocator) => ArenaStringBuilder::with_capacity_in(allocator, capacity),
-            None => ArenaStringBuilder::with_capacity(capacity),
-        }
+        ArenaStringBuilder::with_capacity_in(self.allocator, capacity)
     }
 
     fn pin(&self) {
-        match self.allocator {
-            Some(allocator) => allocator.pin(),
-            None => tsrs_core::arena_pin(),
-        }
+        self.allocator.pin();
     }
 
     pub fn reset(&mut self) {
@@ -1775,10 +1746,7 @@ impl<'alloc> Scanner<'alloc> {
         // but never rewrites elements below a saved length).
         let mut directives = self.state.comment_directives.to_vec();
         directives.push(CommentDirective { loc: TextRange::new(start, end), kind });
-        self.state.comment_directives = match self.allocator {
-            Some(allocator) => allocator.alloc_vec(directives),
-            None => tsrs_core::alloc_vec(directives),
-        };
+        self.state.comment_directives = self.allocator.alloc_vec(directives);
     }
 
     pub fn re_scan_less_than_token(&mut self) -> Kind {
@@ -3637,8 +3605,12 @@ pub fn get_shebang(text: &str) -> &str {
     &text[..end as usize]
 }
 
-pub fn get_scanner_for_source_file(source_file: P<SourceFile>, pos: u32) -> Scanner<'static> {
-    let mut s = Scanner::new();
+pub fn get_scanner_for_source_file(
+    allocator: &Allocator,
+    source_file: P<SourceFile>,
+    pos: u32,
+) -> Scanner<'_> {
+    let mut s = Scanner::new_in(allocator);
     s.text = source_file.text();
     s.state.pos = pos;
     s.end = s.text.len() as u32;
@@ -3648,12 +3620,14 @@ pub fn get_scanner_for_source_file(source_file: P<SourceFile>, pos: u32) -> Scan
 }
 
 pub fn scan_token_at_position(source_file: P<SourceFile>, pos: u32) -> Kind {
-    let s = get_scanner_for_source_file(source_file, pos);
+    let allocator = tsrs_core::Allocator::current();
+    let s = get_scanner_for_source_file(&allocator, source_file, pos);
     s.state.token
 }
 
 pub fn get_range_of_token_at_position(source_file: P<SourceFile>, pos: u32) -> TextRange {
-    let s = get_scanner_for_source_file(source_file, pos);
+    let allocator = tsrs_core::Allocator::current();
+    let s = get_scanner_for_source_file(&allocator, source_file, pos);
     TextRange::new(s.state.token_start, s.state.pos)
 }
 
@@ -3843,7 +3817,9 @@ pub fn get_error_range_for_node(source_file: P<SourceFile>, node: P<Node>) -> Te
             if node.flags().intersects(NodeFlags::Reparsed) {
                 error_node = Some(node);
             } else {
+                let allocator = tsrs_core::Allocator::current();
                 let mut scanner = get_scanner_for_source_file(
+                    &allocator,
                     source_file,
                     node.pos().expect_source("parsed nodes have source positions"),
                 );

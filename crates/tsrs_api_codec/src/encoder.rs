@@ -203,7 +203,7 @@ fn walk_children<W: Walker + 'static>(
     file: Option<&'static SourceFile>,
     state: Rc<RefCell<W>>,
 ) {
-    let visit: VisitFn = {
+    let visit: VisitFn<'static> = {
         let state = Rc::clone(&state);
         Rc::new(move |v: &mut NodeVisitor, node: P<Node>| -> Option<P<Node>> {
             let saved = state.borrow_mut().enter_node(node);

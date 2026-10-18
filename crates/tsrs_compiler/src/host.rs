@@ -138,7 +138,8 @@ impl CompilerHost for compilerHost {
         // bytes, same `&'static str` the identifiers point into, so nothing downstream changes.
         if let Some(text) = tsrs_vfs::bundled::embedded_file(&opts.file_name) {
             return Some(tsrs_core::festats::timed(tsrs_core::festats::Cat::Parse, || {
-                tsrs_parser::parse_source_file_embedded(opts, text, script_kind)
+                // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+                unsafe { tsrs_parser::raw::parse_source_file_embedded(opts, text, script_kind) }
             }));
         }
         let text = tsrs_core::festats::timed(tsrs_core::festats::Cat::Read, || {
@@ -152,7 +153,8 @@ impl CompilerHost for compilerHost {
             }));
         }
         Some(tsrs_core::festats::timed(tsrs_core::festats::Cat::Parse, || {
-            tsrs_parser::parse_source_file_owned(opts, text, script_kind)
+            // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+            unsafe { tsrs_parser::raw::parse_source_file_owned(opts, text, script_kind) }
         }))
     }
 

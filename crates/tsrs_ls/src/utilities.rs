@@ -1707,7 +1707,8 @@ pub(crate) fn get_children_from_non_jsdoc_node(
     let mut children: Vec<P<Node>> = Vec::new();
     let mut pos = node.pos().expect_source("parsed nodes have source positions");
     for child in child_nodes {
-        let mut scanner = scanner::get_scanner_for_source_file(source_file, pos);
+        let allocator = tsrs_core::Allocator::current();
+        let mut scanner = scanner::get_scanner_for_source_file(&allocator, source_file, pos);
         while pos < child.pos().expect_source("parsed nodes have source positions") {
             let token = scanner.token();
             let token_full_start = scanner.token_full_start();
@@ -1725,7 +1726,8 @@ pub(crate) fn get_children_from_non_jsdoc_node(
         children.push(child);
         pos = child.end().expect_source("parsed nodes have source positions");
     }
-    let mut scanner = scanner::get_scanner_for_source_file(source_file, pos);
+    let allocator = tsrs_core::Allocator::current();
+    let mut scanner = scanner::get_scanner_for_source_file(&allocator, source_file, pos);
     while pos < node.end().expect_source("parsed nodes have source positions") {
         let token = scanner.token();
         let token_full_start = scanner.token_full_start();

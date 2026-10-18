@@ -94,7 +94,9 @@ pub struct NodeFactoryHooks {
 /// hooks and counters), like copying the Go pointer. So `f.new_x(f.new_y())` works and a factory can be
 /// shared by a visitor, the node builder and an emit context.
 #[derive(Clone)]
-pub struct NodeFactory {
+pub struct NodeFactory<'alloc> {
+    allocator: Option<&'alloc tsrs_core::Allocator>,
+    _lifetime: std::marker::PhantomData<Cell<&'alloc ()>>,
     pub(crate) hooks: NodeFactoryHooks,
     pub(crate) node_count: Rc<Cell<usize>>,
     pub(crate) text_count: Rc<Cell<usize>>,
@@ -107,20 +109,22 @@ pub struct NodeFactory {
     plain_create: bool,
 }
 
-impl Default for NodeFactory {
+impl Default for NodeFactory<'static> {
     fn default() -> Self {
         new_node_factory(NodeFactoryHooks::default())
     }
 }
 
-pub fn new_node_factory(hooks: NodeFactoryHooks) -> NodeFactory {
+pub fn new_node_factory(hooks: NodeFactoryHooks) -> NodeFactory<'static> {
     new_node_factory_ex(hooks, false)
 }
 
 /// `new_node_factory`; `scratch`: see `NodeFactory::scratch`.
-pub fn new_node_factory_ex(hooks: NodeFactoryHooks, scratch: bool) -> NodeFactory {
+pub fn new_node_factory_ex(hooks: NodeFactoryHooks, scratch: bool) -> NodeFactory<'static> {
     let plain_create = !scratch && hooks.on_create.is_none();
     NodeFactory {
+        allocator: None,
+        _lifetime: std::marker::PhantomData,
         hooks,
         node_count: Rc::default(),
         text_count: Rc::default(),
@@ -260,15 +264,168 @@ fn new_empty_node_plain(kind: Kind, data_tag: NodeDataTag) -> P<Node> {
     P::new(node_header(kind, data_tag))
 }
 
-impl NodeFactory {
-    pub fn new(hooks: NodeFactoryHooks) -> NodeFactory {
+impl<'alloc> NodeFactory<'alloc> {
+    /// Creates a factory whose allocations remain in `allocator` across nested ambient scopes.
+    ///
+    /// # Safety
+    /// This factory exposes raw AST handles for the compiler. The caller must retain the backing
+    /// regions for every use of its output and of text/slices supplied to the factory. Safe parsed
+    /// file views enforce that contract without exposing the handles.
+    pub unsafe fn new_in(allocator: &'alloc tsrs_core::Allocator) -> Self {
+        Self {
+            allocator: Some(allocator),
+            _lifetime: std::marker::PhantomData,
+            hooks: NodeFactoryHooks::default(),
+            node_count: Rc::default(),
+            text_count: Rc::default(),
+            scratch: false,
+            plain_create: false,
+        }
+    }
+
+    /// Reuses this factory's hooks and counters with a different allocation target.
+    ///
+    /// # Safety
+    /// The ownership requirements of `new_in` apply to all output and inputs of the returned factory.
+    pub unsafe fn with_allocator<'other>(
+        &self,
+        allocator: &'other tsrs_core::Allocator,
+    ) -> NodeFactory<'other> {
+        NodeFactory {
+            allocator: Some(allocator),
+            _lifetime: std::marker::PhantomData,
+            hooks: self.hooks.clone(),
+            node_count: Rc::clone(&self.node_count),
+            text_count: Rc::clone(&self.text_count),
+            scratch: false,
+            plain_create: false,
+        }
+    }
+
+    pub fn new_file_reference(&self, value: FileReference) -> P<FileReference> {
+        self.alloc(value)
+    }
+    pub fn new_check_js_directive(&self, value: CheckJsDirective) -> P<CheckJsDirective> {
+        self.alloc(value)
+    }
+    pub fn new_lazy_list_record(
+        &self,
+        value: crate::lazylist::LazyNodeList,
+    ) -> P<crate::lazylist::LazyNodeList> {
+        self.alloc(value)
+    }
+
+    #[inline]
+    fn alloc<T: 'static>(&self, value: T) -> P<T> {
+        if let Some(allocator) = self.allocator {
+            // SAFETY: the factory's construction contract covers all returned raw AST handles.
+            unsafe { allocator.alloc_legacy(value) }
+        } else {
+            P::new_in(self.scratch, value)
+        }
+    }
+
+    pub fn set_comment_directives(&self, file: P<SourceFile>, items: &'alloc [CommentDirective]) {
+        file.comment_directives.set(self.store_slice(items));
+    }
+
+    pub fn set_pragmas(&self, file: P<SourceFile>, items: &'alloc [Pragma]) {
+        file.pragmas.set(self.store_slice(items));
+    }
+
+    pub fn set_reparsed_clones(&self, file: P<SourceFile>, items: &'alloc [P<Node>]) {
+        file.reparsed_clones.set(self.store_slice(items));
+    }
+
+    pub fn set_lazy_lists(
+        &self,
+        file: P<SourceFile>,
+        items: &'alloc [P<crate::lazylist::LazyNodeList>],
+    ) {
+        file.lazy_lists.set(self.store_slice(items));
+    }
+
+    pub fn set_referenced_files(&self, file: P<SourceFile>, items: &'alloc [P<FileReference>]) {
+        file.referenced_files.set(self.store_slice(items));
+    }
+
+    pub fn set_type_reference_directives(
+        &self,
+        file: P<SourceFile>,
+        items: &'alloc [P<FileReference>],
+    ) {
+        file.type_reference_directives.set(self.store_slice(items));
+    }
+
+    pub fn set_lib_reference_directives(
+        &self,
+        file: P<SourceFile>,
+        items: &'alloc [P<FileReference>],
+    ) {
+        file.lib_reference_directives.set(self.store_slice(items));
+    }
+
+    pub fn register_source_text(&self, text: &'alloc str) -> u32 {
+        crate::register_source_text(self.store_text(text))
+    }
+
+    #[expect(
+        clippy::unused_self,
+        reason = "the receiver fixes the invariant allocator lifetime and raw AST ownership contract"
+    )]
+    pub(crate) fn store_texts(&self, items: &'alloc [&'alloc str]) -> &'static [&'static str] {
+        // SAFETY: both the slice and its elements obey this factory's construction contract.
+        unsafe { std::slice::from_raw_parts(items.as_ptr().cast::<&'static str>(), items.len()) }
+    }
+
+    pub fn set_jsdoc_cache(
+        &self,
+        file: P<SourceFile>,
+        cache: FxHashMap<P<Node>, &'alloc [P<Node>]>,
+    ) {
+        file.set_jsdoc_cache(
+            cache.into_iter().map(|(node, docs)| (node, self.store_slice(docs))).collect(),
+        );
+    }
+
+    #[inline]
+    #[expect(
+        clippy::unused_self,
+        reason = "the receiver fixes the invariant allocator lifetime and raw AST ownership contract"
+    )]
+    pub(crate) fn store_text(&self, text: &'alloc str) -> &'static str {
+        // SAFETY: borrowed factories are constructed under the raw AST ownership contract.
+        // Unbound factories have a static lifetime and therefore accept only static input here.
+        unsafe { &*std::ptr::from_ref(text) }
+    }
+
+    #[inline]
+    #[expect(
+        clippy::unused_self,
+        reason = "the receiver fixes the invariant allocator lifetime and raw AST ownership contract"
+    )]
+    pub(crate) fn store_slice<T: 'static>(&self, items: &'alloc [T]) -> &'static [T] {
+        // SAFETY: the factory construction contract retains the slice for every use of its AST.
+        unsafe { &*std::ptr::from_ref(items) }
+    }
+
+    pub fn new(hooks: NodeFactoryHooks) -> NodeFactory<'static> {
         new_node_factory(hooks)
     }
 
     #[inline]
     pub(crate) fn new_node<T: NodePayload>(&self, kind: Kind, data: T) -> P<Node> {
         self.node_count.set(self.node_count.get() + 1);
-        if self.plain_create {
+        if self.allocator.is_some() {
+            // SAFETY: NodeAlloc has the header first, as on the legacy allocation path.
+            let node = unsafe {
+                self.alloc(NodeAlloc { node: node_header(kind, T::TAG), data }).cast::<Node>()
+            };
+            if let Some(on_create) = &self.hooks.on_create {
+                on_create(node);
+            }
+            node
+        } else if self.plain_create {
             new_node_plain(kind, data)
         } else if self.scratch {
             new_node_scratch(kind, data, &self.hooks)
@@ -285,7 +442,18 @@ impl NodeFactory {
         rare: T::Rare,
     ) -> P<Node> {
         self.node_count.set(self.node_count.get() + 1);
-        if self.plain_create {
+        if self.allocator.is_some() {
+            let () = T::SAME_OFFSET;
+            let mut header = node_header(kind, T::TAG);
+            header.header = OwnedCell::new(header.header.get().with_rare_tail());
+            // SAFETY: NodeAllocRare has the header first, as on the legacy allocation path.
+            let node =
+                unsafe { self.alloc(NodeAllocRare { node: header, data, rare }).cast::<Node>() };
+            if let Some(on_create) = &self.hooks.on_create {
+                on_create(node);
+            }
+            node
+        } else if self.plain_create {
             new_node_with_rare_plain(kind, data, rare)
         } else if self.scratch {
             new_node_with_rare_scratch(kind, data, rare, &self.hooks)
@@ -297,7 +465,13 @@ impl NodeFactory {
     #[inline]
     pub(crate) fn new_empty_node(&self, kind: Kind, data_tag: NodeDataTag) -> P<Node> {
         self.node_count.set(self.node_count.get() + 1);
-        if self.plain_create {
+        if self.allocator.is_some() {
+            let node = self.alloc(node_header(kind, data_tag));
+            if let Some(on_create) = &self.hooks.on_create {
+                on_create(node);
+            }
+            node
+        } else if self.plain_create {
             new_empty_node_plain(kind, data_tag)
         } else if self.scratch {
             new_empty_node_scratch(kind, data_tag, &self.hooks)
@@ -314,7 +488,7 @@ impl NodeFactory {
         self.text_count.get()
     }
 
-    pub fn as_node_factory(&self) -> &NodeFactory {
+    pub fn as_node_factory(&self) -> &NodeFactory<'alloc> {
         self
     }
 
@@ -328,17 +502,35 @@ impl NodeFactory {
     /// scratch factory, like the node.
     #[inline]
     pub fn alloc_text(&self, s: &str) -> &'static str {
-        if self.scratch { tsrs_core::alloc_str_scratch(s) } else { alloc_str(s) }
+        if let Some(allocator) = self.allocator {
+            self.store_text(allocator.alloc_str(s))
+        } else if self.scratch {
+            tsrs_core::alloc_str_scratch(s)
+        } else {
+            alloc_str(s)
+        }
     }
 
     #[inline]
-    fn alloc_nodes_vec(&self, nodes: Vec<P<Node>>) -> &'static [P<Node>] {
-        if self.scratch { tsrs_core::alloc_vec_scratch(nodes) } else { alloc_vec(nodes) }
+    pub(crate) fn alloc_nodes_vec(&self, nodes: Vec<P<Node>>) -> &'static [P<Node>] {
+        if let Some(allocator) = self.allocator {
+            self.store_slice(allocator.alloc_vec(nodes))
+        } else if self.scratch {
+            tsrs_core::alloc_vec_scratch(nodes)
+        } else {
+            alloc_vec(nodes)
+        }
     }
 
     #[inline]
-    fn alloc_nodes_slice(&self, nodes: &[P<Node>]) -> &'static [P<Node>] {
-        if self.scratch { tsrs_core::alloc_slice_scratch(nodes) } else { alloc_slice(nodes) }
+    pub(crate) fn alloc_nodes_slice(&self, nodes: &[P<Node>]) -> &'static [P<Node>] {
+        if let Some(allocator) = self.allocator {
+            self.store_slice(allocator.alloc_slice(nodes))
+        } else if self.scratch {
+            tsrs_core::alloc_slice_scratch(nodes)
+        } else {
+            alloc_slice(nodes)
+        }
     }
 }
 
@@ -377,7 +569,7 @@ pub struct NodeList {
 
 const _: () = assert!(std::mem::size_of::<NodeList>() == 16);
 
-impl NodeFactory {
+impl<'alloc> NodeFactory<'alloc> {
     pub fn new_node_list(&self, nodes: Vec<P<Node>>) -> P<NodeList> {
         self.new_node_list_from_static(self.alloc_nodes_vec(nodes))
     }
@@ -387,8 +579,8 @@ impl NodeFactory {
     }
 
     /// Stores `nodes` without copying (keeps slice identity, e.g. for sentinel slices).
-    pub fn new_node_list_from_static(&self, nodes: &'static [P<Node>]) -> P<NodeList> {
-        P::new_in(self.scratch, NodeList::new(undefined_text_range(), nodes))
+    pub fn new_node_list_from_static(&self, nodes: &'alloc [P<Node>]) -> P<NodeList> {
+        self.alloc(NodeList::new(undefined_text_range(), self.store_slice(nodes)))
     }
 
     /// A member list parsed on first use (`lazylist`).
@@ -397,7 +589,7 @@ impl NodeFactory {
         loc: TextRange,
         record: &'static crate::lazylist::LazyNodeList,
     ) -> P<NodeList> {
-        P::new_in(self.scratch, NodeList::new_lazy(loc, record))
+        self.alloc(NodeList::new_lazy(loc, record))
     }
 }
 
@@ -458,7 +650,7 @@ impl NodeList {
         last.has_trailing_comma_marker() || last.end() < self.end()
     }
 
-    pub fn clone_list(&self, f: &NodeFactory) -> P<NodeList> {
+    pub fn clone_list(&self, f: &NodeFactory<'_>) -> P<NodeList> {
         let result = f.new_node_list_from_static(self.nodes());
         result.loc.set(self.loc.get());
         result
@@ -472,7 +664,7 @@ pub struct ModifierList {
     pub modifier_flags: ModifierFlags,
 }
 
-impl NodeFactory {
+impl NodeFactory<'_> {
     pub fn new_modifier_list(&self, nodes: Vec<P<Node>>) -> P<ModifierList> {
         self.new_modifier_list_from_static(self.alloc_nodes_vec(nodes))
     }
@@ -482,13 +674,10 @@ impl NodeFactory {
     }
 
     fn new_modifier_list_from_static(&self, nodes: &'static [P<Node>]) -> P<ModifierList> {
-        P::new_in(
-            self.scratch,
-            ModifierList {
-                list: NodeList::new(undefined_text_range(), nodes),
-                modifier_flags: modifiers_to_flags(nodes),
-            },
-        )
+        self.alloc(ModifierList {
+            list: NodeList::new(undefined_text_range(), nodes),
+            modifier_flags: modifiers_to_flags(nodes),
+        })
     }
 }
 
@@ -514,14 +703,11 @@ impl ModifierList {
         self.list.has_trailing_comma()
     }
 
-    pub fn clone_list(&self, f: &NodeFactory) -> P<ModifierList> {
-        P::new_in(
-            f.scratch,
-            ModifierList {
-                list: NodeList::new(self.list.loc.get(), self.list.nodes()),
-                modifier_flags: self.modifier_flags,
-            },
-        )
+    pub fn clone_list(&self, f: &NodeFactory<'_>) -> P<ModifierList> {
+        f.alloc(ModifierList {
+            list: NodeList::new(self.list.loc.get(), self.list.nodes()),
+            modifier_flags: self.modifier_flags,
+        })
     }
 }
 
@@ -1825,7 +2011,7 @@ pub fn is_any_export_assignment(node: P<Node>) -> bool {
     node.kind() == Kind::ExportAssignment
 }
 
-impl NodeFactory {
+impl NodeFactory<'_> {
     pub fn new_modifier(&self, kind: Kind) -> P<Node> {
         self.new_token(kind)
     }
@@ -2008,11 +2194,11 @@ pub enum NameTableEntry {
     Multiple,
 }
 
-impl NodeFactory {
+impl<'alloc> NodeFactory<'alloc> {
     pub fn new_source_file(
         &self,
         opts: SourceFileParseOptions,
-        text: &'static str,
+        text: &'alloc str,
         statements: P<NodeList>,
         end_of_file_token: P<Node>,
     ) -> P<Node> {
@@ -2032,7 +2218,7 @@ impl NodeFactory {
                     next_container: OwnedCell::new(None),
                 },
                 parse_options: opts,
-                text,
+                text: self.store_text(text),
                 content_mapper_info: OwnedCell::new(None),
                 statements,
                 end_of_file_token,
@@ -2402,7 +2588,7 @@ impl SourceFile {
         visit_node_list(v, Some(self.statements)) || visit(v, Some(self.end_of_file_token))
     }
 
-    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor) -> P<Node> {
+    pub fn visit_each_child(&self, node: P<Node>, v: &mut NodeVisitor<'_>) -> P<Node> {
         let statements = v.visit_top_level_statements_hooked(Some(self.statements)).unwrap();
         let end_of_file_token = v.visit_token_hooked(Some(self.end_of_file_token)).unwrap();
         v.factory.update_source_file(node, statements, end_of_file_token)
@@ -2435,7 +2621,7 @@ impl SourceFile {
         node.flags.set(node.flags.get() | other.as_node().flags.get());
     }
 
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         let updated = f.new_source_file(
             self.parse_options.clone(),
             self.text,
@@ -2622,7 +2808,7 @@ fn collect_identifiers_for_source_file(source_file: &SourceFile) -> Set<&'static
     identifiers
 }
 
-impl NodeFactory {
+impl NodeFactory<'_> {
     pub fn update_source_file(
         &self,
         node: P<Node>,
@@ -2896,7 +3082,7 @@ impl CommentRange {
     }
 }
 
-impl NodeFactory {
+impl NodeFactory<'_> {
     #[expect(
         clippy::unused_self,
         reason = "The factory keeps the same instance API for node construction, hooks and arena lifecycle operations."
@@ -2990,7 +3176,7 @@ pub(crate) fn for_each_child_jsdoc_parameter_or_property_tag<V: FnMut(P<Node>) -
 pub(crate) fn visit_each_child_jsdoc_parameter_or_property_tag(
     node: &JSDocParameterOrPropertyTag,
     n: P<Node>,
-    v: &mut NodeVisitor,
+    v: &mut NodeVisitor<'_>,
 ) -> P<Node> {
     let tag_name = v.visit_node_hooked(Some(node.tag_name())).unwrap();
     let name = v.visit_node_hooked(Some(node.name)).unwrap();
@@ -3007,7 +3193,7 @@ pub(crate) fn visit_each_child_jsdoc_parameter_or_property_tag(
     )
 }
 
-impl NodeFactory {
+impl NodeFactory<'_> {
     #[expect(
         clippy::unused_self,
         reason = "The factory keeps the same instance API for node construction, hooks and arena lifecycle operations."
@@ -3146,7 +3332,7 @@ mod tests {
 
         // Identity visitor: nothing changes.
         let mut v = new_node_visitor(
-            Some(Rc::new(|_: &mut NodeVisitor, n: P<Node>| Some(n))),
+            Some(Rc::new(|_: &mut NodeVisitor<'_>, n: P<Node>| Some(n))),
             None,
             NodeVisitorHooks::default(),
         );
@@ -3156,7 +3342,7 @@ mod tests {
         let c: P<Node> = v.factory.new_identifier("c");
         let mut v = new_node_visitor(
             Some(Rc::new(
-                move |_: &mut NodeVisitor, n: P<Node>| if n == a { Some(c) } else { Some(n) },
+                move |_: &mut NodeVisitor<'_>, n: P<Node>| if n == a { Some(c) } else { Some(n) },
             )),
             Some(std::mem::take(&mut f)),
             NodeVisitorHooks::default(),

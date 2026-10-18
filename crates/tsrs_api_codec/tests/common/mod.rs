@@ -50,7 +50,8 @@ pub fn parse_like_server(name: &str, text: &str) -> (Region, P<SourceFile>) {
             external_module_indicator_options: ExternalModuleIndicatorOptions::default(),
         };
         let kind = tsrs_core::ensure_script_kind_from_file_name(&file_name);
-        let file = tsrs_parser::parse_source_file(opts, text, kind);
+        // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+        let file = unsafe { tsrs_parser::raw::parse_source_file(opts, text, kind) };
         file.hash.set(xxhash_rust::xxh3::xxh3_128(text.as_bytes()));
         tsrs_binder::bind_source_file(file);
         file

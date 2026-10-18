@@ -76,16 +76,16 @@ pub struct DeclarationTransformer {
     pub raw_referenced_files: RefCell<Vec<ReferencedFilePair>>,
     pub raw_type_reference_directives: RefCell<Vec<P<FileReference>>>,
     pub raw_lib_reference_directives: RefCell<Vec<P<FileReference>>>,
-    pub binding_name_visitor: OnceCell<ast::NodeVisitor>,
-    pub expression_visitor: OnceCell<ast::NodeVisitor>,
-    pub cjs_export_assignment_visitor: OnceCell<ast::NodeVisitor>,
-    pub export_stripping_visitor: OnceCell<ast::NodeVisitor>,
-    pub this_property_visitor: OnceCell<ast::NodeVisitor>,
+    pub binding_name_visitor: OnceCell<ast::NodeVisitor<'static>>,
+    pub expression_visitor: OnceCell<ast::NodeVisitor<'static>>,
+    pub cjs_export_assignment_visitor: OnceCell<ast::NodeVisitor<'static>>,
+    pub export_stripping_visitor: OnceCell<ast::NodeVisitor<'static>>,
+    pub this_property_visitor: OnceCell<ast::NodeVisitor<'static>>,
 
     pub cjs_export_assignment: Cell<Option<P<Node>>>,
     pub cjs_export_members: RefCell<Vec<P<Node>>>,
     pub cjs_export_assignment_name: Cell<Option<P<Node>>>, // tracks the name node used for `export =` in CJS module.exports assignments
-    pub declare_stripping_visitor: OnceCell<ast::NodeVisitor>,
+    pub declare_stripping_visitor: OnceCell<ast::NodeVisitor<'static>>,
     pub in_class_expression_declaration: Cell<bool>, // true when serializing members of a class expression kept as a class declaration
 }
 
@@ -96,7 +96,7 @@ impl DeclarationTransformer {
         self.base.emit_context()
     }
 
-    pub fn visitor(&self) -> ast::NodeVisitor {
+    pub fn visitor(&self) -> ast::NodeVisitor<'static> {
         self.base.visitor()
     }
 
@@ -113,27 +113,27 @@ impl DeclarationTransformer {
         visit(&mut v, node)
     }
 
-    pub fn binding_name_visitor(&self) -> ast::NodeVisitor {
+    pub fn binding_name_visitor(&self) -> ast::NodeVisitor<'static> {
         self.binding_name_visitor.get().unwrap().clone()
     }
 
-    pub fn expression_visitor(&self) -> ast::NodeVisitor {
+    pub fn expression_visitor(&self) -> ast::NodeVisitor<'static> {
         self.expression_visitor.get().unwrap().clone()
     }
 
-    pub fn cjs_export_assignment_visitor(&self) -> ast::NodeVisitor {
+    pub fn cjs_export_assignment_visitor(&self) -> ast::NodeVisitor<'static> {
         self.cjs_export_assignment_visitor.get().unwrap().clone()
     }
 
-    pub fn export_stripping_visitor(&self) -> ast::NodeVisitor {
+    pub fn export_stripping_visitor(&self) -> ast::NodeVisitor<'static> {
         self.export_stripping_visitor.get().unwrap().clone()
     }
 
-    pub fn this_property_visitor(&self) -> ast::NodeVisitor {
+    pub fn this_property_visitor(&self) -> ast::NodeVisitor<'static> {
         self.this_property_visitor.get().unwrap().clone()
     }
 
-    pub fn declare_stripping_visitor(&self) -> ast::NodeVisitor {
+    pub fn declare_stripping_visitor(&self) -> ast::NodeVisitor<'static> {
         self.declare_stripping_visitor.get().unwrap().clone()
     }
 }

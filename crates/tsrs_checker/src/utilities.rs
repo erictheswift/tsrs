@@ -1389,11 +1389,13 @@ pub(crate) fn is_valid_big_int_string(s: &str, round_trip_only: bool) -> bool {
     if s.is_empty() {
         return false;
     }
-    let mut scanner = tsrs_scanner::Scanner::new();
+    let allocator = tsrs_core::Allocator::current();
+    let mut scanner = tsrs_scanner::Scanner::new_in(&allocator);
     scanner.set_skip_trivia(false);
     // Go installs an error callback that clears `success`; the Rust scanner buffers errors instead.
     scanner.set_on_error(true);
-    scanner.set_text(alloc_str(&format!("{s}n")));
+    let text = format!("{s}n");
+    scanner.set_text(&text);
     let mut result = scanner.scan();
     let negative = result == Kind::MinusToken;
     if negative {

@@ -70,3 +70,28 @@ fn checkpoints_and_pins_use_the_captured_region() {
     unsafe { allocator.rewind(checkpoint) };
     assert_eq!(kept, "kept");
 }
+
+#[test]
+fn scoped_parse_routing_restores_nested_scratch_and_diagnostics_on_unwind() {
+    let outer = Region::new(4096);
+    let _outer_scope = outer.enter();
+    let scratch = Region::new_scratch(4096);
+    let _scratch_scope = scratch.enter_scratch();
+    let allocator = Allocator::current();
+    let nested = Region::new(4096);
+    let _nested_scope = nested.enter();
+    let diagnostics = Region::new(4096);
+    let _diagnostic_route = diagnostics.route_diagnostics();
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: the closure leaves all enclosing routing guards alive, including on unwind.
+        unsafe { allocator.with_scoped(|| panic!("parse failed")) }
+    }));
+    assert!(result.is_err());
+    assert!(tsrs_core::arena::current_region().unwrap().ptr_eq(&nested));
+    let before = scratch.used_bytes();
+    tsrs_core::alloc_str_scratch("restored scratch routing");
+    assert!(scratch.used_bytes() > before);
+    let _route = tsrs_core::arena::escape_for_diagnostic();
+    let text = tsrs_core::alloc_str("restored diagnostic routing");
+    assert!(Region::containing(text.as_ptr().addr()).unwrap().ptr_eq(&diagnostics));
+}

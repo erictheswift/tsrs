@@ -279,7 +279,7 @@ struct isolatedDeclarationsFixer<'a> {
 }
 
 impl isolatedDeclarationsFixer<'_> {
-    fn factory(&self) -> NodeFactory {
+    fn factory(&self) -> NodeFactory<'static> {
         self.change_tracker.node_factory.clone()
     }
 

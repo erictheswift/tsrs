@@ -66,7 +66,8 @@ impl CompilerHost for CachedCompilerHost {
         if let Some(cached) = SOURCE_FILE_CACHE.with(|c| c.borrow().get(&key).copied()) {
             return Some(cached);
         }
-        let source_file = tsrs_parser::parse_source_file(opts, &text, script_kind);
+        // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+        let source_file = unsafe { tsrs_parser::raw::parse_source_file(opts, &text, script_kind) };
         SOURCE_FILE_CACHE.with(|c| c.borrow_mut().insert(key, source_file));
         Some(source_file)
     }

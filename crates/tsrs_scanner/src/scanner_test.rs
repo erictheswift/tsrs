@@ -80,7 +80,8 @@ fn scoped_numeric_cache_pins_the_captured_allocator_during_speculation() {
 
 #[test]
 fn test_scan_string_preserves_lone_surrogates() {
-    let mut s = Scanner::new();
+    let allocator = tsrs_core::Allocator::current();
+    let mut s = Scanner::new_in(&allocator);
     s.set_text(r#""🦀퟿\ud800\ud801🦀""#);
     assert_eq!(s.scan(), Kind::StringLiteral);
     let expected = String::from("🦀")
@@ -112,7 +113,8 @@ fn test_normalize_jsdoc_type_source_text() {
 
 #[test]
 fn test_mark_rewind_restores_token_and_comment_directives() {
-    let mut s = Scanner::new();
+    let allocator = tsrs_core::Allocator::current();
+    let mut s = Scanner::new_in(&allocator);
     s.set_text("a // @ts-ignore\nb /* @ts-expect-error */ c");
     assert_eq!(s.scan(), Kind::Identifier);
     let state = s.mark();
@@ -131,7 +133,8 @@ fn test_mark_rewind_restores_token_and_comment_directives() {
 
 #[test]
 fn test_errors_are_buffered_in_report_order() {
-    let mut s = Scanner::new();
+    let allocator = tsrs_core::Allocator::current();
+    let mut s = Scanner::new_in(&allocator);
     s.set_text("'abc\n1__2");
     s.set_on_error(true);
     assert_eq!(s.scan(), Kind::StringLiteral);

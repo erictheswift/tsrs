@@ -1,6 +1,6 @@
 use tsrs_ast::{ContentMapperSourceFileInfo, SourceFile, SourceFileParseOptions};
 use tsrs_core::{P, alloc_slice, alloc_str, get_script_kind_from_file_name, tspath};
-use tsrs_parser::parse_source_file_owned;
+use tsrs_parser::raw::parse_source_file_owned;
 use tsrs_tsoptions::{Mapper, is_supported_virtual_extension};
 
 use crate::host::{
@@ -65,11 +65,14 @@ pub fn parse_result(
         parse_options.external_module_indicator_options.force = true;
     }
     let canonical_path = parse_options.path.clone();
-    let source_file = parse_source_file_owned(
-        parse_options,
-        result.text,
-        get_script_kind_from_file_name(&virtual_file_name),
-    );
+    // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+    let source_file = unsafe {
+        parse_source_file_owned(
+            parse_options,
+            result.text,
+            get_script_kind_from_file_name(&virtual_file_name),
+        )
+    };
     if !result.diagnostics.is_empty() {
         // The runner produces diagnostics without a source file (it doesn't have one yet); associate
         // them with the file now so they are reported against it.
@@ -105,7 +108,10 @@ pub fn parse_result(
         }
 
         let script_kind = get_script_kind_from_file_name(&supplemental_options.file_name);
-        let file = parse_source_file_owned(supplemental_options, supplemental.text, script_kind);
+        // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+        let file = unsafe {
+            parse_source_file_owned(supplemental_options, supplemental.text, script_kind)
+        };
 
         files.supplemental.push(file);
         supplemental_mappings.push((mappings, supplemental.diagnostic_directives));

@@ -199,9 +199,11 @@ Not tried. Each needs a measurement before it is adopted; none is applied yet:
 Not pursued: a binary-size check (Bun fails a pull request that grows the binary by more than 0.5 MB); size is not a
 goal here (owner decision, 2026-10-05).
 
-Parser and scanner state use allocator-bound lifetimes (PORTING.md, "Memory model"). The existing arena backs
-the borrowed `Allocator` guard; AST handles and the rest of the object graph retain their legacy ownership
-contract. This is a staged correctness change, not a replacement allocator or a performance optimization.
+Parser, scanner, and parser factories use allocator-bound lifetimes (PORTING.md, "Memory model").
+`parse_source_file_in` returns borrowed AST views that cannot escape their allocator; raw compiler parsing
+requires an explicit unsafe region-ownership contract. Storage conversion is confined to the AST factory,
+whose lifetime is invariant. The compiler's remaining raw object graph retains its manual ownership contract.
+This is a staged correctness change, not a replacement allocator or a performance optimization.
 
 Does not transfer: nightly-only flags (Bun's `-Zbuild-std`, `-Zlocation-detail=none`, `-Zshare-generics`; the release
 toolchain is stable), oxc's compile-time ban on `Drop` types in the arena (arena objects here own `Vec`s and maps

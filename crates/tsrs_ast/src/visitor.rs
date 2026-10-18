@@ -1,6 +1,6 @@
 use std::rc::Rc;
 
-use tsrs_core::{P, alloc_slice, alloc_vec};
+use tsrs_core::P;
 
 use crate::ast::{ModifierList, Node, NodeFactory, NodeList};
 use crate::kind::Kind;
@@ -13,53 +13,65 @@ use crate::kind::Kind;
 // to run a visitor with an existing factory (Go passes the same `*NodeFactory`), pass `f.clone()`,
 // which shares hooks and counters.
 
-pub type VisitFn = Rc<dyn Fn(&mut NodeVisitor, P<Node>) -> Option<P<Node>>>;
-pub type VisitNodeHook = Rc<dyn Fn(Option<P<Node>>, &mut NodeVisitor) -> Option<P<Node>>>;
-pub type VisitNodesHook = Rc<dyn Fn(Option<P<NodeList>>, &mut NodeVisitor) -> Option<P<NodeList>>>;
-pub type VisitModifiersHook =
-    Rc<dyn Fn(Option<P<ModifierList>>, &mut NodeVisitor) -> Option<P<ModifierList>>>;
+pub type VisitFn<'alloc> =
+    Rc<dyn Fn(&mut NodeVisitor<'alloc>, P<Node>) -> Option<P<Node>> + 'alloc>;
+pub type VisitNodeHook<'alloc> =
+    Rc<dyn Fn(Option<P<Node>>, &mut NodeVisitor<'alloc>) -> Option<P<Node>> + 'alloc>;
+pub type VisitNodesHook<'alloc> =
+    Rc<dyn Fn(Option<P<NodeList>>, &mut NodeVisitor<'alloc>) -> Option<P<NodeList>> + 'alloc>;
+pub type VisitModifiersHook<'alloc> = Rc<
+    dyn Fn(Option<P<ModifierList>>, &mut NodeVisitor<'alloc>) -> Option<P<ModifierList>> + 'alloc,
+>;
 
-// A handle (one `Rc`): transformers hand out a fresh `&mut NodeVisitor` for every `visit_each_child` by cloning the
+// A handle (one `Rc`): transformers hand out a fresh `&mut NodeVisitor<'alloc>` for every `visit_each_child` by cloning the
 // one they keep, and the visitor itself is never modified after construction.
 #[derive(Clone)]
-pub struct NodeVisitor(Rc<NodeVisitorData>);
+pub struct NodeVisitor<'alloc>(Rc<NodeVisitorData<'alloc>>);
 
-pub struct NodeVisitorData {
-    pub visit: Option<VisitFn>,  // Required. The callback used to visit a node
-    pub factory: NodeFactory, // Required. The NodeFactory used to produce new nodes when passed to VisitEachChild
-    pub hooks: NodeVisitorHooks, // Hooks to be invoked when visiting a node
+pub struct NodeVisitorData<'alloc> {
+    pub visit: Option<VisitFn<'alloc>>, // Required. The callback used to visit a node
+    pub factory: NodeFactory<'alloc>, // Required. The NodeFactory used to produce new nodes when passed to VisitEachChild
+    pub hooks: NodeVisitorHooks<'alloc>, // Hooks to be invoked when visiting a node
 }
 
-impl std::ops::Deref for NodeVisitor {
-    type Target = NodeVisitorData;
-    fn deref(&self) -> &NodeVisitorData {
+impl<'alloc> std::ops::Deref for NodeVisitor<'alloc> {
+    type Target = NodeVisitorData<'alloc>;
+    fn deref(&self) -> &NodeVisitorData<'alloc> {
         &self.0
     }
 }
 
 // These hooks are used to intercept the default behavior of the visitor
 #[derive(Default, Clone)]
-pub struct NodeVisitorHooks {
-    pub visit_node: Option<VisitNodeHook>, // Overrides visiting a Node. Only invoked by the VisitEachChild method on a given Node subtype.
-    pub visit_token: Option<VisitNodeHook>, // Overrides visiting a TokenNode. Only invoked by the VisitEachChild method on a given Node subtype.
-    pub visit_nodes: Option<VisitNodesHook>, // Overrides visiting a NodeList. Only invoked by the VisitEachChild method on a given Node subtype.
-    pub visit_modifiers: Option<VisitModifiersHook>, // Overrides visiting a ModifierList. Only invoked by the VisitEachChild method on a given Node subtype.
-    pub visit_embedded_statement: Option<VisitNodeHook>, // Overrides visiting a Node when it is the embedded statement body of an iteration statement, `if` statement, or `with` statement.
-    pub visit_iteration_body: Option<VisitNodeHook>, // Overrides visiting a Node when it is the embedded statement body of an iteration statement.
-    pub visit_parameters: Option<VisitNodesHook>,    // Overrides visiting a ParameterList.
-    pub visit_function_body: Option<VisitNodeHook>,  // Overrides visiting a function body.
-    pub visit_top_level_statements: Option<VisitNodesHook>, // Overrides visiting a variable environment.
+pub struct NodeVisitorHooks<'alloc> {
+    pub visit_node: Option<VisitNodeHook<'alloc>>, // Overrides visiting a Node. Only invoked by the VisitEachChild method on a given Node subtype.
+    pub visit_token: Option<VisitNodeHook<'alloc>>, // Overrides visiting a TokenNode. Only invoked by the VisitEachChild method on a given Node subtype.
+    pub visit_nodes: Option<VisitNodesHook<'alloc>>, // Overrides visiting a NodeList. Only invoked by the VisitEachChild method on a given Node subtype.
+    pub visit_modifiers: Option<VisitModifiersHook<'alloc>>, // Overrides visiting a ModifierList. Only invoked by the VisitEachChild method on a given Node subtype.
+    pub visit_embedded_statement: Option<VisitNodeHook<'alloc>>, // Overrides visiting a Node when it is the embedded statement body of an iteration statement, `if` statement, or `with` statement.
+    pub visit_iteration_body: Option<VisitNodeHook<'alloc>>, // Overrides visiting a Node when it is the embedded statement body of an iteration statement.
+    pub visit_parameters: Option<VisitNodesHook<'alloc>>,    // Overrides visiting a ParameterList.
+    pub visit_function_body: Option<VisitNodeHook<'alloc>>,  // Overrides visiting a function body.
+    pub visit_top_level_statements: Option<VisitNodesHook<'alloc>>, // Overrides visiting a variable environment.
 }
 
 pub fn new_node_visitor(
-    visit: Option<VisitFn>,
-    factory: Option<NodeFactory>,
-    hooks: NodeVisitorHooks,
-) -> NodeVisitor {
-    NodeVisitor(Rc::new(NodeVisitorData { visit, factory: factory.unwrap_or_default(), hooks }))
+    visit: Option<VisitFn<'static>>,
+    factory: Option<NodeFactory<'static>>,
+    hooks: NodeVisitorHooks<'static>,
+) -> NodeVisitor<'static> {
+    new_node_visitor_in(visit, factory.unwrap_or_default(), hooks)
 }
 
-impl NodeVisitor {
+pub fn new_node_visitor_in<'alloc>(
+    visit: Option<VisitFn<'alloc>>,
+    factory: NodeFactory<'alloc>,
+    hooks: NodeVisitorHooks<'alloc>,
+) -> NodeVisitor<'alloc> {
+    NodeVisitor(Rc::new(NodeVisitorData { visit, factory, hooks }))
+}
+
+impl NodeVisitor<'_> {
     pub fn visit_source_file(&mut self, node: P<Node>) -> P<Node> {
         let visited = self.visit_node(Some(node)).unwrap();
         visited.as_source_file();
@@ -182,7 +194,7 @@ impl NodeVisitor {
                         break;
                     }
                 }
-                return (alloc_vec(updated), true);
+                return (self.factory.alloc_nodes_vec(updated), true);
             }
             i += 1;
         }
@@ -312,6 +324,7 @@ pub fn required_child<T>(visited: Option<T>, original: T) -> T {
 
 /// Go `core.SameMap` over a raw node slice: returns `nodes` itself when `f` maps every element to itself.
 pub fn same_map_nodes(
+    factory: &NodeFactory<'_>,
     nodes: &'static [P<Node>],
     mut f: impl FnMut(P<Node>) -> P<Node>,
 ) -> &'static [P<Node>] {
@@ -322,7 +335,7 @@ pub fn same_map_nodes(
             result.extend_from_slice(&nodes[..i]);
             result.push(mapped);
             result.extend(nodes[i + 1..].iter().map(|&rest| f(rest)));
-            return alloc_slice(&result);
+            return factory.alloc_nodes_slice(&result);
         }
     }
     nodes

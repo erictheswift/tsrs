@@ -27,8 +27,8 @@ pub struct asyncTransformer {
     enclosing_function_parameter_names: RefCell<Option<FxHashSet<String>>>,
     lexical_arguments: Cell<lexicalArgumentsInfo>,
 
-    async_body_visitor: OnceCell<NodeVisitor>,
-    fallback_node_visitor: OnceCell<NodeVisitor>,
+    async_body_visitor: OnceCell<NodeVisitor<'static>>,
+    fallback_node_visitor: OnceCell<NodeVisitor<'static>>,
 }
 
 // async.go:37
@@ -70,15 +70,15 @@ impl asyncTransformer {
         self.base.factory()
     }
 
-    fn visitor(&self) -> NodeVisitor {
+    fn visitor(&self) -> NodeVisitor<'static> {
         self.base.visitor()
     }
 
-    fn async_body_visitor(&self) -> NodeVisitor {
+    fn async_body_visitor(&self) -> NodeVisitor<'static> {
         self.async_body_visitor.get().unwrap().clone()
     }
 
-    fn fallback_node_visitor(&self) -> NodeVisitor {
+    fn fallback_node_visitor(&self) -> NodeVisitor<'static> {
         self.fallback_node_visitor.get().unwrap().clone()
     }
 

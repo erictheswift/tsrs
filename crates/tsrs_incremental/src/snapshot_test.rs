@@ -11,16 +11,19 @@ use crate::snapshot::diagnostic_to_string_builder;
 #[test]
 fn signature_diagnostic_prints_go_position_and_length() {
     let file_name = "/a.ts";
-    let file = tsrs_parser::parse_source_file(
-        SourceFileParseOptions {
-            file_name: file_name.to_string(),
-            path: Path::new(file_name.to_string()),
-            external_module_indicator_options:
-                tsrs_ast::parseoptions::ExternalModuleIndicatorOptions::default(),
-        },
-        "const a = class { private p = 10; };",
-        get_script_kind_from_file_name(file_name),
-    );
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    let file = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: file_name.to_string(),
+                path: Path::new(file_name.to_string()),
+                external_module_indicator_options:
+                    tsrs_ast::parseoptions::ExternalModuleIndicatorOptions::default(),
+            },
+            "const a = class { private p = 10; };",
+            get_script_kind_from_file_name(file_name),
+        )
+    };
     let diagnostic = new_diagnostic(
         Some(file),
         TextRange::new(6, 7),

@@ -873,7 +873,8 @@ fn get_visual_list_range(_node: P<Node>, list: TextRange, source_file: P<SourceF
         Some(prior) => prior.end().expect_source("parsed tokens have source positions"),
     };
     // Find the token that starts at or after list.End() using the scanner
-    let scan = scanner::get_scanner_for_source_file(source_file, list_end);
+    let allocator = tsrs_core::Allocator::current();
+    let scan = scanner::get_scanner_for_source_file(&allocator, source_file, list_end);
     let next_start = if scan.token() == Kind::EndOfFile { list_end } else { scan.token_start() };
     TextRange::new(prior_end, next_start)
 }

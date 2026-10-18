@@ -25,8 +25,8 @@ pub(crate) struct TokenInfo {
 }
 
 // scanner.go:30
-pub(crate) struct FormattingScanner {
-    s: Scanner<'static>,
+pub(crate) struct FormattingScanner<'alloc> {
+    s: Scanner<'alloc>,
     start_pos: u32,
     end_pos: u32,
     saved_pos: u32,
@@ -39,14 +39,15 @@ pub(crate) struct FormattingScanner {
 }
 
 // scanner.go:43
-pub(crate) fn new_formatting_scanner(
-    text: &'static str,
+pub(crate) fn new_formatting_scanner<'alloc>(
+    allocator: &'alloc tsrs_core::Allocator,
+    text: &'alloc str,
     language_variant: LanguageVariant,
     start_pos: u32,
     end_pos: u32,
-    worker: &mut FormatSpanWorker,
+    worker: &mut FormatSpanWorker<'alloc>,
 ) -> Vec<TextChange> {
-    let mut scan = Scanner::new();
+    let mut scan = Scanner::new_in(allocator);
     scan.set_skip_trivia(false);
     scan.set_language_variant(language_variant);
     scan.set_text(text);
@@ -75,7 +76,7 @@ pub(crate) fn new_formatting_scanner(
     res
 }
 
-impl FormattingScanner {
+impl FormattingScanner<'_> {
     // scanner.go:65
     pub(crate) fn advance(&mut self) {
         self.has_last_token_info = false;
@@ -166,7 +167,7 @@ fn is_leftmost_jsx_tag_name(node: P<Node>) -> bool {
     .is_some()
 }
 
-impl FormattingScanner {
+impl FormattingScanner<'_> {
     // scanner.go:144
     fn should_rescan_jsx_text(&self, node: P<Node>) -> bool {
         if ast::is_jsx_text(node) {
@@ -220,7 +221,7 @@ fn fix_token_kind(mut token_info: TokenInfo, container: P<Node>) -> TokenInfo {
     token_info
 }
 
-impl FormattingScanner {
+impl FormattingScanner<'_> {
     // scanner.go:191
     pub(crate) fn read_token_info(&mut self, n: P<Node>) -> TokenInfo {
         assert!(self.is_on_token());

@@ -162,11 +162,14 @@ fn get_doc_comment_template_at_position(
         let reparse_text = source_file.text()[..position as usize].to_string()
             + " */"
             + &source_file.text()[position as usize..];
-        let reparse = parser::parse_source_file(
-            source_file.parse_options().clone(),
-            &reparse_text,
-            source_file.script_kind(),
-        );
+        // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+        let reparse = unsafe {
+            parser::raw::parse_source_file(
+                source_file.parse_options().clone(),
+                &reparse_text,
+                source_file.script_kind(),
+            )
+        };
         return get_doc_comment_template_at_position(
             reparse,
             position,

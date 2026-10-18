@@ -101,7 +101,7 @@ bitflags! {
 pub struct Parser<'alloc> {
     pub(crate) allocator: &'alloc Allocator,
     pub(crate) scanner: Scanner<'alloc>,
-    pub(crate) factory: NodeFactory,
+    pub(crate) factory: NodeFactory<'alloc>,
 
     pub(crate) opts: SourceFileParseOptions,
     pub(crate) source_text: &'alloc str,
@@ -150,7 +150,9 @@ pub(crate) fn new_parser(allocator: &Allocator) -> Parser<'_> {
     Parser {
         allocator,
         scanner: Scanner::new_in(allocator),
-        factory: NodeFactory::default(),
+        // SAFETY: raw parser output is either hidden behind scoped views or returned under
+        // the legacy compiler's region ownership contract.
+        factory: unsafe { NodeFactory::new_in(allocator) },
         opts: SourceFileParseOptions::default(),
         source_text: "",
         script_kind: ScriptKind::Unknown,
@@ -215,7 +217,12 @@ pub fn parse_source_file(
     script_kind: ScriptKind,
 ) -> P<SourceFile> {
     let allocator = Allocator::current();
-    parse_source_file_in(&allocator, opts, allocator.alloc_str(source_text), script_kind)
+    parse_source_file_with_allocator(
+        &allocator,
+        opts,
+        allocator.alloc_str(source_text),
+        script_kind,
+    )
 }
 
 /// `parse_source_file` for text the caller hands over (a file just read): outside a region it becomes the
@@ -284,10 +291,10 @@ fn parse_source_file_static(
     script_kind: ScriptKind,
 ) -> P<SourceFile> {
     let allocator = Allocator::current();
-    parse_source_file_in(&allocator, opts, source_text, script_kind)
+    parse_source_file_with_allocator(&allocator, opts, source_text, script_kind)
 }
 
-fn parse_source_file_in<'alloc>(
+pub(crate) fn parse_source_file_with_allocator<'alloc>(
     allocator: &'alloc Allocator,
     opts: SourceFileParseOptions,
     source_text: &'alloc str,
@@ -296,7 +303,7 @@ fn parse_source_file_in<'alloc>(
     crate::jsdoc::init();
     let mut p = new_parser(allocator);
     p.initialize_state_in(opts, source_text, script_kind);
-    p.source_text_index = ast::register_source_text(p.legacy_text(source_text));
+    p.source_text_index = p.factory.register_source_text(source_text);
     p.next_token();
     if p.script_kind == ScriptKind::JSON {
         return p.parse_json_text();
@@ -373,12 +380,8 @@ impl Parser<'_> {
             statements = self.new_node_list(new_text_range(pos, end), &[statement]);
             eof = self.parse_expected_token(Kind::EndOfFile);
         }
-        let node = self.factory.new_source_file(
-            self.opts.clone(),
-            self.legacy_text(self.source_text),
-            statements,
-            eof,
-        );
+        let node =
+            self.factory.new_source_file(self.opts.clone(), self.source_text, statements, eof);
         node.as_source_file().text_index.set(self.source_text_index);
         let node = self.finish_node(node, pos);
         let result = node.as_source_file_p();
@@ -515,7 +518,7 @@ impl<'alloc> Parser<'alloc> {
 
     /// `initialize_state` for text already owned by the backing region, an existing source file,
     /// or the process (Go shares the string; no copy). Never pass a caller's temporary borrow here:
-    /// AST storage erases this lifetime through the adapters in `legacy`.
+    /// The factory stores this borrow under the raw AST ownership contract.
     pub(crate) fn initialize_state_in(
         &mut self,
         opts: SourceFileParseOptions,
@@ -767,12 +770,10 @@ impl<'alloc> Parser<'alloc> {
             // tsrs-only: the `SourceFile` outlives a scratch region the file is parsed in (fileregions.rs in
             // tsrs_compiler frees a checked file's tree, not the file); a no-op outside one.
             let _outer = tsrs_core::arena::escape_scratch();
-            self.factory.new_source_file(
-                self.opts.clone(),
-                self.legacy_text(self.source_text),
-                statement_list,
-                eof,
-            )
+            let file_allocator = Allocator::current();
+            // SAFETY: SourceFile metadata follows the retained outer region's ownership contract.
+            let file_factory = unsafe { self.factory.with_allocator(&file_allocator) };
+            file_factory.new_source_file(self.opts.clone(), self.source_text, statement_list, eof)
         };
         node.as_source_file().text_index.set(self.source_text_index);
         let node = self.finish_node(node, pos);
@@ -790,7 +791,7 @@ impl<'alloc> Parser<'alloc> {
             }
         }
         if !self.lazy_lists.is_empty() {
-            result.lazy_lists.set(self.legacy_slice(self.allocator.alloc_slice(&self.lazy_lists)));
+            self.factory.set_lazy_lists(result, self.allocator.alloc_slice(&self.lazy_lists));
         }
         collect_external_module_references(result);
         if ast::is_in_js_file(Some(node)) {
@@ -800,9 +801,9 @@ impl<'alloc> Parser<'alloc> {
     }
 
     pub(crate) fn finish_source_file(&mut self, result: P<SourceFile>, is_declaration_file: bool) {
-        result.comment_directives.set(self.legacy_slice(self.scanner.comment_directives()));
+        self.factory.set_comment_directives(result, self.scanner.comment_directives());
         let pragmas = get_comment_pragmas(&mut self.factory, self.source_text);
-        result.pragmas.set(self.legacy_slice(self.allocator.alloc_vec(pragmas)));
+        self.factory.set_pragmas(result, self.allocator.alloc_vec(pragmas));
         self.process_pragmas_into_fields(result);
         result.set_diagnostics(&attach_file_to_diagnostics(&self.diagnostics, result));
         result.set_jsdoc_diagnostics(&attach_file_to_diagnostics(&self.jsdoc_diagnostics, result));
@@ -814,27 +815,23 @@ impl<'alloc> Parser<'alloc> {
         result.node_count.set(self.factory.node_count());
         result.text_count.set(self.factory.text_count());
         result.identifier_count.set(self.identifier_count);
-        result.set_jsdoc_cache(self.create_jsdoc_cache());
+        self.factory.set_jsdoc_cache(result, self.create_jsdoc_cache());
         // For non-JS files, enable lazy JSDoc parsing on demand
         if !self.is_java_script() {
             result.set_has_lazy_jsdoc(true);
         }
         self.reparsed_clones.sort_by(|a, b| ast::compare_node_positions(*a, *b));
-        result
-            .reparsed_clones
-            .set(self.legacy_slice(self.allocator.alloc_slice(&self.reparsed_clones)));
+        self.factory.set_reparsed_clones(result, self.allocator.alloc_slice(&self.reparsed_clones));
         ast::set_external_module_indicator(&result, self.opts.external_module_indicator_options);
     }
 
-    pub(crate) fn create_jsdoc_cache(&self) -> FxHashMap<P<Node>, &'static [P<Node>]> {
+    pub(crate) fn create_jsdoc_cache(&self) -> FxHashMap<P<Node>, &'alloc [P<Node>]> {
         if self.jsdoc_infos.is_empty() {
             return FxHashMap::default();
         }
         let mut result =
             FxHashMap::with_capacity_and_hasher(self.jsdoc_infos.len(), rustc_hash::FxBuildHasher);
-        result.extend(
-            self.jsdoc_infos.iter().map(|info| (info.parent, self.legacy_slice(info.js_docs))),
-        );
+        result.extend(self.jsdoc_infos.iter().map(|info| (info.parent, info.js_docs)));
         result
     }
 
@@ -963,9 +960,12 @@ impl<'alloc> Parser<'alloc> {
         let result = {
             // See parse_source_file_worker.
             let _outer = tsrs_core::arena::escape_scratch();
-            self.factory.new_source_file(
+            let file_allocator = Allocator::current();
+            // SAFETY: SourceFile metadata follows the retained outer region's ownership contract.
+            let file_factory = unsafe { self.factory.with_allocator(&file_allocator) };
+            file_factory.new_source_file(
                 source_file.parse_options().clone(),
-                self.legacy_text(self.source_text),
+                self.source_text,
                 list,
                 source_file.end_of_file_token,
             )
@@ -1079,7 +1079,7 @@ impl<'alloc> Parser<'alloc> {
         // caches pin retained allocations, and nested lazy records have been truncated. The scanner
         // stays at the closing brace, whose token text borrows the source.
         unsafe { self.allocator.rewind(cp) };
-        let record = P::new(tsrs_ast::lazylist::LazyNodeList::new(
+        let record = self.factory.new_lazy_list_record(tsrs_ast::lazylist::LazyNodeList::new(
             loc.pos().expect_source("parsed lists have source positions"),
             loc.end().expect_source("parsed lists have source positions"),
             kind as u8,

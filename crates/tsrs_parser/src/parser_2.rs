@@ -803,7 +803,7 @@ impl<'alloc> Parser<'alloc> {
 
     pub(crate) fn new_identifier(&mut self, text: &'alloc str) -> P<Node> {
         self.identifier_count += 1;
-        let id = self.factory.new_identifier(self.legacy_text(text));
+        let id = self.factory.new_identifier(text);
         if text == "await" {
             self.statement_has_await_identifier = true;
         }
@@ -814,8 +814,7 @@ impl<'alloc> Parser<'alloc> {
     /// when it is a slice of the source text).
     pub(crate) fn new_source_identifier(&mut self, text: &'alloc str, loc: TextRange) -> P<Node> {
         self.identifier_count += 1;
-        let id =
-            self.factory.new_source_identifier(self.legacy_text(text), self.source_text_index, loc);
+        let id = self.factory.new_source_identifier(text, self.source_text_index, loc);
         if text == "await" {
             self.statement_has_await_identifier = true;
         }
@@ -832,7 +831,7 @@ impl<'alloc> Parser<'alloc> {
         let pos = self.node_pos();
         let text = self.scanner.token_value();
         self.next_token();
-        let node = self.factory.new_private_identifier(self.legacy_text(text));
+        let node = self.factory.new_private_identifier(text);
         self.finish_node(node, pos)
     }
 
@@ -1812,11 +1811,7 @@ impl<'alloc> Parser<'alloc> {
         let pos = self.node_pos();
         let text = self.scanner.token_value();
         let raw_text = self.get_template_literal_raw_text(2 /*endLength*/);
-        let result = self.factory.new_template_head(
-            self.legacy_text(text),
-            self.legacy_text(raw_text),
-            self.scanner.token_flags(),
-        );
+        let result = self.factory.new_template_head(text, raw_text, self.scanner.token_flags());
         self.next_token();
         self.finish_node(result, pos)
     }
@@ -1872,19 +1867,11 @@ impl<'alloc> Parser<'alloc> {
         let result = if self.token == Kind::TemplateMiddle {
             let text = self.scanner.token_value();
             let raw_text = self.get_template_literal_raw_text(2 /*endLength*/);
-            self.factory.new_template_middle(
-                self.legacy_text(text),
-                self.legacy_text(raw_text),
-                self.scanner.token_flags(),
-            )
+            self.factory.new_template_middle(text, raw_text, self.scanner.token_flags())
         } else {
             let text = self.scanner.token_value();
             let raw_text = self.get_template_literal_raw_text(1 /*endLength*/);
-            self.factory.new_template_tail(
-                self.legacy_text(text),
-                self.legacy_text(raw_text),
-                self.scanner.token_flags(),
-            )
+            self.factory.new_template_tail(text, raw_text, self.scanner.token_flags())
         };
         self.next_token();
         self.finish_node(result, pos)

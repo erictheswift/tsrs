@@ -55,11 +55,14 @@ fn print_file(mode: &str, path: &str, flags: &str) -> Result<String, &'static st
         path: Path::new(path.to_string()),
         external_module_indicator_options: parse_flags(flags),
     };
-    let file = tsrs_parser::parse_source_file(
-        opts,
-        &text,
-        tsrs_core::ensure_script_kind_from_file_name(path),
-    );
+    // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+    let file = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            opts,
+            &text,
+            tsrs_core::ensure_script_kind_from_file_name(path),
+        )
+    };
     if !file.diagnostics().is_empty() {
         return Err("SKIP");
     }

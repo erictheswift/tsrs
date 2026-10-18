@@ -55,8 +55,8 @@ pub struct forawaitTransformer {
     for_await_hierarchy_facts: Cell<forAwaitHierarchyFacts>,
     exported_variable_statement: Cell<bool>,
 
-    fallback_node_visitor: OnceCell<NodeVisitor>,
-    no_async_modifier_visitor: OnceCell<NodeVisitor>,
+    fallback_node_visitor: OnceCell<NodeVisitor<'static>>,
+    no_async_modifier_visitor: OnceCell<NodeVisitor<'static>>,
 }
 
 // forawait.go:56
@@ -104,7 +104,7 @@ impl forawaitTransformer {
         self.base.factory()
     }
 
-    fn visitor(&self) -> NodeVisitor {
+    fn visitor(&self) -> NodeVisitor<'static> {
         self.base.visitor()
     }
 

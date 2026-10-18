@@ -366,7 +366,8 @@ impl<'alloc> Parser<'alloc> {
                             if link_end == start {
                                 remove_leading_newlines(&mut comments);
                             }
-                            let text = self.factory.new_jsdoc_text(self.legacy_texts(&comments));
+                            let text =
+                                self.factory.new_jsdoc_text(self.allocator.alloc_slice(&comments));
                             let jsdoc_text = self.finish_node_with_end(text, link_end, comment_end);
                             comment_parts.push(jsdoc_text);
                             comment_parts.push(link);
@@ -404,7 +405,7 @@ impl<'alloc> Parser<'alloc> {
         if !comments.is_empty() {
             let last = comments.len() - 1;
             comments[last] = comments[last].trim_end();
-            let text = self.factory.new_jsdoc_text(self.legacy_texts(&comments));
+            let text = self.factory.new_jsdoc_text(self.allocator.alloc_slice(&comments));
             let jsdoc_text = self.finish_node_with_end(text, link_end, comments_pos);
             comment_parts.push(jsdoc_text);
         }
@@ -670,7 +671,8 @@ impl<'alloc> Parser<'alloc> {
                         let link = self.parse_jsdoc_link(link_start);
                         if let Some(link) = link {
                             let comment_start = link_end.unwrap_or(comments_pos);
-                            let text = self.factory.new_jsdoc_text(self.legacy_texts(&comments));
+                            let text =
+                                self.factory.new_jsdoc_text(self.allocator.alloc_slice(&comments));
                             let text = self.finish_node_with_end(text, comment_start, comment_end);
                             parts.push(text);
                             parts.push(link);
@@ -735,7 +737,7 @@ impl<'alloc> Parser<'alloc> {
         remove_trailing_whitespace(&mut comments);
         if !comments.is_empty() {
             let comment_start = link_end.unwrap_or(comments_pos);
-            let text = self.factory.new_jsdoc_text(self.legacy_texts(&comments));
+            let text = self.factory.new_jsdoc_text(self.allocator.alloc_slice(&comments));
             let text = self.finish_node(text, comment_start);
             parts.push(text);
         }
@@ -771,7 +773,7 @@ impl<'alloc> Parser<'alloc> {
             text.push(self.scanner.token_text());
             self.next_token_jsdoc(); // Couldn't this be nextTokenCommentJSDoc?
         }
-        let text = self.legacy_texts(&text);
+        let text = self.allocator.alloc_slice(&text);
         let create = match link_type {
             "link" => self.factory.new_jsdoc_link(name, text),
             "linkcode" => self.factory.new_jsdoc_link_code(name, text),
@@ -955,10 +957,9 @@ impl<'alloc> Parser<'alloc> {
                 if let Some(children) = children {
                     let is_array_type =
                         type_expression.type_node().unwrap().kind() == Kind::ArrayType;
-                    let literal = self.factory.new_jsdoc_type_literal(
-                        self.legacy_slice(self.allocator.alloc_vec(children)),
-                        is_array_type,
-                    );
+                    let literal = self
+                        .factory
+                        .new_jsdoc_type_literal(self.allocator.alloc_vec(children), is_array_type);
                     let literal = self.finish_node(literal, pos);
                     let node = self.factory.new_jsdoc_type_expression(literal);
                     return Some(self.finish_node(node, pos));
@@ -1290,7 +1291,7 @@ impl<'alloc> Parser<'alloc> {
                     .first()
                     .map(|t| t.pos().expect_source("parsed nodes have source positions"));
                 let jsdoc_type_literal = self.factory.new_jsdoc_type_literal(
-                    self.legacy_slice(self.allocator.alloc_vec(jsdoc_property_tags)),
+                    self.allocator.alloc_vec(jsdoc_property_tags),
                     is_array_type,
                 );
                 let child_type_expression =

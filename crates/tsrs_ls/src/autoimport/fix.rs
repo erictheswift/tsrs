@@ -1718,7 +1718,9 @@ fn promote_from_type_only(
         Kind::ImportEqualsDeclaration => {
             // Remove the 'type' keyword (which is the second token: 'import' 'type' name '=' ...)
             // The type keyword is after 'import' and before the name
+            let allocator = tsrs_core::Allocator::current();
             let mut scan = scanner::get_scanner_for_source_file(
+                &allocator,
                 source_file,
                 alias_declaration.pos().expect_source("parsed declarations have source positions"),
             );
@@ -1830,7 +1832,8 @@ fn promote_import_clause(
 // deleteTypeKeyword deletes the 'type' keyword token starting at the given position,
 // including any trailing whitespace.
 fn delete_type_keyword(changes: &mut change::Tracker, source_file: P<SourceFile>, start_pos: u32) {
-    let scan = scanner::get_scanner_for_source_file(source_file, start_pos);
+    let allocator = tsrs_core::Allocator::current();
+    let scan = scanner::get_scanner_for_source_file(&allocator, source_file, start_pos);
     if scan.token() != Kind::TypeKeyword {
         return;
     }

@@ -2203,7 +2203,8 @@ impl Checker {
     // jsx.go:1435
     // parser.ParseIsolatedEntityName returns nil for an invalid entity name, so the result is nil-able.
     pub(crate) fn parse_isolated_entity_name(name: &str) -> Option<P<Node>> {
-        let result = tsrs_parser::parse_isolated_entity_name(name);
+        // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+        let result = unsafe { tsrs_parser::raw::parse_isolated_entity_name(name) };
         if let Some(result) = result {
             mark_as_synthetic(result);
         }

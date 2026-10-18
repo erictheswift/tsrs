@@ -129,11 +129,14 @@ pub fn new_parse_cache(options: RefCountCacheOptions) -> ParseCache {
             let region = Region::new(file_region_first_chunk(text.len()));
             let file = {
                 let _scope = region.enter();
-                let file = tsrs_parser::parse_source_file(
-                    key.source_file_parse_options.clone(),
-                    text,
-                    key.script_kind,
-                );
+                // SAFETY: The parse cache retains the file region for every cached AST handle.
+                let file = unsafe {
+                    tsrs_parser::raw::parse_source_file(
+                        key.source_file_parse_options.clone(),
+                        text,
+                        key.script_kind,
+                    )
+                };
                 file.hash.set(fh.hash());
                 tsrs_binder::bind_source_file(file);
                 file

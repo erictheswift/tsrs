@@ -166,7 +166,9 @@ fn node_ends_with(n: P<Node>, expected_last_token: Kind, source_file: P<SourceFi
         }
         None => n.pos().expect_source("parsed nodes have source positions"),
     };
-    let mut scanner = scanner::get_scanner_for_source_file(source_file, token_start_pos);
+    let allocator = tsrs_core::Allocator::current();
+    let mut scanner =
+        scanner::get_scanner_for_source_file(&allocator, source_file, token_start_pos);
     let mut start_pos = token_start_pos;
     while start_pos < n.end().expect_source("parsed nodes have source positions") {
         let token_kind = scanner.token();

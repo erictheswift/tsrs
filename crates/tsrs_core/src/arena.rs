@@ -1038,7 +1038,7 @@ pub struct RegionScope {
 /// ```
 pub struct Allocator {
     arena: NonNull<Arena>,
-    _scope: RegionScope,
+    scope: RegionScope,
 }
 
 impl Allocator {
@@ -1048,14 +1048,59 @@ impl Allocator {
             None => enter_thread_arena(),
         };
         let arena = NonNull::new(CURRENT.with(Cell::get).cast_mut()).expect("entered arena");
-        Self { arena, _scope: scope }
+        Self { arena, scope }
     }
 
     #[inline]
     pub(crate) fn arena(&self) -> &Arena {
-        // SAFETY: `_scope` retains the region and its allocation lock, or the thread arena. The guard
+        // SAFETY: `scope` retains the region and its allocation lock, or the thread arena. The guard
         // is thread-bound and the returned borrow cannot outlive it.
         unsafe { self.arena.as_ref() }
+    }
+
+    /// Runs a scoped parse with all allocations, including metadata and diagnostics, in this target.
+    ///
+    /// # Safety
+    /// The closure must not drop or forget any enclosing scratch or diagnostic-routing guards.
+    /// Those guards must remain live until their saved routing is restored, including on unwind.
+    pub unsafe fn with_scoped<R>(&self, f: impl FnOnce() -> R) -> R {
+        let _scope = self.enter();
+        let _routes = ScopedAllocationRoutes {
+            scratch: SCRATCH
+                .with(|s| s.replace((std::ptr::null(), std::ptr::null(), std::ptr::null()))),
+            diagnostic: DIAGNOSTIC_ROUTE.with(|r| r.replace((std::ptr::null(), std::ptr::null()))),
+        };
+        f()
+    }
+
+    /// Registers cleanup when this allocator's region is reclaimed. Thread-arena data is retained.
+    pub fn on_free(&self, f: Box<dyn FnOnce() + Send>) {
+        if let Some(region) = &self.scope.region {
+            region.on_free(f);
+        }
+    }
+
+    /// Re-enters this captured target for code that still uses ambient arena APIs.
+    pub fn enter(&self) -> RegionScope {
+        match &self.scope.region {
+            Some(region) => region.enter(),
+            None => enter_thread_arena(),
+        }
+    }
+
+    /// Allocates a raw compiler handle in this target.
+    ///
+    /// # Safety
+    /// Every use of the returned handle and its derived references must be bounded by this
+    /// allocator's backing region. The raw handle itself does not encode that lifetime.
+    #[inline]
+    pub unsafe fn alloc_legacy<T: 'static>(&self, value: T) -> crate::P<T> {
+        let arena = self.arena();
+        let value = arena.alloc_with(crate::ptr::p_layout::<T>(), value);
+        arena.track_drop(std::ptr::from_mut(value), 1);
+        // SAFETY: the allocation has the alignment required by P. The caller retains its region
+        // for every use of the lifetime-erased handle, including references obtained from it.
+        unsafe { crate::P::from_arena(&*std::ptr::from_mut(value)) }
     }
 
     #[inline]
@@ -1104,6 +1149,18 @@ impl Allocator {
     #[inline]
     pub fn pin(&self) {
         self.arena().bump_epoch();
+    }
+}
+
+struct ScopedAllocationRoutes {
+    scratch: (*const Arena, *const Arena, *const Arena),
+    diagnostic: (*const Arena, *const Arena),
+}
+
+impl Drop for ScopedAllocationRoutes {
+    fn drop(&mut self) {
+        SCRATCH.with(|s| s.set(self.scratch));
+        DIAGNOSTIC_ROUTE.with(|r| r.set(self.diagnostic));
     }
 }
 

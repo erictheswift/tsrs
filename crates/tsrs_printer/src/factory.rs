@@ -16,15 +16,15 @@ use crate::*;
 // emit-only transform helpers of factory.go are in factory_2.rs.
 #[derive(Default, Clone)]
 pub struct NodeFactory {
-    pub node_factory: ast::NodeFactory,
+    pub node_factory: ast::NodeFactory<'static>,
     // Shared with the hooks: `new_emit_context` fills it once the context is allocated (Go builds the context first
     // and then its factory, which a plain field behind `P` cannot express).
     emit_context: Rc<Cell<Option<P<EmitContext>>>>,
 }
 
 impl Deref for NodeFactory {
-    type Target = ast::NodeFactory;
-    fn deref(&self) -> &ast::NodeFactory {
+    type Target = ast::NodeFactory<'static>;
+    fn deref(&self) -> &ast::NodeFactory<'static> {
         &self.node_factory
     }
 }
@@ -53,7 +53,7 @@ pub(crate) fn new_node_factory_for_context(scratch: bool) -> NodeFactory {
 }
 
 impl NodeFactory {
-    pub fn as_node_factory(&self) -> &ast::NodeFactory {
+    pub fn as_node_factory(&self) -> &ast::NodeFactory<'static> {
         &self.node_factory
     }
 

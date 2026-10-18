@@ -25,15 +25,18 @@ pub(crate) fn parse_for_test(
     text: &str,
     script_kind: ScriptKind,
 ) -> P<SourceFile> {
-    tsrs_parser::parse_source_file(
-        SourceFileParseOptions {
-            file_name: file_name.to_string(),
-            path: file_name.into(),
-            ..Default::default()
-        },
-        text,
-        script_kind,
-    )
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: file_name.to_string(),
+                path: file_name.into(),
+                ..Default::default()
+            },
+            text,
+            script_kind,
+        )
+    }
 }
 
 fn reference_baseline(name: &str) -> Option<String> {

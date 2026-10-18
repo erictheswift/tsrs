@@ -382,15 +382,18 @@ pub fn do_js_emit_baseline(
             js_code.push_str("\r\n");
         }
         if result.diagnostics.is_empty() && file.unit_name.ends_with(tspath::EXTENSION_JSON) {
-            let file_parse_result = tsrs_parser::parse_source_file(
-                SourceFileParseOptions {
-                    file_name: file.unit_name.clone(),
-                    path: tspath::Path(file.unit_name.as_str().into()),
-                    ..Default::default()
-                },
-                &file.content,
-                ScriptKind::JSON,
-            );
+            // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+            let file_parse_result = unsafe {
+                tsrs_parser::raw::parse_source_file(
+                    SourceFileParseOptions {
+                        file_name: file.unit_name.clone(),
+                        path: tspath::Path(file.unit_name.as_str().into()),
+                        ..Default::default()
+                    },
+                    &file.content,
+                    ScriptKind::JSON,
+                )
+            };
             let diags = file_parse_result.diagnostics();
             if !diags.is_empty() {
                 js_code.push_str(&tsbaseline::get_error_baseline(

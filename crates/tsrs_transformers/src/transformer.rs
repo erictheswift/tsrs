@@ -10,14 +10,14 @@ use crate::*;
 #[derive(Default)]
 pub struct Transformer {
     pub emit_context: OnceCell<P<EmitContext>>,
-    pub visitor: OnceCell<ast::NodeVisitor>,
+    pub visitor: OnceCell<ast::NodeVisitor<'static>>,
 }
 
 impl Transformer {
     // transformer.go:14
     pub fn new_transformer(
         &'static self,
-        visit: ast::VisitFn,
+        visit: ast::VisitFn<'static>,
         emit_context: Option<P<EmitContext>>,
     ) -> P<Transformer> {
         assert!(self.emit_context.get().is_none(), "Transformer already initialized");
@@ -33,7 +33,7 @@ impl Transformer {
     }
 
     // transformer.go:32
-    pub fn visitor(&self) -> ast::NodeVisitor {
+    pub fn visitor(&self) -> ast::NodeVisitor<'static> {
         self.visitor.get().unwrap().clone()
     }
 

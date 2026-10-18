@@ -12,7 +12,7 @@ use crate::{EmitContext, EmitTextWriter, PrinterOptions, new_change_tracker_writ
 // concrete source positions assigned to it and all descendants.
 // syntheticfile.go:17
 pub fn print_and_position_node(
-    factory: &NodeFactory,
+    factory: &NodeFactory<'static>,
     node: P<Node>,
     source_file: Option<P<SourceFile>>,
     new_line: &str,
@@ -46,7 +46,7 @@ pub fn print_and_position_node(
 // positions assigned (e.g. via PrintAndPositionNode or AssignPositionsToNode).
 // syntheticfile.go:39
 pub fn create_synthetic_source_file(
-    factory: &NodeFactory,
+    factory: &NodeFactory<'static>,
     node: P<Node>,
     text: &str,
     parse_options: SourceFileParseOptions,

@@ -93,6 +93,7 @@ pub fn format_span(
     let enclosing_node = find_enclosing_node(span, file);
     let opts = get_format_code_settings_from_context(ctx);
 
+    let allocator = tsrs_core::Allocator::current();
     let mut worker = new_format_span_worker(
         ctx,
         span,
@@ -104,6 +105,7 @@ pub fn format_span(
         file,
     );
     new_formatting_scanner(
+        &allocator,
         file.text(),
         file.language_variant(),
         get_scan_start_position(enclosing_node, span, file),
@@ -122,6 +124,7 @@ pub fn format_node_given_indentation(
     delta: i32,
 ) -> Vec<TextChange> {
     let text_range = TextRange::from_text_pos(node.pos(), node.end());
+    let allocator = tsrs_core::Allocator::current();
     let mut worker = new_format_span_worker(
         ctx,
         text_range,
@@ -133,6 +136,7 @@ pub fn format_node_given_indentation(
         file,
     );
     new_formatting_scanner(
+        &allocator,
         file.text(),
         language_variant,
         text_range.pos().expect_source("formatting ranges have source positions"),

@@ -1617,7 +1617,7 @@ pub(crate) struct snippetPrinter {
     pub(crate) emit_context: P<EmitContext>,
     printer: Printer,
     writer: snippetEmitTextWriter,
-    pub(crate) factory: NodeFactory,
+    pub(crate) factory: NodeFactory<'static>,
 }
 
 impl snippetPrinter {

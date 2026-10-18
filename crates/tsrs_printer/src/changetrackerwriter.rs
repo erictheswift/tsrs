@@ -109,7 +109,11 @@ impl ChangeTrackerWriter {
     }
 
     // changetrackerwriter.go:107
-    pub fn assign_positions_to_node(&self, node: P<Node>, factory: &NodeFactory) -> P<Node> {
+    pub fn assign_positions_to_node(
+        &self,
+        node: P<Node>,
+        factory: &NodeFactory<'static>,
+    ) -> P<Node> {
         let positions = Rc::clone(&self.positions);
         let p_visit = Rc::clone(&positions);
         let p_node = Rc::clone(&positions);

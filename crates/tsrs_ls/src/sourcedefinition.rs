@@ -650,17 +650,20 @@ impl SourceDefResolver<'_> {
         }
         let mut source_file: Option<P<SourceFile>> = None;
         if let Some(text) = self.ls.read_file(file_name) {
-            let sf = tsrs_parser::parse_source_file_owned(
-                SourceFileParseOptions {
-                    file_name: file_name.to_string(),
-                    path: self.ls.to_path(file_name),
-                    ..Default::default()
-                },
-                text,
-                // A declaration map's `sources` entries are arbitrary strings, so the
-                // file name here may not have a recognized extension.
-                tsrs_core::ensure_script_kind_from_file_name(file_name),
-            );
+            // SAFETY: The compiler retains the backing regions through the last use of this raw AST.
+            let sf = unsafe {
+                tsrs_parser::raw::parse_source_file_owned(
+                    SourceFileParseOptions {
+                        file_name: file_name.to_string(),
+                        path: self.ls.to_path(file_name),
+                        ..Default::default()
+                    },
+                    text,
+                    // A declaration map's `sources` entries are arbitrary strings, so the
+                    // file name here may not have a recognized extension.
+                    tsrs_core::ensure_script_kind_from_file_name(file_name),
+                )
+            };
             tsrs_binder::bind_source_file(sf);
             source_file = Some(sf);
         }

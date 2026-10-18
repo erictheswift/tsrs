@@ -36,7 +36,7 @@ impl TypeEraserTransformer {
         self.base.factory()
     }
 
-    fn visitor(&self) -> NodeVisitor {
+    fn visitor(&self) -> NodeVisitor<'static> {
         self.base.visitor()
     }
 

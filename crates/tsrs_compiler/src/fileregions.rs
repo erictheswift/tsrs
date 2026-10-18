@@ -375,7 +375,8 @@ pub(crate) fn parse(
     let region = Region::new_scratch_in_large_slabs(first_chunk(text.len()));
     let file = {
         let _scratch = region.enter_scratch();
-        tsrs_parser::parse_source_file_keep_text(opts, text, script_kind)
+        // SAFETY: The file-region owner retains tree memory until checking completes; text and metadata escape it.
+        unsafe { tsrs_parser::raw::parse_source_file_keep_text(opts, text, script_kind) }
     };
     region.trim();
     REGIONS.lock().unwrap().insert(file, region);

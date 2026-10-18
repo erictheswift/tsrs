@@ -74,7 +74,7 @@ pub struct superAccessState {
 
     pub super_binding: Cell<Option<P<Node>>>,
     pub super_index_binding: Cell<Option<P<Node>>>,
-    pub super_access_visitor: OnceCell<NodeVisitor>,
+    pub super_access_visitor: OnceCell<NodeVisitor<'static>>,
 }
 
 impl superAccessState {
@@ -82,7 +82,7 @@ impl superAccessState {
         self.factory.get().unwrap()
     }
 
-    fn super_access_visitor(&self) -> NodeVisitor {
+    fn super_access_visitor(&self) -> NodeVisitor<'static> {
         self.super_access_visitor.get().unwrap().clone()
     }
 

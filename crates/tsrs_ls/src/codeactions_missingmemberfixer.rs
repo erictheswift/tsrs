@@ -54,7 +54,7 @@ pub(crate) fn new_missing_member_fixer<'a>(
 }
 
 impl<'a> missingMemberFixer<'a> {
-    fn factory(&self) -> &'a NodeFactory {
+    fn factory(&self) -> &'a NodeFactory<'static> {
         &self.change_tracker.node_factory
     }
 

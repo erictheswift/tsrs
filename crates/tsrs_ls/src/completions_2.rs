@@ -809,7 +809,8 @@ impl LanguageService {
                 if parent_named_import_or_export.kind() == Kind::NamedImports {
                     // Check if it is `import { ^here as name } from '...'``.
                     // We have to access the scanner here to check if it is `{ ^here as name }`` or `{ ^here, as, name }`.
-                    let mut scanner = scanner::Scanner::new();
+                    let allocator = tsrs_core::Allocator::current();
+                    let mut scanner = scanner::Scanner::new_in(&allocator);
                     scanner.set_text(file.text());
                     scanner.reset_pos(position);
                     if !(scanner.scan() == Kind::AsKeyword && scanner.scan() == Kind::Identifier) {

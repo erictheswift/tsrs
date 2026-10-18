@@ -125,15 +125,15 @@ pub struct classFieldsTransformer {
     pub(crate) current_node: Cell<Option<P<Node>>>,
 
     // Visitors
-    pub(crate) modifier_visitor: OnceCell<NodeVisitor>,
-    pub(crate) discarded_value_visitor: OnceCell<NodeVisitor>,
-    pub(crate) heritage_clause_visitor: OnceCell<NodeVisitor>,
-    pub(crate) assignment_target_visitor: OnceCell<NodeVisitor>,
-    pub(crate) class_element_visitor: OnceCell<NodeVisitor>,
-    pub(crate) accessor_field_result_visitor: OnceCell<NodeVisitor>,
-    pub(crate) array_assignment_element_visitor: OnceCell<NodeVisitor>,
-    pub(crate) object_assignment_element_visitor: OnceCell<NodeVisitor>,
-    pub(crate) substitution_visitor: OnceCell<NodeVisitor>,
+    pub(crate) modifier_visitor: OnceCell<NodeVisitor<'static>>,
+    pub(crate) discarded_value_visitor: OnceCell<NodeVisitor<'static>>,
+    pub(crate) heritage_clause_visitor: OnceCell<NodeVisitor<'static>>,
+    pub(crate) assignment_target_visitor: OnceCell<NodeVisitor<'static>>,
+    pub(crate) class_element_visitor: OnceCell<NodeVisitor<'static>>,
+    pub(crate) accessor_field_result_visitor: OnceCell<NodeVisitor<'static>>,
+    pub(crate) array_assignment_element_visitor: OnceCell<NodeVisitor<'static>>,
+    pub(crate) object_assignment_element_visitor: OnceCell<NodeVisitor<'static>>,
+    pub(crate) substitution_visitor: OnceCell<NodeVisitor<'static>>,
     // Go `isAnonymousClassNeedingAssignedName` (a pre-bound method value) is a closure built at each call site.
 }
 
@@ -258,43 +258,43 @@ impl classFieldsTransformer {
         self.base.factory()
     }
 
-    pub(crate) fn visitor(&self) -> NodeVisitor {
+    pub(crate) fn visitor(&self) -> NodeVisitor<'static> {
         self.base.visitor()
     }
 
-    pub(crate) fn modifier_visitor(&self) -> NodeVisitor {
+    pub(crate) fn modifier_visitor(&self) -> NodeVisitor<'static> {
         self.modifier_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn discarded_value_visitor(&self) -> NodeVisitor {
+    pub(crate) fn discarded_value_visitor(&self) -> NodeVisitor<'static> {
         self.discarded_value_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn heritage_clause_visitor(&self) -> NodeVisitor {
+    pub(crate) fn heritage_clause_visitor(&self) -> NodeVisitor<'static> {
         self.heritage_clause_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn assignment_target_visitor(&self) -> NodeVisitor {
+    pub(crate) fn assignment_target_visitor(&self) -> NodeVisitor<'static> {
         self.assignment_target_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn class_element_visitor(&self) -> NodeVisitor {
+    pub(crate) fn class_element_visitor(&self) -> NodeVisitor<'static> {
         self.class_element_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn accessor_field_result_visitor(&self) -> NodeVisitor {
+    pub(crate) fn accessor_field_result_visitor(&self) -> NodeVisitor<'static> {
         self.accessor_field_result_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn array_assignment_element_visitor(&self) -> NodeVisitor {
+    pub(crate) fn array_assignment_element_visitor(&self) -> NodeVisitor<'static> {
         self.array_assignment_element_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn object_assignment_element_visitor(&self) -> NodeVisitor {
+    pub(crate) fn object_assignment_element_visitor(&self) -> NodeVisitor<'static> {
         self.object_assignment_element_visitor.get().unwrap().clone()
     }
 
-    pub(crate) fn substitution_visitor(&self) -> NodeVisitor {
+    pub(crate) fn substitution_visitor(&self) -> NodeVisitor<'static> {
         self.substitution_visitor.get().unwrap().clone()
     }
 

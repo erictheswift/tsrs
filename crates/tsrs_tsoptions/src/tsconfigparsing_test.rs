@@ -968,11 +968,18 @@ fn get_parsed_with_json_source_file_api(
         base_path,
         host.fs().use_case_sensitive_file_names(),
     );
-    let parsed = tsrs_parser::parse_source_file(
-        SourceFileParseOptions { file_name: config_file_name.clone(), path, ..Default::default() },
-        config.json_text,
-        ScriptKind::JSON,
-    );
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    let parsed = unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: config_file_name.clone(),
+                path,
+                ..Default::default()
+            },
+            config.json_text,
+            ScriptKind::JSON,
+        )
+    };
     let ts_config_source_file = TsConfigSourceFile::new(parsed);
     parse_json_source_file_config_file_content(
         ts_config_source_file,
@@ -2074,15 +2081,18 @@ fn parse_config_with_cache(
         .fs()
         .read_file(config_file_name)
         .unwrap_or_else(|| panic!("missing {config_file_name} in test fs"));
-    let ts_config_source_file = TsConfigSourceFile::new(tsrs_parser::parse_source_file(
-        SourceFileParseOptions {
-            file_name: config_file_name.to_string(),
-            path: cfg_path,
-            ..Default::default()
-        },
-        &json_text,
-        ScriptKind::JSON,
-    ));
+    // SAFETY: The test's region or thread arena outlives every use of the parsed AST.
+    let ts_config_source_file = TsConfigSourceFile::new(unsafe {
+        tsrs_parser::raw::parse_source_file(
+            SourceFileParseOptions {
+                file_name: config_file_name.to_string(),
+                path: cfg_path,
+                ..Default::default()
+            },
+            &json_text,
+            ScriptKind::JSON,
+        )
+    });
     parse_json_source_file_config_file_content(
         ts_config_source_file,
         host,

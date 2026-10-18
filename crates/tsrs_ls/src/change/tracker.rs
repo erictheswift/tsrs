@@ -96,7 +96,7 @@ pub struct Tracker {
     pub(crate) ctx: Context,
     pub emit_context: P<EmitContext>,
 
-    pub node_factory: NodeFactory,
+    pub node_factory: NodeFactory<'static>,
 
     // Go `collections.MultiMap` (random iteration order; the edits are sorted per file afterwards).
     pub(crate) changes: OrderedMap<P<SourceFile>, Vec<trackerEdit>>,
@@ -110,8 +110,8 @@ pub struct Tracker {
 }
 
 impl std::ops::Deref for Tracker {
-    type Target = NodeFactory;
-    fn deref(&self) -> &NodeFactory {
+    type Target = NodeFactory<'static>;
+    fn deref(&self) -> &Self::Target {
         &self.node_factory
     }
 }

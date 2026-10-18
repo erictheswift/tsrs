@@ -258,13 +258,14 @@ impl Identifier {
         Self::mode(self.word.get()) != MODE_TEXT
     }
 
-    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory) -> P<Node> {
+    pub fn clone_node(&self, node: P<Node>, f: &NodeFactory<'_>) -> P<Node> {
         clone_node(f.new_identifier(self.text()), node, &f.hooks)
     }
 }
 
-impl NodeFactory {
-    pub fn new_identifier(&self, text: &'static str) -> P<Node> {
+impl<'alloc> NodeFactory<'alloc> {
+    pub fn new_identifier(&self, text: &'alloc str) -> P<Node> {
+        let text = self.store_text(text);
         self.text_count.set(self.text_count.get() + 1);
         self.new_node(
             Kind::Identifier,
@@ -280,7 +281,7 @@ impl NodeFactory {
     /// then not change its end.
     pub fn new_source_identifier(
         &self,
-        text: &'static str,
+        text: &'alloc str,
         text_index: u32,
         loc: TextRange,
     ) -> P<Node> {

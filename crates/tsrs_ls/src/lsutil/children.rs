@@ -18,7 +18,9 @@ pub fn get_last_child(node: P<Node>, source_file: P<SourceFile>) -> Option<P<Nod
         None => node.pos().expect_source("parsed nodes have source positions"),
     };
     let mut last_token: Option<P<Node>> = None;
-    let mut scanner = scanner::get_scanner_for_source_file(source_file, token_start_pos);
+    let allocator = tsrs_core::Allocator::current();
+    let mut scanner =
+        scanner::get_scanner_for_source_file(&allocator, source_file, token_start_pos);
     let mut start_pos = token_start_pos;
     while start_pos < node.end().expect_source("parsed nodes have source positions") {
         let token_kind = scanner.token();
@@ -111,7 +113,9 @@ pub fn get_first_token(node: P<Node>, source_file: P<SourceFile>) -> Option<P<No
         Some(c) => c.pos().expect_source("parsed children have source positions"),
         None => node.end().expect_source("parsed nodes have source positions"),
     };
+    let allocator = tsrs_core::Allocator::current();
     let scanner = scanner::get_scanner_for_source_file(
+        &allocator,
         source_file,
         node.pos().expect_source("parsed nodes have source positions"),
     );
