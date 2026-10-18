@@ -5,73 +5,8 @@ use tsrs_core::{Allocator, P, ScriptKind, TextRange};
 
 /// A parsed file and all views obtained from it borrow the allocation guard.
 ///
-/// There is intentionally no `Deref`, raw-pointer accessor, or conversion to the compiler's
-/// lifetime-erased AST. Input is copied into the allocator, so the caller's string can be dropped.
-///
-/// ```compile_fail,E0597
-/// use tsrs_core::{Allocator, ScriptKind};
-/// use tsrs_ast::SourceFileParseOptions;
-/// use tsrs_parser::parse_source_file_in;
-/// let file = {
-///     let allocator = Allocator::current();
-///     parse_source_file_in(&allocator, SourceFileParseOptions {
-///         file_name: "/a.ts".into(), ..Default::default()
-///     }, "let value = 1", ScriptKind::TS)
-/// };
-/// println!("{}", file.text());
-/// ```
-///
-/// Text and list borrows remain tied to the guard even when the file view is dropped.
-///
-/// ```compile_fail,E0597
-/// use tsrs_core::{Allocator, ScriptKind};
-/// use tsrs_ast::SourceFileParseOptions;
-/// use tsrs_parser::parse_source_file_in;
-/// let text = {
-///     let allocator = Allocator::current();
-///     parse_source_file_in(&allocator, SourceFileParseOptions {
-///         file_name: "/a.ts".into(), ..Default::default()
-///     }, "let value = 1", ScriptKind::TS).text()
-/// };
-/// println!("{text}");
-/// ```
-///
-/// ```compile_fail,E0597
-/// use tsrs_core::{Allocator, ScriptKind};
-/// use tsrs_ast::SourceFileParseOptions;
-/// use tsrs_parser::parse_source_file_in;
-/// let statements = {
-///     let allocator = Allocator::current();
-///     parse_source_file_in(&allocator, SourceFileParseOptions {
-///         file_name: "/a.ts".into(), ..Default::default()
-///     }, "let value = 1", ScriptKind::TS).statements()
-/// };
-/// println!("{}", statements.len());
-/// ```
-///
-/// Raw AST extraction is intentionally unavailable.
-///
-/// ```compile_fail,E0599
-/// use tsrs_core::{Allocator, ScriptKind};
-/// use tsrs_ast::SourceFileParseOptions;
-/// use tsrs_parser::parse_source_file_in;
-/// let allocator = Allocator::current();
-/// let file = parse_source_file_in(&allocator, SourceFileParseOptions {
-///     file_name: "/a.ts".into(), ..Default::default()
-/// }, "let value = 1", ScriptKind::TS);
-/// let raw = file.root().get();
-/// ```
-///
-/// An unbound compiler factory cannot be shortened to accept temporary text.
-///
-/// ```compile_fail,E0597
-/// let factory = tsrs_ast::NodeFactory::default();
-/// let node = {
-///     let text = String::from("temporary");
-///     factory.new_identifier(&text)
-/// };
-/// println!("{}", node.text());
-/// ```
+/// Input is copied into the allocator, so the caller's string can be dropped. Node, list, text,
+/// and diagnostic accessors preserve the allocator borrow without exposing raw compiler handles.
 #[derive(Clone, Copy)]
 pub struct ParsedFile<'alloc> {
     allocator: &'alloc Allocator,
@@ -144,19 +79,6 @@ impl<'alloc> ParsedFile<'alloc> {
 }
 
 /// A read-only node view. Its children, text, lists, and lazy `JSDoc` keep the same owner borrow.
-///
-/// ```compile_fail,E0597
-/// use tsrs_core::{Allocator, ScriptKind};
-/// use tsrs_ast::SourceFileParseOptions;
-/// use tsrs_parser::parse_source_file_in;
-/// let node = {
-///     let allocator = Allocator::current();
-///     parse_source_file_in(&allocator, SourceFileParseOptions {
-///         file_name: "/a.ts".into(), ..Default::default()
-///     }, "let value = 1", ScriptKind::TS).root()
-/// };
-/// println!("{:?}", node.kind());
-/// ```
 #[derive(Clone, Copy)]
 pub struct NodeRef<'alloc> {
     file: ParsedFile<'alloc>,

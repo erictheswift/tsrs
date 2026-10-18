@@ -96,6 +96,7 @@ pub struct NodeFactoryHooks {
 #[derive(Clone)]
 pub struct NodeFactory<'alloc> {
     allocator: Option<&'alloc tsrs_core::Allocator>,
+    // Invariant: an unbound static factory must not be shortened to accept temporary text or slices.
     _lifetime: std::marker::PhantomData<Cell<&'alloc ()>>,
     pub(crate) hooks: NodeFactoryHooks,
     pub(crate) node_count: Rc<Cell<usize>>,
@@ -112,6 +113,12 @@ pub struct NodeFactory<'alloc> {
 impl Default for NodeFactory<'static> {
     fn default() -> Self {
         new_node_factory(NodeFactoryHooks::default())
+    }
+}
+
+impl NodeFactory<'static> {
+    pub fn new(hooks: NodeFactoryHooks) -> Self {
+        new_node_factory(hooks)
     }
 }
 
@@ -369,15 +376,6 @@ impl<'alloc> NodeFactory<'alloc> {
         crate::register_source_text(self.store_text(text))
     }
 
-    #[expect(
-        clippy::unused_self,
-        reason = "the receiver fixes the invariant allocator lifetime and raw AST ownership contract"
-    )]
-    pub(crate) fn store_texts(&self, items: &'alloc [&'alloc str]) -> &'static [&'static str] {
-        // SAFETY: both the slice and its elements obey this factory's construction contract.
-        unsafe { std::slice::from_raw_parts(items.as_ptr().cast::<&'static str>(), items.len()) }
-    }
-
     pub fn set_jsdoc_cache(
         &self,
         file: P<SourceFile>,
@@ -409,8 +407,13 @@ impl<'alloc> NodeFactory<'alloc> {
         unsafe { &*std::ptr::from_ref(items) }
     }
 
-    pub fn new(hooks: NodeFactoryHooks) -> NodeFactory<'static> {
-        new_node_factory(hooks)
+    #[expect(
+        clippy::unused_self,
+        reason = "the receiver fixes the invariant allocator lifetime and raw AST ownership contract"
+    )]
+    pub(crate) fn store_texts(&self, items: &'alloc [&'alloc str]) -> &'static [&'static str] {
+        // SAFETY: both the slice and its elements obey this factory's construction contract.
+        unsafe { std::slice::from_raw_parts(items.as_ptr().cast::<&'static str>(), items.len()) }
     }
 
     #[inline]

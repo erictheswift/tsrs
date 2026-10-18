@@ -484,8 +484,13 @@ function genNewFactory(node: NodeType) {
     const params = factoryParams(node);
     const kindMember = params.find(p => p.m.isKindParam());
     const flagsMembers = params.filter(p => isNodeFlagsMember(p.m));
+    const signature = params.map(({ name, ty }) => {
+        // Any keeps its static bound; borrowed text and slices use the factory lifetime.
+        const paramType = ty.includes("dyn Any") ? ty : ty.replaceAll("'static", "'alloc");
+        return `, ${name}: ${paramType}`;
+    }).join("");
     const emit = (fnName: string, kindName: string) => {
-        w(`    pub fn ${fnName}(&self${params.map(p => `, ${p.name}: ${(p.ty.includes("dyn Any") ? p.ty : p.ty.replaceAll("'static", "'alloc"))}`).join("")}) -> P<Node> {`);
+        w(`    pub fn ${fnName}(&self${signature}) -> P<Node> {`);
         for (const p of params) {
             if (p.ty === "&'static str") w(`        let ${p.name} = self.store_text(${p.name});`);
             else if (p.ty === "&'static [&'static str]") w(`        let ${p.name} = self.store_texts(${p.name});`);

@@ -211,7 +211,12 @@ pub(crate) fn is_missing_node_list(list: Option<P<NodeList>>) -> bool {
     }
 }
 
-pub fn parse_source_file(
+/// Copies source text and parses it into the current compiler allocation region.
+///
+/// # Safety
+/// Retain all backing regions for every use of the file, its nodes, and derived references.
+/// Releasing or rewinding a region while any such value is reachable is invalid.
+pub unsafe fn parse_source_file(
     opts: SourceFileParseOptions,
     source_text: &str,
     script_kind: ScriptKind,
@@ -231,11 +236,13 @@ pub fn parse_source_file(
 /// Inside a freeable region (native API transpile and builds) the text is copied into the region and
 /// unregistered when the region is freed, so the file's memory is reclaimed with it.
 ///
-/// Lifetime footgun: the returned file now lives exactly as long as the region that was current at the call.
-/// A caller that parses inside a region must not keep the file (or anything derived from it) past that
-/// region. Unregistering frees the text but not its source-text slot: slots are never reused
-/// (`register_source_text` has a fixed capacity, after which lookups take the slower fallback path).
-pub fn parse_source_file_owned(
+/// Source-text slots are cleared on release but never reused: after the registry reaches capacity,
+/// lookups use the slower fallback path.
+///
+/// # Safety
+/// Retain the file's backing regions for every use of the returned AST and derived references,
+/// including lazy `JSDoc` and declaration members.
+pub unsafe fn parse_source_file_owned(
     opts: SourceFileParseOptions,
     source_text: String,
     script_kind: ScriptKind,
@@ -243,7 +250,8 @@ pub fn parse_source_file_owned(
     match tsrs_core::arena::current_region() {
         None => parse_source_file_static(opts, source_text.leak(), script_kind),
         Some(region) => {
-            let file = parse_source_file(opts, &source_text, script_kind);
+            // SAFETY: the caller retains the returned AST's backing regions.
+            let file = unsafe { parse_source_file(opts, &source_text, script_kind) };
             let text_index = file.text_index.get();
             region.on_free(Box::new(move || ast::unregister_source_text(text_index)));
             file
@@ -256,7 +264,11 @@ pub fn parse_source_file_owned(
 /// `parse_source_file_owned` that keeps the text (leaked, as outside a region) even inside a region: for the
 /// CLI's per-file regions (`tsrs_compiler` fileregions.rs), which may free a checked file's tree but keep its
 /// text, its `SourceFile` and its diagnostics for the report.
-pub fn parse_source_file_keep_text(
+///
+/// # Safety
+/// Tree handles and references must not be used after the tree region is released. Only the
+/// separately retained source-file metadata and text may survive that release.
+pub unsafe fn parse_source_file_keep_text(
     opts: SourceFileParseOptions,
     source_text: String,
     script_kind: ScriptKind,
@@ -269,7 +281,11 @@ pub fn parse_source_file_keep_text(
 /// Parses text that lives for the whole process (the bundled libs, `include_str!` in the binary): outside a
 /// region the file reads the text in place, with no copy and nothing to leak; inside a region it behaves like
 /// `parse_source_file_owned` (the region holds the text the file reads, and forgets it when it is freed).
-pub fn parse_source_file_embedded(
+///
+/// # Safety
+/// Static source text does not make the AST static. Retain its backing regions for every use of
+/// the returned handles and derived references.
+pub unsafe fn parse_source_file_embedded(
     opts: SourceFileParseOptions,
     source_text: &'static str,
     script_kind: ScriptKind,
@@ -277,7 +293,8 @@ pub fn parse_source_file_embedded(
     match tsrs_core::arena::current_region() {
         None => parse_source_file_static(opts, source_text, script_kind),
         Some(region) => {
-            let file = parse_source_file(opts, source_text, script_kind);
+            // SAFETY: the caller retains the returned AST's backing regions.
+            let file = unsafe { parse_source_file(opts, source_text, script_kind) };
             let text_index = file.text_index.get();
             region.on_free(Box::new(move || ast::unregister_source_text(text_index)));
             file
@@ -497,7 +514,11 @@ impl Parser<'_> {
     }
 }
 
-pub fn parse_isolated_entity_name(text: &str) -> Option<P<Node>> {
+/// Parses an entity name in the current compiler allocation region.
+///
+/// # Safety
+/// Retain the backing region for every use of the returned nodes and their text.
+pub unsafe fn parse_isolated_entity_name(text: &str) -> Option<P<Node>> {
     let allocator = Allocator::current();
     let mut p = new_parser(&allocator);
     p.initialize_state(SourceFileParseOptions::default(), text, ScriptKind::JS);

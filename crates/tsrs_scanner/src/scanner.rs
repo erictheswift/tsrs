@@ -571,7 +571,7 @@ pub(crate) fn rune_string(r: Rune) -> String {
 }
 
 impl<'alloc> Scanner<'alloc> {
-    fn default_scanner(allocator: &'alloc Allocator) -> Self {
+    pub fn new_in(allocator: &'alloc Allocator) -> Self {
         Self {
             allocator,
             text: "",
@@ -588,20 +588,8 @@ impl<'alloc> Scanner<'alloc> {
         }
     }
 
-    pub fn new_in(allocator: &'alloc Allocator) -> Self {
-        Self::default_scanner(allocator)
-    }
-
-    fn alloc_str(&self, text: &str) -> &'alloc str {
-        self.allocator.alloc_str(text)
-    }
-
     fn string_builder(&self, capacity: usize) -> ArenaStringBuilder<'alloc> {
         ArenaStringBuilder::with_capacity_in(self.allocator, capacity)
-    }
-
-    fn pin(&self) {
-        self.allocator.pin();
     }
 
     pub fn reset(&mut self) {
@@ -611,7 +599,7 @@ impl<'alloc> Scanner<'alloc> {
         number_cache.clear();
         hex_number_cache.clear();
         hex_digit_cache.clear();
-        *self = Self::default_scanner(self.allocator);
+        *self = Self::new_in(self.allocator);
         self.number_cache = number_cache;
         self.hex_number_cache = hex_number_cache;
         self.hex_digit_cache = hex_digit_cache;
@@ -630,7 +618,7 @@ impl<'alloc> Scanner<'alloc> {
             s.is_empty() || (p >= t && p + s.len() <= t + self.text.len())
         };
         if !in_text(key) || !in_text(value) {
-            self.pin();
+            self.allocator.pin();
         }
     }
 
@@ -946,7 +934,7 @@ impl<'alloc> Scanner<'alloc> {
             let start = p - base;
             return &self.text[start..start + s.len()];
         }
-        self.alloc_str(s)
+        self.allocator.alloc_str(s)
     }
 
     pub fn scan(&mut self) -> Kind {
@@ -1967,7 +1955,7 @@ impl<'alloc> Scanner<'alloc> {
                     let save_token_pos = self.state.token_start;
                     let save_token_flags = self.state.token_flags;
                     self.end = end_of_reg_exp_body;
-                    let scanner = std::mem::replace(self, Self::default_scanner(self.allocator));
+                    let scanner = std::mem::replace(self, Self::new_in(self.allocator));
                     let mut parser = RegExpParser::new(
                         scanner,
                         end_of_reg_exp_body,
@@ -3023,7 +3011,7 @@ impl<'alloc> Scanner<'alloc> {
         if s == v {
             return v;
         }
-        self.alloc_str(&s)
+        self.allocator.alloc_str(&s)
     }
 
     fn scan_number_fragment(&mut self) -> Cow<'alloc, str> {
@@ -3234,8 +3222,9 @@ impl<'alloc> Scanner<'alloc> {
             let n = self.slice(self.state.pos, self.state.pos + 1);
             self.state.token_value = self.concat_value(self.state.token_value, n);
             if self.state.token_flags.intersects(TokenFlags::BinaryOrOctalSpecifier) {
-                self.state.token_value =
-                    self.alloc_str(&(jsnum::parse_pseudo_big_int(self.state.token_value) + "n"));
+                self.state.token_value = self
+                    .allocator
+                    .alloc_str(&(jsnum::parse_pseudo_big_int(self.state.token_value) + "n"));
             }
             self.state.pos += 1;
             return Kind::BigIntLiteral;
