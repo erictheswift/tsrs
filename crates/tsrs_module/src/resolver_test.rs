@@ -36,6 +36,25 @@ fn bundler_options() -> P<CompilerOptions> {
     })
 }
 
+#[test]
+fn borrowed_mode_aware_cache_key() {
+    use std::hash::BuildHasher;
+
+    let mut cache = ModeAwareCache::default();
+    for name in ["", "pkg", "@scope/pkg/subpath", "./模块"] {
+        for mode in [ModuleKind::None, ModuleKind::CommonJS, ModuleKind::ESNext] {
+            let key = ModeAwareCacheKey { name, mode };
+            let borrowed_name = name.to_string();
+            let borrowed = (borrowed_name.as_str(), mode);
+            assert_eq!(rustc_hash::FxBuildHasher.hash_one(key), rustc_hash::FxBuildHasher.hash_one(borrowed));
+            cache.insert(key, (name, mode));
+            assert_eq!(cache.get(&borrowed), Some(&(name, mode)));
+        }
+    }
+    assert_eq!(cache.get(&("missing", ModuleKind::ESNext)), None);
+    assert_eq!(cache.get(&("pkg", ModuleKind::Preserve)), None);
+}
+
 // Regression test for https://github.com/microsoft/TypeScript/tsc/issues/3526.
 //
 // Resolving a node_modules import with a trailing slash (e.g. `pkg/`) must

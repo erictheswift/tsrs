@@ -9,7 +9,7 @@ use tsrs_core::tspath::{self, Path};
 use tsrs_core::{alloc_str, CompilerOptions, ModuleKind, ResolutionMode, Tristate, P};
 use tsrs_module::packagejson::InfoCacheEntry;
 use tsrs_module::symlinks::KnownSymlinks;
-use tsrs_module::{DefaultResolver, ModeAwareCacheKey, ResolvedModule};
+use tsrs_module::{DefaultResolver, ModeAwareCache, ModeAwareCacheKey, ResolvedModule};
 use tsrs_tsoptions::outputpaths::OutputPathsHost;
 
 use super::extract::ToPathFunc;
@@ -38,7 +38,7 @@ pub(crate) struct aliasResolver {
 
     options: P<CompilerOptions>,
     root_files_static: &'static [P<SourceFile>],
-    empty_resolved_modules: FxHashMap<Path, FxHashMap<ModeAwareCacheKey, P<ResolvedModule>>>,
+    empty_resolved_modules: FxHashMap<Path, ModeAwareCache<P<ResolvedModule>>>,
     empty_packages_map: FxHashMap<String, bool>,
 }
 
@@ -145,7 +145,7 @@ impl checker::Program for aliasResolver {
     }
 
     // aliasresolver.go:136
-    fn get_resolved_modules(&self) -> &FxHashMap<Path, FxHashMap<ModeAwareCacheKey, P<ResolvedModule>>> {
+    fn get_resolved_modules(&self) -> &FxHashMap<Path, ModeAwareCache<P<ResolvedModule>>> {
         // only used when producing diagnostics, which hopefully the checker won't do
         &self.empty_resolved_modules
     }

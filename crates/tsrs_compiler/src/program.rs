@@ -1035,8 +1035,7 @@ impl Program {
 
     pub(crate) fn get_resolved_module_by_path(&self, path: &Path, module_reference: &str, mode: ResolutionMode) -> Option<P<ResolvedModule>> {
         let resolutions = self.resolved_modules.get(path)?;
-        // Keys hold `&'static str`; a borrowed name cannot build a lookup key, and per-file caches are small.
-        resolutions.iter().find(|(k, _)| k.name == module_reference && k.mode == mode).map(|(_, v)| *v)
+        resolutions.get(&(module_reference, mode)).copied()
     }
 
     pub fn get_resolved_module_from_module_specifier(&self, file: P<SourceFile>, module_specifier: P<Node>) -> Option<P<ResolvedModule>> {

@@ -1,6 +1,5 @@
 use std::ops::Deref;
 
-use rustc_hash::FxHashMap;
 use tsrs_core::collections::{OrderedMap, SyncMap};
 use tsrs_core::tspath::Path;
 use tsrs_core::{CompilerOptions, ResolutionMode, P};
@@ -9,7 +8,7 @@ use crate::packagejson::{self, InfoCache, InfoCacheEntry};
 use crate::resolver::{try_parse_patterns, DefaultResolver, ParsedPatterns, ResolverOptions};
 use crate::types::{ModeAwareCacheKey, ResolutionHost, ResolvedModule, ResolvedProjectReference, ResolvedTypeReferenceDirective};
 
-pub type ModeAwareCache<T> = FxHashMap<ModeAwareCacheKey, T>;
+pub type ModeAwareCache<T> = hashbrown::HashMap<ModeAwareCacheKey, T, rustc_hash::FxBuildHasher>;
 
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 pub(crate) struct ModuleResolutionCacheKey {

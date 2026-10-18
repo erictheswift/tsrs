@@ -44,6 +44,14 @@ pub struct ModeAwareCacheKey {
     pub mode: ResolutionMode,
 }
 
+// The tuple hashes the same fields, in the same order, as the stored key. Borrowing the name lets callers
+// probe the cache without allocating an arena string or scanning every entry.
+impl hashbrown::Equivalent<ModeAwareCacheKey> for (&str, ResolutionMode) {
+    fn equivalent(&self, key: &ModeAwareCacheKey) -> bool {
+        self.0 == key.name && self.1 == key.mode
+    }
+}
+
 pub trait ResolvedProjectReference: Send + Sync {
     fn config_name(&self) -> &str;
     fn compiler_options(&self) -> Option<P<CompilerOptions>>;

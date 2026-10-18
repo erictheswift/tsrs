@@ -33,6 +33,13 @@ is type-checked, CI runs on pull requests, and the workspace is at 0.11.0. The i
 
 ## Pending review
 
+- **Borrowed module-cache lookup** ([notes/perf-module-cache-lookup.md](perf-module-cache-lookup.md), 2026-10-18):
+  Time Profiler attributed 1.84% of mui-docs self CPU samples to a linear scan of the existing resolution map.
+  A borrowed hashbrown lookup removes the scan: single-threaded macOS instructions -2.46% in five paired runs,
+  -2.57% in a separate seven-pair repeat; peak RSS essentially unchanged. All 17 public projects preserve output
+  at one and default checker counts; conformance in both histories, regressions and lint checks pass. The draft
+  requires the deterministic Linux instruction gate before landing.
+
 - **Resolver path scratch buffers** (`notes/perf-resolver-allocations.md`): reuse thread-local strings for
   extension and module-suffix probes. Allocation calls fall 3.7% / 12.7% in the corresponding probes;
   historical whole-project instructions fall 0.09% on xstate / 0.04% on VS Code. Retained for owner review;
