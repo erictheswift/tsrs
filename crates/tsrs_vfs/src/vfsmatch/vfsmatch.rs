@@ -1,3 +1,5 @@
+use std::sync::atomic::{AtomicBool, Ordering};
+
 use rustc_hash::{FxHashMap, FxHashSet};
 use tsrs_core::{stringutil, tspath};
 
@@ -764,13 +766,14 @@ impl GlobVisitor {
         extensions: &[&str],
         base_paths: &[String],
         depth: usize,
-    ) {
+    ) -> bool {
         struct Walk<'a> {
             host: &'a dyn FS,
             extensions: &'a [&'a str],
             file_matcher: &'a GlobMatcher,
             directory_matcher: &'a GlobMatcher,
             listings: std::sync::Mutex<FxHashMap<String, PrefetchedListing>>,
+            can_skip_root_realpath: AtomicBool,
         }
         // `live_files` / `live_directories`: the parent directory's live excludes (`GlobMatcher::live_excludes`).
         fn walk<'s>(
@@ -782,6 +785,10 @@ impl GlobVisitor {
             live_directories: Option<&[u32]>,
         ) {
             let entries = w.host.get_accessible_entries(&path);
+            if entries.symlinks.is_none() {
+                // Only false is stored, and the Rayon scope joins every writer before the load.
+                w.can_skip_root_realpath.store(false, Ordering::Relaxed);
+            }
             let prefix = ensure_trailing_slash(&path);
             let live_files = w.file_matcher.live_excludes(live_files, &prefix);
             let live_directories = w.directory_matcher.live_excludes(live_directories, &prefix);
@@ -815,7 +822,13 @@ impl GlobVisitor {
                     .collect();
                 if let Some(symlinks) = &entries.symlinks {
                     for (dir, &matched) in entries.directories.iter().zip(&directories) {
-                        if matched && !symlinks.contains(dir) {
+                        if !matched {
+                            continue;
+                        }
+                        if symlinks.contains(dir) {
+                            // Only false is stored, and the Rayon scope joins every writer before the load.
+                            w.can_skip_root_realpath.store(false, Ordering::Relaxed);
+                        } else {
                             let child = format!("{prefix}{dir}");
                             let (live_files, live_directories) =
                                 (live_files.clone(), live_directories.clone());
@@ -844,6 +857,7 @@ impl GlobVisitor {
             file_matcher: &self.file_matcher,
             directory_matcher: &self.directory_matcher,
             listings: std::sync::Mutex::new(FxHashMap::default()),
+            can_skip_root_realpath: AtomicBool::new(true),
         };
         let mut seen: FxHashSet<&str> = FxHashSet::default();
         rayon::scope(|s| {
@@ -855,7 +869,10 @@ impl GlobVisitor {
                 }
             }
         });
+        // The scope joined every writer; this only combines their monotonic false stores.
+        let can_skip_root_realpath = w.can_skip_root_realpath.load(Ordering::Relaxed);
         self.listings = w.listings.into_inner().unwrap();
+        can_skip_root_realpath
     }
 }
 
@@ -997,9 +1014,15 @@ fn match_files(
         .map(|base_path| tspath::combine_paths(&current_directory, &[base_path]))
         .collect();
     let extension_strs: Vec<&str> = extensions.iter().map(AsRef::as_ref).collect();
-    v.prefetch_listings(host, &extension_strs, &absolute_base_paths, depth);
+    let prefetched_without_symlink =
+        v.prefetch_listings(host, &extension_strs, &absolute_base_paths, depth);
+    // With one base path, complete prefetch metadata proving that every child
+    // directory the visit will enter is not a symlink rules out a cycle. Root
+    // canonicalization is only needed to deduplicate when there are many bases.
+    let can_skip_root_realpath = absolute_base_paths.len() == 1 && prefetched_without_symlink;
     for (base_path, abs) in base_paths.iter().zip(&absolute_base_paths) {
-        v.visit(host, extensions, base_path, abs, depth, "");
+        let resolved_real_path = if can_skip_root_realpath { abs } else { "" };
+        v.visit(host, extensions, base_path, abs, depth, resolved_real_path);
     }
 
     // Fast path: a single include bucket (or no includes) doesn't need flattening.

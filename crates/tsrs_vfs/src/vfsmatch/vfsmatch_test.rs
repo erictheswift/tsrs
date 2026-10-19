@@ -1,11 +1,82 @@
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::SystemTime;
+
 use super::*;
 use crate::iovfs::IoVFS;
 use crate::vfstest::{MapFS, MapFile, from_map, symlink};
+use crate::{Entries, FS, FileInfo};
 
 // Test cases modeled after TypeScript's matchFiles tests in
 // tsc/testdata/fixtures/testRunner/unittests/config/matchFiles.ts
 
 type Host = IoVFS<MapFS>;
+
+struct RealpathCountingFs {
+    fs: Host,
+    realpath_calls: AtomicUsize,
+    hide_symlink_metadata: bool,
+}
+
+impl RealpathCountingFs {
+    fn new(fs: Host) -> Self {
+        Self { fs, realpath_calls: AtomicUsize::new(0), hide_symlink_metadata: false }
+    }
+
+    fn realpath_calls(&self) -> usize {
+        self.realpath_calls.load(Ordering::Relaxed)
+    }
+}
+
+impl FS for RealpathCountingFs {
+    fn use_case_sensitive_file_names(&self) -> bool {
+        self.fs.use_case_sensitive_file_names()
+    }
+
+    fn file_exists(&self, path: &str) -> bool {
+        self.fs.file_exists(path)
+    }
+
+    fn read_file(&self, path: &str) -> Option<String> {
+        self.fs.read_file(path)
+    }
+
+    fn write_file(&self, path: &str, data: &str) -> Result<(), String> {
+        self.fs.write_file(path, data)
+    }
+
+    fn append_file(&self, path: &str, data: &str) -> Result<(), String> {
+        self.fs.append_file(path, data)
+    }
+
+    fn remove(&self, path: &str) -> Result<(), String> {
+        self.fs.remove(path)
+    }
+
+    fn chtimes(&self, path: &str, a_time: SystemTime, m_time: SystemTime) -> Result<(), String> {
+        self.fs.chtimes(path, a_time, m_time)
+    }
+
+    fn directory_exists(&self, path: &str) -> bool {
+        self.fs.directory_exists(path)
+    }
+
+    fn get_accessible_entries(&self, path: &str) -> Entries {
+        let mut entries = self.fs.get_accessible_entries(path);
+        if self.hide_symlink_metadata {
+            entries.symlinks = None;
+        }
+        entries
+    }
+
+    fn stat(&self, path: &str) -> Option<FileInfo> {
+        self.fs.stat(path)
+    }
+
+    fn realpath(&self, path: &str) -> String {
+        self.realpath_calls.fetch_add(1, Ordering::Relaxed);
+        self.fs.realpath(path)
+    }
+}
 
 // caseInsensitiveHost simulates a Windows-like file system
 fn case_insensitive_host() -> Host {
@@ -894,6 +965,28 @@ fn test_read_directory_empty_includes() {
     run_read_directory_cases(&cases);
 }
 
+#[test]
+fn test_read_directory_skips_root_realpath_for_prefetched_tree_without_symlinks() {
+    let host = RealpathCountingFs::new(from_map(
+        [("/root/file.ts", ""), ("/root/a/file.ts", ""), ("/root/a/b/file.ts", "")],
+        true,
+    ));
+
+    let got = match_files(
+        "/root",
+        &[".ts"],
+        &[] as &[&str],
+        &["**/*"],
+        true,
+        "/",
+        UNLIMITED_DEPTH,
+        &host,
+    );
+
+    assert_eq!(got, ["/root/file.ts", "/root/a/file.ts", "/root/a/b/file.ts"]);
+    assert_eq!(host.realpath_calls(), 0);
+}
+
 // TestReadDirectorySymlinkCycle tests that cyclic symlinks don't cause infinite loops.
 // The cycle is detected by the vfs package using Realpath for cycle detection.
 // This means directories with cyclic symlinks will be skipped during traversal.
@@ -924,6 +1017,52 @@ fn test_read_directory_symlink_cycle() {
     }];
 
     run_read_directory_cases(&cases);
+}
+
+#[test]
+fn test_read_directory_realpaths_prefetched_symlink_cycle() {
+    let host = RealpathCountingFs::new(from_map(
+        vec![
+            ("/root/file.ts", MapFile::from("")),
+            ("/root/a/file.ts", MapFile::from("")),
+            ("/root/a/b", symlink("/root/a")),
+        ],
+        true,
+    ));
+
+    let got = match_files(
+        "/root",
+        &[".ts"],
+        &[] as &[&str],
+        &["**/*"],
+        true,
+        "/",
+        UNLIMITED_DEPTH,
+        &host,
+    );
+
+    assert_eq!(got, ["/root/file.ts", "/root/a/file.ts"]);
+    assert!(host.realpath_calls() > 0);
+}
+
+#[test]
+fn test_read_directory_realpaths_without_symlink_metadata() {
+    let mut host = RealpathCountingFs::new(from_map([("/root/a/file.ts", "")], true));
+    host.hide_symlink_metadata = true;
+
+    let got = match_files(
+        "/root",
+        &[".ts"],
+        &[] as &[&str],
+        &["**/*"],
+        true,
+        "/",
+        UNLIMITED_DEPTH,
+        &host,
+    );
+
+    assert_eq!(got, ["/root/a/file.ts"]);
+    assert!(host.realpath_calls() > 0);
 }
 
 // TestReadDirectoryMatchesTypeScriptBaselines contains tests that verify the Go implementation
