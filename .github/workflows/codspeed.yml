@@ -90,7 +90,9 @@ jobs:
           tools: cargo-codspeed@5.0.3
 
       - name: Build benchmarks
-        run: cargo codspeed build -p tsrs_bench --bench compiler_default --features codspeed --profile release --locked -m walltime
+        # mimalloc v3 enables ARMv8.1 LSE atomics by default on arm64. The Graviton Macro Runner cannot execute
+        # them (SIGILL in _mi_atomic_once_enter), so use portable allocator code for this artifact only.
+        run: cargo codspeed build -p tsrs_bench --bench compiler_default --features codspeed,mimalloc-safe/no_opt_arch --profile release --locked -m walltime
 
       - name: Package benchmarks
         run: tar -czf codspeed-benchmarks.tar.gz -C target codspeed
@@ -233,17 +235,6 @@ jobs:
         run: |
           mkdir -p target
           tar -xzf codspeed-benchmarks.tar.gz -C target
-
-      - name: Diagnose walltime benchmark startup
-        if: matrix.project == 'Compiler-Unions'
-        run: |
-          set +e
-          timeout 120s target/codspeed/walltime/tsrs_bench/compiler_default
-          status=$?
-          echo "Direct benchmark exit status: $status"
-          if [ "$status" -eq 132 ] && command -v gdb >/dev/null; then
-            gdb --batch -ex run -ex 'x/8i $pc' -ex 'bt 8' --args target/codspeed/walltime/tsrs_bench/compiler_default
-          fi
 
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@821a40cd6c80e3cfe387caf55668287addd808da # v5.5.0

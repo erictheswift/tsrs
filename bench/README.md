@@ -339,6 +339,9 @@ do not attribute the arena's direct `mmap` calls as heap allocations. Memory pro
 large projects can cost more to profile. The walltime job uses the arm64 Graviton Macro Runner for stable elapsed-time
 measurements; it builds on GitHub's Ubuntu 22.04 arm64 runner first, so compiler time is not charged to the Macro
 Runner. Changing the Macro Runner's machine family starts a new walltime baseline.
+The walltime artifact enables mimalloc's `no_opt_arch` feature because the Macro Runner lacks the ARMv8.1 LSE
+atomics that mimalloc v3 otherwise emits on arm64. The x64 instruments and release binaries keep their normal
+allocator build.
 
 The workflow builds each instrument separately and runs one project per job in the same workflow so CodSpeed can
 aggregate the shards. The memory and walltime builds use `cargo-codspeed` mode-specific instrumentation. GitHub OIDC
@@ -353,7 +356,7 @@ cargo codspeed build -p tsrs_bench --bench compiler --features codspeed --profil
 MIMALLOC_ARENA_PURGE_MULT=-1 RAYON_NUM_THREADS=1 TSRS_BENCH_PROJECT=Compiler-Unions cargo codspeed run -p tsrs_bench --bench compiler -m simulation
 cargo codspeed build -p tsrs_bench --bench compiler_default --features codspeed --profile release --locked -m memory
 TSRS_BENCH_PROJECT=Compiler-Unions cargo codspeed run -p tsrs_bench --bench compiler_default -m memory
-cargo codspeed build -p tsrs_bench --bench compiler_default --features codspeed --profile release --locked -m walltime
+cargo codspeed build -p tsrs_bench --bench compiler_default --features codspeed,mimalloc-safe/no_opt_arch --profile release --locked -m walltime
 TSRS_BENCH_PROJECT=Compiler-Unions cargo codspeed run -p tsrs_bench --bench compiler_default -m walltime
 ```
 
