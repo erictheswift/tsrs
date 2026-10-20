@@ -192,9 +192,15 @@ jobs:
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 
-      - uses: oxc-project/setup-node@f46a72f95efdc55273fcd042d61c84e723b2892c # v1.4.1
+      # The Macro Runner's preinstalled Node 18 cannot install the repository's pnpm 12 pin.
+      # Set up Node before installing pnpm; setup-node's composite action installs pnpm first.
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          registry-url: ""
+          node-version-file: .node-version
+          package-manager-cache: false
+
+      - name: Install pnpm
+        run: npm install --global pnpm@12.10.1
 
       - name: Cache key for the bench project
         id: keys
