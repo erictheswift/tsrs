@@ -269,8 +269,17 @@ CodSpeed runs on pushes to main, pull requests, and manual dispatch. `update-ben
 on changes to `bench/projects.json` or the workflow itself, and on manual dispatch. The comparison and probe workflows
 are disabled, including manual dispatch. Their definitions are preserved under `.github/workflows/`
 as `bench-compare.yml.bak`, `pr-verify.yml.bak` and `perf-probe.yml.bak`. The former `bench.yml` is available in Git history.
+On pull requests and merge groups, the active `ci.yml` compares ordered diagnostics and exit codes against the base
+build for the determinism job's four projects and regression cases. It does not run the saved workflow's performance
+measurements or its full project matrix.
 The completed build-layout experiment's workflow and build script were removed; `tools/perf/layout-measure.py`
 still compares supplied binaries. Local measurement tools remain available; recorded runs are archived in Git history.
+
+`wallclock.yml` compares the main and PR release binaries on pull requests that may affect performance. If the
+binaries differ, it runs one job per `bench/projects.json` project on separate 8-vCPU runners. Each job measures
+alternating main/PR timing pairs, peak RSS and instruction counts, then uploads its project result. The report job
+downloads all available results, joins them into the `wallclock-joined` artifact in project order and posts one PR
+table. Missing or invalid project results appear as failed rows, so a failed shard does not hide the others.
 
 For those saved workflows, restore the original `.yml` filename before using their `gh workflow run` commands.
 They produce no automated measurements, regression comments or result/chart updates while disabled.
@@ -294,7 +303,10 @@ that could bypass the filesystem interface.
 Criterion2 3.0.4 runs five unmeasured warmups and one measured compilation. CI builds the benchmark suite once
 and shares the compiled artifact with a four-job matrix. Each shard runs one project in parallel, setting up
 and caching only that project's inputs. Each process uses `RAYON_NUM_THREADS=1`
-and the CLI's large stack; process exit reclaims its seven compilations' arenas.
+and the CLI's large stack. CodSpeed also sets `MIMALLOC_ARENA_PURGE_MULT=-1` to disable arena purge scheduling:
+the short-lived benchmark process reclaims its seven compilations' arenas at exit, while avoiding allocator clock
+reads and purge system calls in the simulated profile. This CodSpeed-only setting deliberately differs from the
+production allocator configuration.
 `TSRS_BENCH_PROJECT` is required because Criterion2's CodSpeed adapter does not implement benchmark filters.
 The target requires the `codspeed` feature: ordinary Criterion calibration would accumulate arena allocations.
 Benchmarks are named `compiler::<project>` and start a new baseline, distinct from the former disk-backed CLI measurements.
@@ -305,7 +317,7 @@ From the repository root:
 cargo install cargo-codspeed --version 5.0.3 --locked
 python3 bench/run.py --setup-only --projects Compiler-Unions,xstate-main,webpack,drizzle-orm
 cargo codspeed build -p tsrs_bench --bench compiler --features codspeed --profile release --locked -m simulation
-RAYON_NUM_THREADS=1 TSRS_BENCH_PROJECT=Compiler-Unions cargo codspeed run -p tsrs_bench --bench compiler -m simulation
+MIMALLOC_ARENA_PURGE_MULT=-1 RAYON_NUM_THREADS=1 TSRS_BENCH_PROJECT=Compiler-Unions cargo codspeed run -p tsrs_bench --bench compiler -m simulation
 ```
 
 Outside CodSpeed's Linux instrumentation, the last command exercises capture, warmups, replay, and output
