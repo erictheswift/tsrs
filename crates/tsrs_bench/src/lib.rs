@@ -1,6 +1,5 @@
 mod snapshot;
 
-use std::path::Path;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -26,12 +25,14 @@ pub fn project_config(name: &str) -> &'static str {
 }
 
 fn workspace_directory() -> String {
-    // cargo-codspeed runs from the package directory, while project setup runs from the workspace.
-    let cwd = Path::new(env!("CARGO_MANIFEST_DIR"))
-        .join("../..")
-        .canonicalize()
+    // cargo-codspeed runs from the package directory. The walltime binary is built on a different
+    // runner, so CARGO_MANIFEST_DIR points to a path that does not exist when it executes.
+    let cwd = std::env::current_dir().expect("current directory");
+    let workspace = cwd
+        .ancestors()
+        .find(|path| path.join("bench/projects.json").is_file())
         .expect("workspace directory");
-    tspath::normalize_slashes(&cwd.to_string_lossy())
+    tspath::normalize_slashes(&workspace.to_string_lossy())
 }
 
 #[derive(Debug, PartialEq, Eq)]
