@@ -77,6 +77,11 @@ pub struct ProgramOptions {
     /// `free_program` gives back too (checkerpool.rs `SlotChecker`): the caller copies those it keeps (watch
     /// mode's snapshot, `tsrs_incremental` `Program::copy_diagnostics`).
     pub checker_diagnostic_regions: bool,
+    /// tsrs-only, with `checker_regions`: what a checker would escape to the thread's own arena (lazily filled data of
+    /// shared objects, program caches, diagnostics) stays in its region instead (checkerpool.rs `SlotChecker::enter`).
+    /// For a program freed whole, with every file it read, once its last use ends (`free_unshared_program` after a
+    /// one-shot lint): the thread arenas, which are never freed, would otherwise keep that data of every program.
+    pub checker_regions_keep_escapes: bool,
     /// tsrs-only: what the file loader allocates goes to these regions (programregions.rs), which the caller frees
     /// once nothing uses the program's processed-file and resolution data (watch mode, `tsc -b`).
     pub regions: Option<std::sync::Arc<crate::programregions::ProgramRegions>>,
@@ -104,6 +109,7 @@ impl ProgramOptions {
             canonical_diagnostics: true,
             checker_regions: false,
             checker_diagnostic_regions: false,
+            checker_regions_keep_escapes: false,
             regions: None,
             reuse_synthetic_imports: false,
         }
@@ -131,6 +137,7 @@ impl ProgramOptions {
             canonical_diagnostics: true,
             checker_regions: false,
             checker_diagnostic_regions: false,
+            checker_regions_keep_escapes: false,
             regions: None,
             reuse_synthetic_imports: false,
         }
@@ -255,6 +262,8 @@ pub struct Program {
     pub(crate) checker_regions: bool,
     // tsrs-only: `ProgramOptions::checker_diagnostic_regions`.
     pub(crate) checker_diagnostic_regions: bool,
+    // tsrs-only: `ProgramOptions::checker_regions_keep_escapes`.
+    pub(crate) checker_regions_keep_escapes: bool,
     // tsrs-only: `ProgramOptions::reuse_synthetic_imports`.
     reuse_synthetic_imports: bool,
     // tsrs-only: the address of the program `reuse_program` made this one from, 0 for a program built in full
@@ -571,6 +580,7 @@ pub fn new_program(opts: ProgramOptions) -> &'static Program {
         canonical_diagnostics: opts.canonical_diagnostics,
         checker_regions: opts.checker_regions,
         checker_diagnostic_regions: opts.checker_diagnostic_regions,
+        checker_regions_keep_escapes: opts.checker_regions_keep_escapes,
         reuse_synthetic_imports: opts.reuse_synthetic_imports,
         reused_from: 0,
         own_region: None,
@@ -838,6 +848,7 @@ impl Program {
             canonical_diagnostics: self.canonical_diagnostics,
             checker_regions: self.checker_regions,
             checker_diagnostic_regions: self.checker_diagnostic_regions,
+            checker_regions_keep_escapes: self.checker_regions_keep_escapes,
             reuse_synthetic_imports: self.reuse_synthetic_imports,
             reused_from: std::ptr::from_ref(self) as usize,
             own_region,

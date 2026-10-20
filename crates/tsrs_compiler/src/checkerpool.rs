@@ -201,31 +201,55 @@ pub(crate) struct SlotChecker {
     checker: Box<Checker>,
     region: Option<tsrs_core::arena::Region>,
     diagnostics: Option<tsrs_core::arena::Region>,
+    // `ProgramOptions::checker_regions_keep_escapes`.
+    keep_escapes: bool,
 }
 
 /// `SlotChecker::enter`.
 pub(crate) struct CheckerScope {
     // Before the region's scope: the route applies while the region is the target.
     _route: Option<tsrs_core::arena::DiagnosticRoute>,
-    _scope: tsrs_core::arena::ScratchScope,
+    _scope: RegionTarget,
+}
+
+// The checker's region entered as the thread's scratch region, or, with `keep_escapes`, as a plain target.
+struct RegionTarget {
+    _scratch: Option<tsrs_core::arena::ScratchScope>,
+    _kept: Option<tsrs_core::arena::RegionScope>,
+}
+
+impl RegionTarget {
+    fn enter(region: &tsrs_core::arena::Region, keep_escapes: bool) -> RegionTarget {
+        if keep_escapes {
+            RegionTarget { _scratch: None, _kept: Some(region.enter()) }
+        } else {
+            RegionTarget { _scratch: Some(region.enter_scratch()), _kept: None }
+        }
+    }
 }
 
 impl SlotChecker {
     fn new(program: &'static Program, in_region: bool) -> SlotChecker {
         if !in_region {
-            return SlotChecker { checker: new_checker(program), region: None, diagnostics: None };
+            return SlotChecker {
+                checker: new_checker(program),
+                region: None,
+                diagnostics: None,
+                keep_escapes: false,
+            };
         }
         let region = tsrs_core::arena::Region::new_scratch(1 << 20);
         let diagnostics = program
             .checker_diagnostic_regions
             .then(|| tsrs_core::arena::Region::new_scratch(64 << 10));
+        let keep_escapes = program.checker_regions_keep_escapes;
         let checker = {
-            let _scope = region.enter_scratch();
+            let _scope = RegionTarget::enter(&region, keep_escapes);
             // Merging the globals reports duplicate declarations.
             let _route = diagnostics.as_ref().map(tsrs_core::arena::Region::route_diagnostics);
             new_checker(program)
         };
-        SlotChecker { checker, region: Some(region), diagnostics }
+        SlotChecker { checker, region: Some(region), diagnostics, keep_escapes }
     }
 
     // A replacement for a retired checker: a fork of the frozen shared-graph seed when there is one (it starts with the
@@ -242,14 +266,14 @@ impl SlotChecker {
             let fork = crate::sharedgraph::fresh_fork();
             fork.unwrap_or_else(|| new_checker(program))
         };
-        SlotChecker { checker, region: Some(region), diagnostics }
+        SlotChecker { checker, region: Some(region), diagnostics, keep_escapes: false }
     }
 
     // Makes the checker's region the allocation target (and the thread's scratch region, so that lazily filled
-    // data of shared objects and diagnostics escape it: `arena::escape_scratch`) until the scope is dropped. The
-    // diagnostics go to the slot's diagnostics region if it has one.
+    // data of shared objects and diagnostics escape it: `arena::escape_scratch`, unless `keep_escapes`) until the
+    // scope is dropped. The diagnostics go to the slot's diagnostics region if it has one.
     fn enter(&self) -> Option<CheckerScope> {
-        let scope = self.region.as_ref()?.enter_scratch();
+        let scope = RegionTarget::enter(self.region.as_ref()?, self.keep_escapes);
         Some(CheckerScope {
             _route: self.diagnostics.as_ref().map(tsrs_core::arena::Region::route_diagnostics),
             _scope: scope,
