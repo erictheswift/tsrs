@@ -1284,7 +1284,6 @@ dependencies = [
 name = "tsrs_lsproto"
 version = "0.18.0"
 dependencies = [
- "rustc-hash",
  "tsrs_core",
  "tsrs_vfs",
 ]
