@@ -32,6 +32,7 @@ fn host_for(files: &[(&str, &str)]) -> Arc<dyn CompilerHost> {
     new_compiler_host("/", fs, "", None, None, None)
 }
 
+#[expect(clippy::disallowed_methods, reason = "the parsed test configuration retains its host")]
 fn config_for(files: &[(&str, &str)]) -> P<tsoptions::ParsedCommandLine> {
     let fs: Arc<dyn FS> = Arc::new(vfstest::from_map(files.iter().map(|&(k, v)| (k, v)), true));
     let host: &'static parseConfigHost = Box::leak(Box::new(parseConfigHost { fs }));

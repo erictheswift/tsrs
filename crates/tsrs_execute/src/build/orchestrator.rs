@@ -1699,6 +1699,10 @@ pub fn new_orchestrator(opts: Options) -> &'static Orchestrator {
     if watch && let Some(backend) = opts.testing.and_then(tsc::CommandLineTesting::watch_backend) {
         WatchManager::set_backend(&mut wm.lock(), backend);
     }
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "free_api_orchestrator reclaims API builds; CLI builds live for the process"
+    )]
     let orchestrator: &'static Orchestrator = Box::leak(Box::new(Orchestrator {
         opts,
         compare_paths_options,
@@ -1730,6 +1734,10 @@ pub fn new_orchestrator(opts: Options) -> &'static Orchestrator {
         None,
         None,
     );
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "free_api_orchestrator reclaims this host with its orchestrator"
+    )]
     let h: &'static host = Box::leak(Box::new(host {
         orchestrator: OnceLock::new(),
         host: compiler_host,
