@@ -330,6 +330,8 @@ Benchmarks are named `compiler::<project>` and start a new baseline, distinct fr
 The `compiler_default` target uses CodSpeed's Rust hooks around exactly one compilation in a fresh process. It does
 not capture the filesystem or warm up the compiler first: earlier compilations would leave arenas resident and
 inflate peak memory. Project existence checks, benchmark setup, and outcome checks are outside the measured section.
+Walltime mode also records one elapsed-time sample for `cargo-codspeed` to aggregate; the hooks alone provide a
+profile but no walltime result.
 Diagnostics are valid outcomes; missing projects, crashes, and invalid statuses fail. Output is formatted into memory
 to avoid putting thousands of diagnostics in CI logs. Walltime includes filesystem calls and checker parallelism.
 
