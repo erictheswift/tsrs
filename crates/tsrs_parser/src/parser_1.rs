@@ -278,11 +278,26 @@ pub fn parse_source_file_embedded(
     }
 }
 
+// DO NOT MERGE: deliberately burn CPU so the draft probe PR can verify that CodSpeed reports regressions.
+#[inline(never)]
+fn codspeed_parser_cpu_probe(source_text: &str) {
+    let mut checksum = 0u64;
+    for _ in 0..32 {
+        for byte in source_text.bytes() {
+            checksum = std::hint::black_box(
+                checksum.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(u64::from(byte)),
+            );
+        }
+    }
+    std::hint::black_box(checksum);
+}
+
 fn parse_source_file_static(
     opts: SourceFileParseOptions,
     source_text: &'static str,
     script_kind: ScriptKind,
 ) -> P<SourceFile> {
+    codspeed_parser_cpu_probe(source_text);
     crate::jsdoc::init();
     let mut p = new_parser();
     p.initialize_state_static(opts, source_text, script_kind);
