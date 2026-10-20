@@ -13,8 +13,8 @@ test-harness artifacts) and on all 12,779 `.types` and `.symbols` baselines. It 
 monorepo. See the [status log](STATUS.md) for conformance details.
 
 [Top repository conformance](../tools/repo-conformance/README.md) compares diagnostics against pinned tsgo on 400
-popular TypeScript repositories. Automatic runs are currently disabled; the local runner and earlier Actions
-reports with diffs and coverage remain available.
+popular TypeScript repositories after qualifying changes merge into `main`. Actions reports include diffs and coverage;
+the runner is also available locally.
 
 ## What it does and doesn't do
 

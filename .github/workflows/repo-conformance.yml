@@ -50,27 +50,30 @@ jobs:
       matrix: ${{ steps.plan.outputs.matrix || steps.rerun.outputs.matrix }}
       harness: ${{ steps.rerun.outputs.harness || github.sha }}
     steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
-        with:
-          persist-credentials: false
+      - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
+
       - name: Check the rerun inputs
         env:
           RUN_ID: ${{ inputs.rerun_run_id }}
           SHARDS: ${{ inputs.rerun_shards }}
         run: python3 tools/repo-conformance/run.py dispatch --run-id "$RUN_ID" --shards "$SHARDS"
+
       - name: Check repository isolation
         env:
           TSRS_CONFORMANCE_SANDBOX_IMAGE: tsrs-repo-conformance
         run: |
           docker build --tag tsrs-repo-conformance tools/repo-conformance
           python3 -m unittest discover -s tools/repo-conformance -p 'test_sandbox.py' -v
+
       - uses: oxc-project/setup-node@f46a72f95efdc55273fcd042d61c84e723b2892c # v1.4.1
+
       - name: Read the earlier run
         if: inputs.rerun_run_id
         env:
           GH_TOKEN: ${{ github.token }}
           RUN_ID: ${{ inputs.rerun_run_id }}
         run: gh api "repos/$GITHUB_REPOSITORY/actions/runs/$RUN_ID" > "$RUNNER_TEMP/earlier-run.json"
+
       - name: Read the earlier run's manifest and compilers
         if: inputs.rerun_run_id
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -79,6 +82,7 @@ jobs:
           path: repo-conformance
           run-id: ${{ inputs.rerun_run_id }}
           github-token: ${{ github.token }}
+
       - name: Select shards to rerun
         id: rerun
         if: inputs.rerun_run_id
@@ -88,43 +92,49 @@ jobs:
           python3 tools/repo-conformance/run.py rerun --manifest repo-conformance/manifest.json --shards "$SHARDS" \
             --run "$RUNNER_TEMP/earlier-run.json"
           echo "harness=$(jq -r .tsrs_commit repo-conformance/manifest.json)" >> "$GITHUB_OUTPUT"
+
       - name: Read TypeScript reference commit
         id: ts
         if: ${{ !inputs.rerun_run_id }}
         run: echo "commit=$(node npm/build.mjs --print-typescript-commit)" >> "$GITHUB_OUTPUT"
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Check out pinned TypeScript compiler
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         if: ${{ !inputs.rerun_run_id }}
         with:
           repository: microsoft/TypeScript
           ref: ${{ steps.ts.outputs.commit }}
           path: ts-ref
           persist-credentials: false
+
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         if: ${{ !inputs.rerun_run_id }}
         with:
           go-version-file: ts-ref/tsc/go.mod
           cache-dependency-path: ts-ref/tsc/go.sum
-      - name: Set up Rust
-        if: ${{ !inputs.rerun_run_id }}
-        run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - uses: oxc-project/setup-rust@3d6fb132fbe7cdcb66bf8ec193911c2945369d12 # v1.0.17
         if: ${{ !inputs.rerun_run_id }}
         with:
-          key: repo-conformance
+          save-cache: ${{ github.ref_name == 'main' }}
+          cache-key: warm-repo-conformance
+
       - name: Build the two compilers
         if: ${{ !inputs.rerun_run_id }}
         run: |
-          cargo build --release --locked -p tsrs_cli
+          cargo build --profile dev --locked -p tsrs_cli
           mkdir -p repo-conformance/bin
-          cp target/release/tsrs repo-conformance/bin/tsrs
+          cp target/debug/tsrs repo-conformance/bin/tsrs
           cd ts-ref/tsc
           go build -o "$GITHUB_WORKSPACE/repo-conformance/bin/tsgo" ./cmd/tsc
+
       - name: Check the harness and compiler controls
         if: ${{ !inputs.rerun_run_id }}
         env:
           TSRS_CONFORMANCE_TSRS: ${{ github.workspace }}/repo-conformance/bin/tsrs
           TSRS_CONFORMANCE_TSGO: ${{ github.workspace }}/repo-conformance/bin/tsgo
         run: python3 -m unittest discover -s tools/repo-conformance -p 'test_*.py' -v
+
       - name: Select popular TypeScript repositories
         id: plan
         if: ${{ !inputs.rerun_run_id }}
@@ -132,6 +142,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           REPO_COUNT: ${{ github.event_name == 'pull_request' && '20' || inputs.count || '400' }}
         run: python3 tools/repo-conformance/run.py plan --count "$REPO_COUNT" --out repo-conformance/manifest.json
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: repo-conformance-inputs
@@ -152,10 +163,12 @@ jobs:
         with:
           ref: ${{ needs.build.outputs.harness }}
           persist-credentials: false
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: repo-conformance-inputs
           path: repo-conformance
+
       - name: Compare projects
         env:
           SHARD: ${{ matrix.shard }}
@@ -166,9 +179,11 @@ jobs:
             --shard "$SHARD" --tsgo repo-conformance/bin/tsgo --tsrs repo-conformance/bin/tsrs \
             --out repo-conformance/results --cache "$RUNNER_TEMP/repo-conformance-work" \
             --sandbox-image tsrs-repo-conformance
+
       - name: Remove repository sandboxes
         if: always()
         run: docker ps --all --quiet --filter label=tsrs.repo-conformance | xargs --no-run-if-empty docker rm --force
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
@@ -190,10 +205,12 @@ jobs:
         with:
           ref: ${{ needs.build.outputs.harness }}
           persist-credentials: false
+
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: repo-conformance-*
           path: repo-conformance-downloads
+
       - name: Read the earlier run's shard results
         if: inputs.rerun_run_id
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -202,6 +219,7 @@ jobs:
           path: repo-conformance-previous
           run-id: ${{ inputs.rerun_run_id }}
           github-token: ${{ github.token }}
+
       - name: Report compatibility and coverage
         env:
           PREVIOUS: ${{ inputs.rerun_run_id && 'repo-conformance-previous' || '' }}
@@ -213,6 +231,7 @@ jobs:
             --out repo-conformance-report.md || status=$?
           cat repo-conformance-report.md >> "$GITHUB_STEP_SUMMARY"
           exit "$status"
+
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         if: always()
         with:
