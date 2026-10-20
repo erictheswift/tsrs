@@ -1004,6 +1004,7 @@ dependencies = [
 name = "tsrs_bench"
 version = "0.18.0"
 dependencies = [
+ "codspeed",
  "criterion2",
  "mimalloc-safe",
  "rustc-hash",

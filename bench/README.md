@@ -284,10 +284,24 @@ table. Missing or invalid project results appear as failed rows, so a failed sha
 For those saved workflows, restore the original `.yml` filename before using their `gh workflow run` commands.
 They produce no automated measurements, regression comments or result/chart updates while disabled.
 
-### CodSpeed simulation
+### CodSpeed
 
-`.github/workflows/codspeed.yml` measures full, single-threaded compilations of Compiler-Unions, xstate-main,
-webpack, and drizzle-orm using Criterion2's built-in CodSpeed support. `tsrs_bench` first runs an unmeasured
+`.github/workflows/codspeed.yml` measures Compiler-Unions, xstate-main, webpack, and drizzle-orm in three ways on
+every push to main, pull request, and manual dispatch:
+
+| Instrument | Work measured | Runner | Benchmark name suffix |
+| --- | --- | --- | --- |
+| CPU simulation | One single-threaded compilation against a captured filesystem | GitHub x64 | `compiler::<project>` |
+| Memory | One disk-backed compilation with the CLI's default checker count | GitHub x64 | `compiler_default::<project>` |
+| Walltime | The same default-parallelism, disk-backed compilation | CodSpeed Graviton arm64 Macro Runner | `compiler_default::<project>` |
+
+The two benchmark families have separate baselines, and memory and walltime use the default checker count of their
+respective runners. The release profile has no PGO or BOLT training; the published CLI and Hyperfine workflows answer
+different questions. CodSpeed reports are advisory. The broader PR comparison remains in `wallclock.yml`.
+
+#### CPU simulation
+
+`tsrs_bench` uses Criterion2's built-in CodSpeed support. It first runs an unmeasured
 compilation that records filesystem responses: source and config text, package metadata, directory listings,
 negative probes, realpaths, and case sensitivity. Subsequent compilations read only that immutable snapshot;
 an unrecorded request or a filesystem mutation fails the benchmark rather than falling back to disk.
@@ -311,6 +325,25 @@ production allocator configuration.
 The target requires the `codspeed` feature: ordinary Criterion calibration would accumulate arena allocations.
 Benchmarks are named `compiler::<project>` and start a new baseline, distinct from the former disk-backed CLI measurements.
 
+#### Memory and walltime
+
+The `compiler_default` target uses CodSpeed's Rust hooks around exactly one compilation in a fresh process. It does
+not capture the filesystem or warm up the compiler first: earlier compilations would leave arenas resident and
+inflate peak memory. Project existence checks, benchmark setup, and outcome checks are outside the measured section.
+Diagnostics are valid outcomes; missing projects, crashes, and invalid statuses fail. Output is formatted into memory
+to avoid putting thousands of diagnostics in CI logs. Walltime includes filesystem calls and checker parallelism.
+
+CodSpeed's memory instrument reports peak physical memory, heap allocation metrics, and allocation flamegraphs.
+Peak physical memory includes tsrs's arena pages; heap allocation flamegraphs chiefly describe mimalloc calls and
+do not attribute the arena's direct `mmap` calls as heap allocations. Memory profiling tracks every allocation, so
+large projects can cost more to profile. The walltime job uses the arm64 Graviton Macro Runner for stable elapsed-time
+measurements; it builds on GitHub's Ubuntu 22.04 arm64 runner first, so compiler time is not charged to the Macro
+Runner. Changing the Macro Runner's machine family starts a new walltime baseline.
+
+The workflow builds each instrument separately and runs one project per job in the same workflow so CodSpeed can
+aggregate the shards. The memory and walltime builds use `cargo-codspeed` mode-specific instrumentation. GitHub OIDC
+authenticates uploads without a long-lived CodSpeed secret.
+
 From the repository root:
 
 ```sh
@@ -318,11 +351,34 @@ cargo install cargo-codspeed --version 5.0.3 --locked
 python3 bench/run.py --setup-only --projects Compiler-Unions,xstate-main,webpack,drizzle-orm
 cargo codspeed build -p tsrs_bench --bench compiler --features codspeed --profile release --locked -m simulation
 MIMALLOC_ARENA_PURGE_MULT=-1 RAYON_NUM_THREADS=1 TSRS_BENCH_PROJECT=Compiler-Unions cargo codspeed run -p tsrs_bench --bench compiler -m simulation
+cargo codspeed build -p tsrs_bench --bench compiler_default --features codspeed --profile release --locked -m memory
+TSRS_BENCH_PROJECT=Compiler-Unions cargo codspeed run -p tsrs_bench --bench compiler_default -m memory
+cargo codspeed build -p tsrs_bench --bench compiler_default --features codspeed --profile release --locked -m walltime
+TSRS_BENCH_PROJECT=Compiler-Unions cargo codspeed run -p tsrs_bench --bench compiler_default -m walltime
 ```
 
-Outside CodSpeed's Linux instrumentation, the last command exercises capture, warmups, replay, and output
-verification without reporting performance measurements. Use `--profile dev` when building for local correctness
-checks. The workflow uses the release profile without PGO, with debug symbols retained by cargo-codspeed.
+The simulation command exercises capture, warmups, replay, and output verification outside CodSpeed's Linux
+instrumentation without reporting performance measurements. The other targets still execute one compilation there.
+Use `--profile dev` when building for local correctness checks. CI uses the release profile with debug symbols
+retained by cargo-codspeed.
+
+#### Other CodSpeed capabilities
+
+The current [CodSpeed instruments](https://codspeed.io/docs/instruments) are CPU simulation, memory, and walltime.
+Simulation uses cycle estimation and breaks down flamegraph time into instruction, cache, and memory costs. We leave
+[allocation exclusion](https://codspeed.io/docs/instruments/cpu/allocation-exclusion) off: a new allocation on a hot
+compiler path should remain visible. The benchmark does not spawn child processes, so subprocess tracking adds nothing.
+CodSpeed's [comparison view](https://codspeed.io/changelog) includes environment differences and differential,
+process/thread-aware flamegraphs; these need no extra workflow setting.
+
+[Sharding](https://codspeed.io/docs/features/sharded-benchmarks) is already used. We run all four projects on every
+workflow run because most compiler changes can affect each of them; [partial runs](https://codspeed.io/docs/features/partial-runs)
+would reduce that coverage. Benchmark archival is for a future removal or rename. This workflow does not configure
+CodSpeed's regression thresholds or a [required performance check](https://codspeed.io/docs/features/performance-checks);
+the repository's landing criteria still use instruction counts, two walltime publishes, and peak RSS
+(`AGENTS.md`). For investigation, use the CodSpeed [CLI](https://codspeed.io/docs/cli),
+[MCP server](https://codspeed.io/docs/ai/mcp), or [Wizard](https://codspeed.io/docs/ai/wizard)
+against the uploaded profiles. Those account integrations are optional and do not change CI.
 
 ### Historical benchmark workflow
 
