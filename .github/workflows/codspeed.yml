@@ -234,6 +234,17 @@ jobs:
           mkdir -p target
           tar -xzf codspeed-benchmarks.tar.gz -C target
 
+      - name: Diagnose walltime benchmark startup
+        if: matrix.project == 'Compiler-Unions'
+        run: |
+          set +e
+          timeout 120s target/codspeed/walltime/tsrs_bench/compiler_default
+          status=$?
+          echo "Direct benchmark exit status: $status"
+          if [ "$status" -eq 132 ] && command -v gdb >/dev/null; then
+            gdb --batch -ex run -ex 'x/8i $pc' -ex 'bt 8' --args target/codspeed/walltime/tsrs_bench/compiler_default
+          fi
+
       - name: Run the benchmarks
         uses: CodSpeedHQ/action@821a40cd6c80e3cfe387caf55668287addd808da # v5.5.0
         with:
