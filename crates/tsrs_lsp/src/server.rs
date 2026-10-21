@@ -3332,19 +3332,170 @@ impl Server {
         Ok(lsproto::ProjectInfoResult { config_file_path })
     }
 
-    // server.go:2451 (content mappers are out of scope)
-    #[expect(
-        clippy::unused_self,
-        reason = "Registered LSP handlers share a Server receiver so the dispatcher can call them uniformly."
-    )]
+    // server.go:2524
     fn handle_set_content_mapper_contributions(
         self: &Arc<Self>,
-        _ctx: &Context,
-        _params: &lsproto::SetContentMapperContributionsParams,
+        ctx: &Context,
+        params: &lsproto::SetContentMapperContributionsParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::CustomSetContentMapperContributionsResponse, Error> {
-        Err(not_yet_ported(Method::CustomSetContentMapperContributions))
+        let contributions = parse_content_mapper_contributions(&params.contributions)?;
+        let documents = params.open_documents.iter().map(|document| document.uri.clone()).collect();
+        self.session().set_content_mapper_contributions(ctx, contributions, documents);
+        Ok(lsproto::Null)
     }
+}
+
+// server.go:2534
+pub(crate) fn parse_content_mapper_contributions(
+    values: &[lsproto::ContentMapperContribution],
+) -> Result<project::ContentMapperContributions, Error> {
+    // Go formats these with %q, which the content mapper host models as the Header style.
+    let quote =
+        |s: &str| tsrs_core::gocompat::quote(s.as_bytes(), tsrs_core::gocompat::QuoteStyle::Header);
+    let mut result = project::ContentMapperContributions::default();
+    let mut claimed_extensions: Set<String> = Set::new();
+    for (index, value) in values.iter().enumerate() {
+        if value.contributor_id.is_empty() {
+            return Err(Error::new(
+                "content mapper contribution requires a contributorId".to_string(),
+            ));
+        }
+        let identity = format!("{}[{index}]", value.contributor_id);
+        let mut valid_extensions = Vec::with_capacity(value.extensions.len());
+        for extension in &value.extensions {
+            if !is_valid_contributed_content_mapper_extension(extension) {
+                return Err(Error::new(format!(
+                    "content mapper contribution {} has invalid extension {}",
+                    quote(&identity),
+                    quote(extension)
+                )));
+            }
+            valid_extensions.push(extension.clone());
+        }
+        let Some(inferred_project) = &value.inferred_project_contribution else {
+            continue;
+        };
+        let manifest = &inferred_project.manifest;
+        if manifest.name.is_empty() || manifest.exec.is_empty() {
+            return Err(Error::new(format!(
+                "content mapper contribution {} requires a manifest name and exec",
+                quote(&identity)
+            )));
+        }
+        for option in manifest.compiler_options.iter().flatten() {
+            if tsrs_tsoptions::COMMAND_LINE_COMPILER_OPTIONS_MAP.get(option).is_none() {
+                return Err(Error::new(format!(
+                    "content mapper contribution {} requests unknown compiler option {}",
+                    quote(&identity),
+                    quote(option)
+                )));
+            }
+        }
+        for (source, output) in manifest.output_extensions.iter().flatten() {
+            if !tsrs_tsoptions::is_valid_extension(source)
+                || !tsrs_tsoptions::is_valid_extension(output)
+            {
+                return Err(Error::new(format!(
+                    "content mapper contribution {} has invalid output extension mapping from {} to {}",
+                    quote(&identity),
+                    quote(source),
+                    quote(output)
+                )));
+            }
+        }
+        for extension in &valid_extensions {
+            if !claimed_extensions.add_if_absent(extension.to_lowercase()) {
+                return Err(Error::new(format!(
+                    "content mapper contributions both claim extension {}",
+                    quote(extension)
+                )));
+            }
+            result.extensions.push(extension.clone());
+        }
+        let options = match &inferred_project.options {
+            Some(options) => {
+                let mut members: tsrs_core::json::JsonMap = options
+                    .iter()
+                    .map(|(name, value)| (name.clone(), go_map_json_value(value)))
+                    .collect();
+                members.sort_keys();
+                tsrs_core::json::marshal(&lsproto::Value::Object(members)).map_err(|_| {
+                    Error::new(format!(
+                        "content mapper contribution {} has invalid options",
+                        quote(&identity)
+                    ))
+                })?
+            }
+            None => "{}".to_string(),
+        };
+        // Go clones the manifest's map, so an absent `outputExtensions` stays nil in both places.
+        let output_extensions: FxHashMap<String, String> = manifest
+            .output_extensions
+            .iter()
+            .flatten()
+            .map(|(source, output)| (source.clone(), output.clone()))
+            .collect();
+        let output_extensions_present = manifest.output_extensions.is_some();
+        let mut mapper = tsrs_tsoptions::Mapper {
+            definition: tsrs_tsoptions::Definition {
+                package: identity.clone(),
+                extensions: valid_extensions,
+                output_extensions: output_extensions.clone(),
+                output_extensions_present,
+                options,
+            },
+            manifest: tsrs_tsoptions::Manifest {
+                name: manifest.name.clone(),
+                version: manifest.version.clone().unwrap_or_default(),
+                exec: manifest.exec.clone(),
+                compiler_options: manifest.compiler_options.clone().unwrap_or_default(),
+                dynamic_config: manifest.dynamic_config.unwrap_or_default(),
+                default_output_extensions: output_extensions,
+                default_output_extensions_present: output_extensions_present,
+            },
+            package_directory: String::new(),
+            contribution_id: identity.clone(),
+        };
+        if let Some(cwd) = &manifest.cwd {
+            if !tspath::path_is_absolute(cwd) {
+                return Err(Error::new(format!(
+                    "content mapper contribution {} has non-absolute cwd",
+                    quote(&identity)
+                )));
+            }
+            mapper.package_directory.clone_from(cwd);
+        }
+        result.mappers.push(mapper);
+    }
+    result.extensions.sort();
+    Ok(result)
+}
+
+// Go decodes the options as `map[string]any` and json.Marshal writes every map's keys sorted.
+fn go_map_json_value(value: &lsproto::Value) -> lsproto::Value {
+    match value {
+        lsproto::Value::Object(members) => {
+            let mut members: tsrs_core::json::JsonMap = members
+                .iter()
+                .map(|(name, value)| (name.to_string(), go_map_json_value(value)))
+                .collect();
+            members.sort_keys();
+            lsproto::Value::Object(members)
+        }
+        lsproto::Value::Array(items) => {
+            lsproto::Value::Array(items.iter().map(go_map_json_value).collect())
+        }
+        value => value.clone(),
+    }
+}
+
+// server.go:2604
+fn is_valid_contributed_content_mapper_extension(extension: &str) -> bool {
+    if !tsrs_tsoptions::is_valid_extension(extension) {
+        return false;
+    }
+    !tsrs_tsoptions::has_reserved_source_extension(extension)
 }
 
 // server.go:323

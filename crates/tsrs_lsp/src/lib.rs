@@ -23,6 +23,8 @@ mod progress_test;
 #[cfg(all(test, unix))]
 mod server_apisession_test;
 #[cfg(test)]
+mod server_contentmapper_internal_test;
+#[cfg(test)]
 mod server_flakydiagnostics_test;
 #[cfg(test)]
 mod server_progress_test;

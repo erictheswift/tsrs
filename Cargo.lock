@@ -1336,6 +1336,7 @@ dependencies = [
  "tsrs_ls",
  "tsrs_lsproto",
  "tsrs_project",
+ "tsrs_tsoptions",
  "tsrs_vfs",
 ]
 
