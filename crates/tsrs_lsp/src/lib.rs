@@ -20,6 +20,8 @@ mod dynamic_queue_test;
 mod lspwatcher_test;
 #[cfg(test)]
 mod progress_test;
+#[cfg(all(test, unix))]
+mod server_apisession_test;
 #[cfg(test)]
 mod server_flakydiagnostics_test;
 #[cfg(test)]

@@ -245,7 +245,8 @@ With this applied locally, tsrs gives `target: 1 → 0`, matching Go.
 
 Overlay rebasing and the "overlay dropped" branch are only reachable from LSP-connected API sessions.
 `getCurrentLanguageServerSnapshot` returns `requires an LSP-connected API session` in both Go and tsrs
-for `--api`, so standalone `--api` cannot observe them. That remains a documented gap.
+for `--api`, so standalone `--api` cannot observe them. That remains a documented gap. (Later: the language
+server now creates LSP-connected sessions through `custom/initializeAPISession`, which reach these branches.)
 
 # Follow-up on 623ee28: callback ownership, and grace measured per acquisition
 
