@@ -3,10 +3,11 @@
 // (README.md): a main package with the JS API client, the WebStorm adapter and launchers, and one package per
 // platform with the binary and the default libraries.
 //
-//   cargo build --release -p tsrs_cli --features noembed [--target x86_64-apple-darwin]
+//   cargo build --release -p tsrs_cli --features noembed
+//   cargo zigbuild --release -p tsrs_cli --features noembed --target x86_64-unknown-linux-gnu.2.28
 //   node npm/build.mjs --sdk-only
 //   node tools/ide/pack.mjs --scope @epia --version 0.18.0-ide.1 \
-//     --binary darwin-arm64=target/release/tsrs --binary darwin-x64=target/x86_64-apple-darwin/release/tsrs [--pack]
+//     --binary darwin-arm64=target/release/tsrs --binary linux-x64=target/x86_64-unknown-linux-gnu/release/tsrs [--pack]
 //
 // Output: target/ide-npm/<name>/ for each package (and <name>.tgz with --pack). Without publishing, WebStorm can
 // use target/ide-npm/tsrs-ide/webstorm/typescript directly: the platform packages sit beside it as they would in
@@ -32,12 +33,12 @@ if (!values.version || values.binary.length === 0) {
     process.exit(2);
 }
 
-// Node platform -> `uname -s`-`uname -m` and the npm os/cpu fields.
+// Node platform -> `uname -s`-`uname -m` and the npm os/cpu/libc fields. Linux binaries are built for glibc.
 const PLATFORMS = {
     "darwin-arm64": { uname: "Darwin-arm64", os: "darwin", cpu: "arm64" },
     "darwin-x64": { uname: "Darwin-x86_64", os: "darwin", cpu: "x64" },
-    "linux-x64": { uname: "Linux-x86_64", os: "linux", cpu: "x64" },
-    "linux-arm64": { uname: "Linux-aarch64", os: "linux", cpu: "arm64" },
+    "linux-x64": { uname: "Linux-x86_64", os: "linux", cpu: "x64", libc: "glibc" },
+    "linux-arm64": { uname: "Linux-aarch64", os: "linux", cpu: "arm64", libc: "glibc" },
 };
 // WebStorm runs its service-powered type engine only for `typescript` 7.0.x with x >= 2, the API its proxy is
 // written against; webstorm-api.js adapts the 7.1 client tsrs speaks to it.
@@ -94,6 +95,7 @@ for (const { platform, binary } of binaries) {
         license: "Apache-2.0",
         os: [PLATFORMS[platform].os],
         cpu: [PLATFORMS[platform].cpu],
+        ...(PLATFORMS[platform].libc && { libc: [PLATFORMS[platform].libc] }),
     });
     packageDirs.push(dir);
 }
