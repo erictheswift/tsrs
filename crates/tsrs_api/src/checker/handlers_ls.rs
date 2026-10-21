@@ -155,6 +155,7 @@ pub(crate) fn get_completions_at_position(
     let mut result = run(&sd.scope.snapshot, program, &ctx)?;
     if matches!(&result, Err(e) if tsrs_ls::is_err_needs_auto_imports(e)) {
         let snapshot = host.clone_snapshot_with_auto_imports(&sd.scope.snapshot, &file_name)?;
+        host.try_adopt_snapshot_in_background(&sd.scope.snapshot, &snapshot);
         let outcome =
             program_of(&snapshot, &sd.project).and_then(|program| run(&snapshot, program, &ctx));
         prepared = Some(snapshot);
@@ -314,6 +315,7 @@ pub(crate) fn get_import_adder_edits(host: &dyn CheckerHost, p: &Params) -> Chec
     });
     if !prepared_for_file {
         let snapshot = host.clone_snapshot_with_auto_imports(&working, &file_name)?;
+        host.try_adopt_snapshot_in_background(&working, &snapshot);
         prepared = Some(Arc::clone(&snapshot));
         working = snapshot;
         let resolved = program_of(&working, &sd.project).and_then(|prog| {

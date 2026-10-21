@@ -280,6 +280,11 @@ impl Session {
         &*self.fs
     }
 
+    /// `fs` as a shared handle (a Go `vfs.FS` is a reference), for an LSP-attached API session.
+    pub fn shared_fs(&self) -> Arc<dyn FS> {
+        Arc::clone(&self.fs) as Arc<dyn FS>
+    }
+
     // session.go:256
     // GetCurrentDirectory implements module.ResolutionHost
     pub fn get_current_directory(&self) -> &str {
