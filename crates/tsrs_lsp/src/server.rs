@@ -9,6 +9,8 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use rustc_hash::{FxHashMap, FxHashSet};
+use tsrs_api::adapter::{ClientConnAdapter, SessionHandler};
+use tsrs_api_transport as api_transport;
 use tsrs_core::CompilerOptions;
 use tsrs_core::P;
 use tsrs_core::collections::{OrderedMap, Set};
@@ -92,6 +94,7 @@ pub fn new_server(opts: ServerOptions) -> Arc<Server> {
         project_progress: OnceLock::new(),
         start_watchdog: opts.set_parent_process_id,
         flake_logging: OnceLock::new(),
+        api_sessions: Mutex::new(FxHashMap::default()),
     })
 }
 
@@ -278,6 +281,9 @@ pub struct Server {
     start_watchdog: Option<Box<dyn Fn(i32) + Send + Sync>>,
 
     flake_logging: OnceLock<lsproto::DiagnosticFlakeLogLevel>,
+
+    // apiSessions holds active API sessions keyed by their ID
+    pub(crate) api_sessions: Mutex<FxHashMap<String, Arc<tsrs_api::Session>>>,
 }
 
 // Go's `chan *lsproto.ResponseMessage` with buffer 1 in pendingServerRequests.
@@ -3029,18 +3035,118 @@ impl Server {
         ls.provide_semantic_tokens_range(ctx, &params.text_document.uri, params.range)
     }
 
-    // server.go:2280 (the `api` package is out of scope)
-    #[expect(
-        clippy::unused_self,
-        reason = "Registered LSP handlers share a Server receiver so the dispatcher can call them uniformly."
-    )]
+    // server.go:2280
     fn handle_initialize_api_session(
         self: &Arc<Self>,
         _ctx: &Context,
-        _params: &lsproto::InitializeAPISessionParams,
+        params: &lsproto::InitializeAPISessionParams,
         _req: &RequestMessage,
     ) -> Result<lsproto::CustomInitializeAPISessionResponse, Error> {
-        Err(not_yet_ported(Method::CustomInitializeAPISession))
+        let mut api_sessions = self.api_sessions.lock().unwrap();
+
+        let api_session = tsrs_api::Session::new_lsp(Arc::clone(self.session()), false);
+
+        // Use provided pipe path or generate a unique one
+        let pipe_path = match &params.pipe {
+            Some(pipe) if !pipe.is_empty() => pipe.clone(),
+            _ => Self::generate_api_pipe_path(),
+        };
+
+        let transport = api_transport::PipeListener::bind(std::path::Path::new(&pipe_path))
+            .map_err(|err| Error::new(format!("failed to create API transport: {err}")))?;
+
+        // Start accepting connections in the background. (A goroutine cannot fail to start; a thread can, and the
+        // request then fails instead of poisoning `api_sessions`.)
+        let s = Arc::clone(self);
+        let session = Arc::clone(&api_session);
+        std::thread::Builder::new()
+            .name(format!("{} connection", api_session.id()))
+            .spawn(move || s.run_api_session(&session, transport))
+            .map_err(|err| Error::new(format!("failed to start API session: {err}")))?;
+
+        api_sessions.insert(api_session.id().to_string(), Arc::clone(&api_session));
+
+        Ok(lsproto::InitializeAPISessionResult {
+            session_id: api_session.id().to_string(),
+            pipe: pipe_path,
+        })
+    }
+
+    // server.go:2305 (the goroutine started by handleInitializeAPISession)
+    fn run_api_session(
+        &self,
+        api_session: &Arc<tsrs_api::Session>,
+        transport: api_transport::PipeListener,
+    ) {
+        let _close = deferCall(Some(|| {
+            api_session.close();
+            self.remove_api_session(api_session.id());
+        }));
+
+        let accepted = transport.accept();
+        drop(transport);
+        let rwc = match accepted {
+            Ok(rwc) => rwc,
+            Err(accept_err) => {
+                self.logger.errorf(format_args!(
+                    "API session {}: failed to accept connection: {accept_err}",
+                    api_session.id()
+                ));
+                return;
+            }
+        };
+
+        // Create a cancellable context for the API connection
+        let options = api_transport::ServeOptions::new(true /*async*/);
+        let api_cancel = options.shutdown.clone();
+        let stop_cancel = self.background_ctx().after_func(move || api_cancel.cancel());
+        let _api_cancel = deferCall(Some(|| {
+            stop_cancel.stop();
+        }));
+
+        // Run the connection with panic recovery. On a panic the connection, and with it the socket, is dropped
+        // during the unwind (Go cancels the context and closes rwc).
+        let result = recover_scope(|| {
+            let conn = api_transport::Connection::new(
+                rwc,
+                Arc::new(SessionHandler(Arc::clone(api_session))),
+                options,
+                None,
+            );
+            api_session.set_connection(Arc::new(ClientConnAdapter(conn.caller())));
+            conn.run()
+        });
+        match result {
+            Ok(Ok(())) => {}
+            Ok(Err(api_err)) => {
+                self.logger.errorf(format_args!("API session {}: {api_err}", api_session.id()));
+            }
+            Err((r, stack)) => {
+                self.logger.errorf(format_args!(
+                    "API session {}: panic: {}\n{}",
+                    api_session.id(),
+                    panic_value_string(&r),
+                    stack
+                ));
+            }
+        }
+    }
+
+    // server.go:2349
+    fn generate_api_pipe_path() -> String {
+        // Generate a high-entropy path using time and random source
+        let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_nanos();
+        // A fresh `RandomState` is randomly seeded: its empty hash stands in for Go's `rand.Uint64()`.
+        let rnd =
+            std::hash::BuildHasher::hash_one(&std::collections::hash_map::RandomState::new(), ());
+        api_transport::transport::generate_pipe_path(&format!("tsgo-api-{now:x}-{rnd:x}"))
+            .to_string_lossy()
+            .into_owned()
+    }
+
+    // server.go:2356
+    fn remove_api_session(&self, id: &str) {
+        self.api_sessions.lock().unwrap().remove(id);
     }
 
     // server.go:2363

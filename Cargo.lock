@@ -1287,6 +1287,8 @@ version = "0.18.0"
 dependencies = [
  "indexmap",
  "rustc-hash",
+ "tsrs_api",
+ "tsrs_api_transport",
  "tsrs_compiler",
  "tsrs_core",
  "tsrs_diagnostics",

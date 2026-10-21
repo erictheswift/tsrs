@@ -55,9 +55,9 @@ space left) leaves the job queued for a running worker, as the fixed pool did.
 ## Deviations
 
 - Out of scope (docs/LSP.md): content mappers (`Spawn`, `contentMapperSpawner`, `contentMapperLogger`,
-  `custom/setContentMapperContributions`), `api` sessions (`custom/initializeAPISession`), pprof requests
-  (`custom/runGC`, heap/alloc/CPU profiles). The handlers are registered like Go and answer through `not_yet_ported`
-  (MethodNotFound "<method> is not ported yet"); no other method does.
+  `custom/setContentMapperContributions`), pprof requests (`custom/runGC`, heap/alloc/CPU profiles). The handlers
+  are registered like Go and answer through `not_yet_ported` (MethodNotFound "<method> is not ported yet"); no other
+  method does. `custom/initializeAPISession` is ported (docs/NODE_API.md).
 - "Resolved client capabilities" log line: Go marshals the resolved capabilities as JSON; the `Resolved*` views have
   no codec, so the line shows their Debug form (log only; the oracle drops `window/logMessage`).
 - Stack traces are Rust backtraces; `sanitizeStackTrace` looks for Go frames and returns "" for them (only used
