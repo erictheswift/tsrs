@@ -31,5 +31,8 @@ pub mod wire;
 
 pub(crate) mod checker;
 
+#[cfg(test)]
+mod session_apistate_test;
+
 pub use handler::{ApiError, ApiResult, ClientConn, ErrorKind, Handler, Response};
 pub use session::{Session, SessionOptions};

@@ -224,7 +224,7 @@ existing core `getSymbolOfDeclaration` instead retrieves a binder symbol from a 
 | 7 | `initialize` | core | supported | config_test |
 | 8 | `createSnapshot` | core | supported | program_test, module_resolution_test, requestfs_test (full/layer request filesystems, removedPaths) |
 | 9 | `updateSnapshot` | core | supported | program_test, requestfs_test (layers compacted over full, retained base, release of base, fileNotifications expanded to request-symlink aliases) |
-| 10 | `getCurrentLanguageServerSnapshot` | core | partial | returns Go's standalone-session client error; LSP-attached sessions not ported |
+| 10 | `getCurrentLanguageServerSnapshot` | core | supported | session_apistate_test (port of Go's session_apistate_test.go: pending LSP changes, per-session open/close ownership, created programs released on close, standalone sessions rejected); the language server does not create these sessions yet (`custom/initializeAPISession`) |
 | 11 | `createBuildOrchestrator` | core | supported | tsrs_cli api::tests (in-process CLI build backend; fresh orchestrator per call instead of Go's recheckAllProjects reuse) |
 | 12 | `disposeBuildOrchestrator` | core | supported | tsrs_cli api::tests |
 | 13 | `build` | core | supported | tsrs_cli api::tests (references, up-to-date rebuild) |
@@ -421,8 +421,12 @@ real files and symlinks. No Cargo feature is needed. Fixtures and their generato
   (installed by `tsrs --api`; library sessions without a backend report the methods as unsupported). Clean uses
   the last build's graph like Go; clean existence checks use the uncached filesystem.
 - Profiling (`startCPUProfile`, `stopCPUProfile`, `saveHeapProfile`) is not implemented (no pprof
-  equivalent). `getCurrentLanguageServerSnapshot` returns Go's standalone-session client error; LSP-attached
-  API sessions are not ported.
+  equivalent).
+- `Session::new_lsp` (Go `NewLSPSession`) attaches a session to a language server's project session.
+  `getCurrentLanguageServerSnapshot` then returns the language server's current snapshot (flushing its pending
+  file changes) and applies the session's opens, closes and program changes to it; a standalone session gets
+  Go's client error. The projects, files and programs a session opened there are released when it closes,
+  and auto-import snapshots it prepares are offered to the language server.
 - Node index tables are cached per live source file keyed by the file's address (lookups never assign the
   file's lazy node id) and evicted when the file's region is freed; Go stores them on the file itself.
 - Re-entrancy attribution: snapshot builds read files through a `ScopedFs` that enters the creating
