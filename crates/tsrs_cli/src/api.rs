@@ -5,8 +5,9 @@
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+use tsrs_api::adapter::{ClientConnAdapter, SessionHandler};
 use tsrs_api::build::{BuildBackend, BuildOrchestrator, BuildOutcome, BuildRequest};
-use tsrs_api::{ClientConn, Handler as _, Session, SessionOptions};
+use tsrs_api::{Session, SessionOptions};
 use tsrs_api_transport as transport;
 use tsrs_api_transport::{CallbackConfig, CallbackFs};
 use tsrs_core::P;
@@ -87,47 +88,6 @@ pub(crate) fn new_api_session(flags: &ApiFlags) -> Result<(Arc<Session>, Arc<Cal
     let session = Session::new(options);
     session.set_build_backend(Arc::new(CliBuildBackend));
     Ok((session, callback_fs))
-}
-
-/// Adapts the core session to the transport's handler (contract: `crates/tsrs_api_transport/README.md`).
-struct SessionHandler(Arc<Session>);
-
-impl transport::Handler for SessionHandler {
-    fn handle_request(
-        &self,
-        cx: &transport::RequestContext,
-        method: &str,
-        params: &[u8],
-    ) -> Result<transport::Response, transport::ApiError> {
-        // Go: errors are CodeInternalError with err.Error().
-        match self.0.handle_nested_request(method, params, cx.depth) {
-            Ok(tsrs_api::Response::Json(s)) => Ok(transport::Response::Json(s.into_bytes())),
-            Ok(tsrs_api::Response::Binary(b)) => Ok(transport::Response::Binary(b)),
-            Err(e) => Err(transport::ApiError::internal(e.to_string())),
-        }
-    }
-
-    fn handle_notification(&self, _cx: &transport::RequestContext, method: &str, params: &[u8]) {
-        let _ = self.0.handle_notification(method, params);
-    }
-}
-
-impl Drop for SessionHandler {
-    fn drop(&mut self) {
-        self.0.close();
-    }
-}
-
-struct ClientConnAdapter(Arc<dyn transport::Caller>);
-
-impl ClientConn for ClientConnAdapter {
-    fn call(&self, method: &str, params: &str) -> tsrs_api::ApiResult<String> {
-        let raw = self
-            .0
-            .call(method, Some(params.as_bytes()))
-            .map_err(|e| tsrs_api::ApiError::internal(e.to_string()))?;
-        tsrs_core::utf8::into_string(raw).map_err(|e| tsrs_api::ApiError::internal(e.to_string()))
-    }
 }
 
 /// `tsrs --api` (Go `runAPI` + `StdioServer.Run`). stdout carries only protocol bytes.

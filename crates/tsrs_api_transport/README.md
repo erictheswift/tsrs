@@ -39,10 +39,11 @@ microsoft/TypeScript at the commit pinned in the workspace `Cargo.toml`
 - stdout is the wire. Nothing else in the process may write to stdout once the transport starts;
   diagnostics go to stderr.
 
-## Adapter for core (`crates/tsrs_cli/src/api.rs`, owned by core)
+## Adapter for core (`crates/tsrs_api/src/adapter.rs`, owned by core)
 
-`tsrs_api::handler` (core) and this crate have the same shape; the CLI adapts them (this crate does not
-depend on `tsrs_api`; `tsrs_api` uses this crate's `strictjson` and `reentrancy` modules):
+`tsrs_api::handler` (core) and this crate have the same shape; core adapts them for `tsrs --api` and the
+language server's API sessions (this crate does not depend on `tsrs_api`; `tsrs_api` uses this crate's
+`strictjson` and `reentrancy` modules):
 
 ```rust
 struct SessionHandler(Arc<tsrs_api::Session>);

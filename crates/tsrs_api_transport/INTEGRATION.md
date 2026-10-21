@@ -54,7 +54,7 @@ The fix: a callback failure now unwinds with `resume_unwind`, so no panic report
 matches Go's silent recover. I re-ran the repro against a9b4354 with only `src/callbackfs.rs` replaced;
 stderr is empty for EOF. Genuine handler panics are still reported.
 
-`SessionHandler` (in `crates/tsrs_cli/src/api.rs`) does not read `RequestContext.cancel`. After EOF, a
+`SessionHandler` (now in `crates/tsrs_api/src/adapter.rs`) does not read `RequestContext.cancel`. After EOF, a
 long request that makes no callbacks runs to completion before `run` returns and joins it. Go behaves the
 same unless its project code observes ctx.
 
